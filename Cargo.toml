@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "gfxutl",
-    "gfxutl-core",
     "wcapture",
     "wcodecs",
 ]

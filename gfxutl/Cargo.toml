@@ -7,4 +7,5 @@ repository.workspace = true
 description = "Utilities for graphics workflows."
 
 [dependencies]
-gfxutl-core = { path = "../gfxutl-core" }
+wcapture = { path = "../wcapture", version = "0.1.0" }
+wcodecs = { path = "../wcodecs", version = "0.1.0" }
