@@ -1,1 +1,6 @@
 /target/
+gfxutl/node_modules/
+gfxutl/dist/
+gfxutl/*.tsbuildinfo
+gfxutl/test-results/
+gfxutl/playwright-report/

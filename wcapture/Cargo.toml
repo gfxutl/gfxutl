@@ -1,9 +1,0 @@
-[package]
-name = "wcapture"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
-description = "Window and screen capture utilities."
-
-[dependencies]
