@@ -1,20 +1,76 @@
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Eye, EyeOff, Plus, RotateCcw, SlidersHorizontal, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useEditor } from "../core/interface";
-import type { ClipEffect, ClipEffectKind, GeometryKind, GeometrySpec, KeyframeProperty, MaterialKind, MediaAsset } from "../core/interface";
+import type { ClipEffect, ClipEffectKind, ClipMask, GeometryKind, GeometrySpec, KeyframeProperty, MaterialKind, MediaAsset, SceneSettings, TimelineClip } from "../core/interface";
 import { Button } from "./ui/button";
 import { Slider } from "./ui/slider";
 
 const GEOMETRY_OPTIONS: GeometryKind[] = ["box", "capsule", "circle", "cone", "cylinder", "dodecahedron", "icosahedron", "octahedron", "plane", "ring", "sphere", "tetrahedron", "torus", "torusKnot", "lathe", "shape", "extrude", "tube", "polyhedron", "edges", "wireframe", "buffer"];
 const THREE_RAD_TO_DEG = 180 / Math.PI;
-const KEYFRAME_PROPERTIES: Array<[KeyframeProperty, string]> = [["positionX", "位置 X"], ["positionY", "位置 Y"], ["positionZ", "位置 Z"], ["scale", "スケール"], ["scaleX", "横幅"], ["scaleY", "高さ"], ["rotation", "回転 Z"], ["rotationX", "回転 X"], ["rotationY", "回転 Y"], ["opacity", "不透明度"]];
-const KEYFRAME_DEFAULTS: Record<KeyframeProperty, number> = { positionX: 0, positionY: 0, positionZ: 0, scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: 0, rotationY: 0, opacity: 100 };
+const BASE_KEYFRAME_PROPERTIES: Array<[KeyframeProperty, string]> = [["positionX", "位置 X"], ["positionY", "位置 Y"], ["positionZ", "位置 Z"], ["scale", "スケール"], ["scaleX", "横幅"], ["scaleY", "高さ"], ["rotation", "回転 Z"], ["rotationX", "回転 X"], ["rotationY", "回転 Y"], ["opacity", "不透明度"]];
+
+function keyframeProperties(clip: TimelineClip): Array<[KeyframeProperty, string]> {
+  const properties = [...BASE_KEYFRAME_PROPERTIES];
+  if (clip.kind === "video") properties.push(["cropLeft", "クロップ 左"], ["cropRight", "クロップ 右"], ["cropTop", "クロップ 上"], ["cropBottom", "クロップ 下"]);
+  if (clip.kind === "video" || clip.kind === "audio") properties.push(["volume", "音量"], ["pan", "パン"], ["speed", "速度"]);
+  if (clip.kind === "title") properties.push(["fontSize", "文字サイズ"], ["textDepth", "文字の奥行き"], ["textOutlineWidth", "輪郭の太さ"]);
+  if (clip.kind === "object") {
+    properties.push(["instanceCount", "インスタンス数"], ["instanceSpacing", "インスタンス間隔"]);
+    for (const [key, label] of [["color", "材質 色"], ["emissive", "材質 発光色"], ["emissiveIntensity", "材質 発光強度"], ["roughness", "材質 粗さ"], ["metalness", "材質 金属度"], ["clearcoat", "材質 クリアコート"], ["transmission", "材質 透過"], ["ior", "材質 IOR"]] as const) properties.push([`material.${key}`, label]);
+  }
+  if (clip.particleSystem) for (const [key, label] of [["count", "粒子数"], ["size", "粒子サイズ"], ["spread", "粒子の広がり"], ["speed", "粒子速度"], ["color", "粒子色"]] as const) properties.push([`particleSystem.${key}`, label]);
+  for (const mask of clip.masks ?? []) for (const [key, label] of [["x", "X"], ["y", "Y"], ["width", "幅"], ["height", "高さ"], ["feather", "ぼかし"], ["opacity", "不透明度"]] as const) properties.push([`mask.${mask.id}.${key}`, `${mask.name} · ${label}`]);
+  for (const effect of clip.effects ?? []) for (const key of Object.keys(effect.params)) properties.push([`effect.${effect.id}.${key}`, `${effect.name} · ${key}`]);
+  return properties;
+}
+
+function keyframeValue(clip: TimelineClip, property: KeyframeProperty) {
+  if (property.startsWith("material.")) return Number((clip.material as unknown as Record<string, unknown> | undefined)?.[property.slice(9)] ?? 0);
+  if (property.startsWith("particleSystem.")) return Number((clip.particleSystem as unknown as Record<string, unknown> | undefined)?.[property.slice(15)] ?? 0);
+  if (property.startsWith("effect.")) {
+    const [, id, key] = property.split(".");
+    return Number(clip.effects?.find((effect) => effect.id === id)?.params[key] ?? 0);
+  }
+  if (property.startsWith("mask.")) {
+    const [, id, key] = property.split(".");
+    return Number(clip.masks?.find((mask) => mask.id === id)?.[key as keyof ClipMask] ?? 0);
+  }
+  const defaults: Record<string, number> = { positionX: 0, positionY: 0, positionZ: 0, scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: 0, rotationY: 0, opacity: 100, volume: 0, pan: 0, speed: 100, fontSize: 1.2, textDepth: 0.12, textOutlineWidth: 0.02, instanceCount: 1, instanceSpacing: 2.5 };
+  return Number((clip as unknown as Record<string, unknown>)[property] ?? defaults[property] ?? 0);
+}
 
 function defaultGeometry(id: string, kind: GeometryKind): GeometrySpec {
+  if (kind === "shape") return { id, kind, points2D: [[-1.5, -1], [1.5, -1], [1.5, 1], [-1.5, 1]] };
   if (kind === "buffer") return { id, kind, vertices: [-1, -1, 0, 1, -1, 0, 0, 1, 0], indices: [0, 1, 2] };
   if (kind === "polyhedron") return { id, kind, vertices: [1, 1, 1, -1, -1, 1, -1, 1, -1, 1, -1, -1], indices: [2, 1, 0, 0, 3, 2, 1, 3, 0, 2, 3, 1] };
   if (kind === "edges" || kind === "wireframe") return { id, kind, source: { kind: "box" as const } };
   return { id, kind };
+}
+
+function ShapePathEditor({ points, onChange }: { points: Array<[number, number]>; onChange: (points: Array<[number, number]>) => void }) {
+  const serialize = (value: Array<[number, number]>) => value.map(([x, y]) => `${x}, ${y}`).join("\n");
+  const [draft, setDraft] = useState(() => serialize(points));
+  useEffect(() => setDraft(serialize(points)), [points]);
+  const commit = (value: string) => {
+    setDraft(value);
+    const parsed = value.split(/\n|;/).map((line) => line.split(",").map(Number)).filter((pair) => pair.length === 2 && pair.every(Number.isFinite)) as Array<[number, number]>;
+    if (parsed.length >= 3) onChange(parsed);
+  };
+  const preset = (kind: "rectangle" | "ellipse" | "star") => {
+    const next: Array<[number, number]> = kind === "rectangle"
+      ? [[-1.5, -1], [1.5, -1], [1.5, 1], [-1.5, 1]]
+      : kind === "ellipse"
+        ? Array.from({ length: 32 }, (_, index) => { const angle = index / 32 * Math.PI * 2; return [Math.cos(angle) * 1.5, Math.sin(angle)] as [number, number]; })
+        : Array.from({ length: 10 }, (_, index) => { const angle = index / 10 * Math.PI * 2 - Math.PI / 2; const radius = index % 2 ? 0.65 : 1.5; return [Math.cos(angle) * radius, Math.sin(angle) * radius] as [number, number]; });
+    setDraft(serialize(next));
+    onChange(next);
+  };
+  return <div className="shape-path-editor">
+    <div className="text-decoration-title">パス <small>{points.length} points</small></div>
+    <div className="shape-presets"><button onClick={() => preset("rectangle")}>矩形</button><button onClick={() => preset("ellipse")}>楕円</button><button onClick={() => preset("star")}>星</button></div>
+    <textarea aria-label="シェイプパス" value={draft} onChange={(event) => commit(event.target.value)} spellCheck={false} />
+    <small>1行に X, Y。3点以上で閉じたパスになります。</small>
+  </div>;
 }
 
 function NumberField({ label, value, suffix = "", onChange }: { label: string; value: number; suffix?: string; onChange: (value: number) => void }) {
@@ -25,16 +81,75 @@ function TextureField({ label, assets, value, onChange }: { label: string; asset
   return <label className="select-field"><span>{label}</span><select value={value ?? ""} onChange={(event) => onChange(event.target.value || undefined)}><option value="">なし</option>{assets.filter((asset) => asset.kind === "image").map((asset) => <option value={asset.id} key={asset.id}>{asset.name}</option>)}</select></label>;
 }
 
+function sceneKeyframeProperties(scene: SceneSettings) {
+  const properties: Array<{ property: string; label: string; value: number }> = [
+    ...([0, 1, 2] as const).map((axis) => ({ property: `camera.position.${axis}`, label: `カメラ位置 ${["X", "Y", "Z"][axis]}`, value: scene.camera.position[axis] })),
+    ...([0, 1, 2] as const).map((axis) => ({ property: `camera.target.${axis}`, label: `注視点 ${["X", "Y", "Z"][axis]}`, value: scene.camera.target[axis] })),
+    { property: "camera.fov", label: "カメラ画角", value: scene.camera.fov },
+    { property: "camera.zoom", label: "カメラズーム", value: scene.camera.zoom },
+    { property: "camera.orthographicHeight", label: "平行投影の高さ", value: scene.camera.orthographicHeight },
+    { property: "renderer.exposure", label: "露出", value: scene.renderer.exposure },
+    { property: "renderer.bloomStrength", label: "Bloom 強度", value: scene.renderer.bloomStrength },
+    { property: "renderer.bloomRadius", label: "Bloom 半径", value: scene.renderer.bloomRadius },
+    { property: "renderer.bloomThreshold", label: "Bloom しきい値", value: scene.renderer.bloomThreshold },
+    { property: "background.environmentIntensity", label: "環境強度", value: scene.background.environmentIntensity },
+    { property: "background.environmentRotation", label: "環境回転", value: scene.background.environmentRotation },
+    { property: "background.backgroundBlurriness", label: "背景ぼかし", value: scene.background.backgroundBlurriness },
+    { property: "background.fogNear", label: "Fog Near", value: scene.background.fogNear },
+    { property: "background.fogFar", label: "Fog Far", value: scene.background.fogFar },
+  ];
+  for (const light of scene.lights) {
+    const prefix = `${light.kind} ${light.id.slice(0, 6)}`;
+    properties.push({ property: `light:${light.id}:intensity`, label: `${prefix} · 強度`, value: light.intensity });
+    for (const axis of [0, 1, 2] as const) properties.push({ property: `light:${light.id}:position:${axis}`, label: `${prefix} · 位置 ${["X", "Y", "Z"][axis]}`, value: light.position[axis] });
+    if (light.target) for (const axis of [0, 1, 2] as const) properties.push({ property: `light:${light.id}:target:${axis}`, label: `${prefix} · 注視点 ${["X", "Y", "Z"][axis]}`, value: light.target[axis] });
+    for (const [field, label, fallback] of [["distance", "距離", 0], ["decay", "減衰", 2], ["angle", "角度", Math.PI / 3], ["penumbra", "半影", 0], ["width", "幅", 4], ["height", "高さ", 4]] as const) {
+      if (light[field] !== undefined) properties.push({ property: `light:${light.id}:${field}`, label: `${prefix} · ${label}`, value: light[field] ?? fallback });
+    }
+  }
+  return properties;
+}
+
+function SceneKeyframeEditor({ scene, currentTime, fps }: { scene: SceneSettings; currentTime: number; fps: number }) {
+  const { controller } = useEditor();
+  const properties = sceneKeyframeProperties(scene);
+  const [property, setProperty] = useState("camera.position.0");
+  const selected = properties.find((item) => item.property === property) ?? properties[0];
+  const labels = new Map(properties.map((item) => [item.property, item.label]));
+  const keys = scene.keyframes ?? [];
+  return <details className="scene-keyframes">
+    <summary><span>シーンアニメーション</span><small>{keys.length} KEYS</small></summary>
+    <div className="scene-keyframe-body">
+      <div className="keyframe-add-row"><select aria-label="シーンキーフレームのプロパティ" value={selected.property} onChange={(event) => setProperty(event.target.value)}>{properties.map((item) => <option key={item.property} value={item.property}>{item.label}</option>)}</select><Button size="sm" onClick={() => controller.addSceneKeyframe(selected.property, selected.value)}><Plus /> 現在値</Button></div>
+      <small>{currentTime.toFixed(3)}s（{Math.round(currentTime * fps)}f）に記録</small>
+      {keys.length === 0 && <div className="effect-empty">カメラ・ライト・環境を時間変化させます</div>}
+      <div className="scene-keyframe-list">{keys.map((keyframe) => <div className="scene-keyframe-row" key={keyframe.id}>
+        <strong title={keyframe.property}>{labels.get(keyframe.property) ?? keyframe.property}</strong>
+        <NumberField label="時刻" value={keyframe.time} suffix="s" onChange={(time) => controller.updateSceneKeyframe(keyframe.id, { time: Math.max(0, time) })} />
+        <NumberField label="値" value={keyframe.value} onChange={(value) => controller.updateSceneKeyframe(keyframe.id, { value })} />
+        <label className="select-field"><span>補間</span><select value={keyframe.interpolation} onChange={(event) => controller.updateSceneKeyframe(keyframe.id, { interpolation: event.target.value as typeof keyframe.interpolation })}><option value="step">Step</option><option value="linear">Linear</option><option value="smooth">Smooth</option><option value="bezier">Bezier</option></select></label>
+        {keyframe.interpolation === "bezier" && <BezierEditor easing={keyframe.easing} onChange={(easing) => controller.updateSceneKeyframe(keyframe.id, { easing })} />}
+        <Button variant="ghost" size="icon" aria-label="シーンキーフレームを削除" onClick={() => controller.removeSceneKeyframe(keyframe.id)}><Trash2 /></Button>
+      </div>)}</div>
+    </div>
+  </details>;
+}
+
 export function InspectorPanel() {
   const { state, controller } = useEditor();
   const [audioOpen, setAudioOpen] = useState(true);
   const [tab, setTab] = useState<"inspector" | "metadata">("inspector");
   const [keyframeProperty, setKeyframeProperty] = useState<KeyframeProperty>("positionX");
   const selected = state.clips.find((clip) => clip.id === state.selectedClipId);
+  const animatedProperties = selected ? keyframeProperties(selected) : BASE_KEYFRAME_PROPERTIES;
   const background = state.backgroundSelected ? state.background : null;
   const asset = state.assets.find((item) => item.id === selected?.assetId) ?? state.assets.find((item) => item.id === state.selectedAssetId);
   return (
-    <section className="inspector-panel panel">
+    <section className="inspector-panel panel" onContextMenu={(event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "inspector", time: state.currentTime, timelineY: selected?.y ?? 32, positionX: selected?.positionX ?? 0, positionY: selected?.positionY ?? 0 });
+    }}>
       <div className="inspector-tabs"><button className={tab === "inspector" ? "active" : ""} onClick={() => setTab("inspector")}><SlidersHorizontal /> インスペクタ</button><button className={tab === "metadata" ? "active" : ""} onClick={() => setTab("metadata")}>メタデータ</button></div>
       <div className="selected-clip">
         <div><strong>{selected?.name ?? background?.name ?? asset?.name ?? "項目未選択"}</strong><small>{selected ? `${selected.duration.toFixed(1)}秒 · ${selected.kind.toUpperCase()}` : background ? "SCENE · 常時表示" : asset ? `${asset.kind.toUpperCase()} · ${formatBytes(asset.size)}` : "メディアまたはタイムラインから選択"}</small></div>
@@ -85,6 +200,7 @@ export function InspectorPanel() {
             {light.kind === "rectArea" && <div className="field-grid"><NumberField label="幅" value={light.width ?? 4} onChange={(width) => controller.updateSceneSettings({ lights: background.scene.lights.map((item) => item.id === light.id ? { ...item, width } : item) })} /><NumberField label="高さ" value={light.height ?? 4} onChange={(height) => controller.updateSceneSettings({ lights: background.scene.lights.map((item) => item.id === light.id ? { ...item, height } : item) })} /></div>}
             {(light.kind === "directional" || light.kind === "point" || light.kind === "spot") && <label className="checkbox-field"><input type="checkbox" checked={light.castShadow ?? false} onChange={(event) => controller.updateSceneSettings({ lights: background.scene.lights.map((item) => item.id === light.id ? { ...item, castShadow: event.target.checked } : item) })} /> 影を落とす</label>}
           </div>)}
+          <SceneKeyframeEditor scene={background.scene} currentTime={state.currentTime} fps={state.fps} />
         </div>
       </div> : !selected ? <div className="metadata-empty">編集するタイムラインクリップを選択してください</div> : selected.kind === "group" ? <div className="inspector-section group-inspector">
         <div className="section-title"><span>タイムライングループ</span><small>{state.clips.filter((clip) => clip.groupId === selected.id).length} ITEMS</small></div>
@@ -124,6 +240,7 @@ export function InspectorPanel() {
         <div className="section-title"><span>3Dオブジェクト</span><small>THREE.PBR</small></div>
         <div className="section-body">
           <label className="select-field"><span>形状</span><select aria-label="ジオメトリ種類" value={selected.geometry?.kind ?? "box"} onChange={(event) => controller.updateClip(selected.id, { geometry: defaultGeometry(selected.geometry?.id ?? `${selected.id}:geometry`, event.target.value as GeometryKind) })}>{GEOMETRY_OPTIONS.map((kind) => <option value={kind} key={kind}>{kind}</option>)}</select></label>
+          {selected.geometry?.kind === "shape" && <ShapePathEditor points={selected.geometry.points2D ?? []} onChange={(points2D) => controller.updateClip(selected.id, { geometry: { ...selected.geometry!, points2D } })} />}
           <label className="select-field"><span>描画方式</span><select value={selected.primitive ?? "mesh"} onChange={(event) => controller.updateClip(selected.id, { primitive: event.target.value as NonNullable<typeof selected.primitive> })}><option value="mesh">Mesh</option><option value="points">Points</option><option value="line">LineSegments</option><option value="sprite">Sprite</option></select></label>
           <label className="select-field"><span>材質</span><select aria-label="マテリアル種類" value={selected.material?.kind ?? "standard"} onChange={(event) => controller.updateClip(selected.id, { material: { ...selected.material, kind: event.target.value as MaterialKind } })}>{["basic", "lambert", "phong", "standard", "physical", "toon", "normal"].map((kind) => <option value={kind} key={kind}>{kind}</option>)}</select></label>
           <label className="color-field"><span>色</span><input aria-label="オブジェクト色" type="color" value={`#${(selected.material?.color ?? selected.textColor ?? 0x3d73a0).toString(16).padStart(6, "0")}`} onChange={(event) => controller.updateClip(selected.id, { material: { ...selected.material, color: Number.parseInt(event.target.value.slice(1), 16) } })} /></label>
@@ -164,18 +281,20 @@ export function InspectorPanel() {
         <NumberField label="レイヤー" value={selected.layer ?? 0} onChange={(layer) => controller.updateClip(selected.id, { layer: Math.max(0, Math.min(31, Math.floor(layer))) })} />
       </InspectorSection>}
       {selected.kind !== "audio" && <InspectorSection title="キーフレーム" onReset={() => controller.updateClip(selected.id, { keyframes: [] })}>
-        <label className="select-field"><span>プロパティ</span><select value={keyframeProperty} onChange={(event) => setKeyframeProperty(event.target.value as KeyframeProperty)}>{KEYFRAME_PROPERTIES.map(([property, label]) => <option value={property} key={property}>{label}</option>)}</select></label>
-        <Button size="sm" onClick={() => controller.addKeyframe(selected.id, keyframeProperty, Number((selected as unknown as Record<string, unknown>)[keyframeProperty] ?? KEYFRAME_DEFAULTS[keyframeProperty]), "smooth")}>現在位置にキーを追加</Button>
+        <label className="select-field"><span>プロパティ</span><select value={keyframeProperty} onChange={(event) => setKeyframeProperty(event.target.value as KeyframeProperty)}>{animatedProperties.map(([property, label]) => <option value={property} key={property}>{label}</option>)}</select></label>
+        <Button size="sm" onClick={() => controller.addKeyframe(selected.id, keyframeProperty, keyframeValue(selected, keyframeProperty), "smooth")}>現在位置にキーを追加</Button>
         <div className="keyframe-list">{(selected.keyframes ?? []).map((keyframe) => <div className="effect-item" key={keyframe.id}>
-          <div className="effect-header"><strong>{KEYFRAME_PROPERTIES.find(([property]) => property === keyframe.property)?.[1] ?? keyframe.property}</strong><small>{keyframe.time.toFixed(2)}s</small><Button variant="ghost" size="icon" onClick={() => controller.removeKeyframe(selected.id, keyframe.id)}><Trash2 /></Button></div>
+          <div className="effect-header"><strong>{animatedProperties.find(([property]) => property === keyframe.property)?.[1] ?? keyframe.property}</strong><small>{keyframe.time.toFixed(2)}s</small><Button variant="ghost" size="icon" onClick={() => controller.removeKeyframe(selected.id, keyframe.id)}><Trash2 /></Button></div>
           <div className="field-grid"><NumberField label="時刻" value={keyframe.time} suffix="s" onChange={(time) => controller.updateKeyframe(selected.id, keyframe.id, { time: Math.max(0, Math.min(selected.duration, time)) })} /><NumberField label="値" value={keyframe.value} onChange={(value) => controller.updateKeyframe(selected.id, keyframe.id, { value })} /></div>
-          <label className="select-field"><span>補間</span><select value={keyframe.interpolation} onChange={(event) => controller.updateKeyframe(selected.id, keyframe.id, { interpolation: event.target.value as typeof keyframe.interpolation })}><option value="step">Step</option><option value="linear">Linear</option><option value="smooth">Smooth</option></select></label>
+          <label className="select-field"><span>補間</span><select value={keyframe.interpolation} onChange={(event) => controller.updateKeyframe(selected.id, keyframe.id, { interpolation: event.target.value as typeof keyframe.interpolation, ...(event.target.value === "bezier" && !keyframe.easing ? { easing: { x1: 0.33, y1: 0, x2: 0.67, y2: 1 } } : {}) })}><option value="step">Step</option><option value="linear">Linear</option><option value="smooth">Smooth</option><option value="bezier">Bezier</option></select></label>
+          {keyframe.interpolation === "bezier" && <BezierEditor easing={keyframe.easing} onChange={(easing) => controller.updateKeyframe(selected.id, keyframe.id, { easing })} />}
         </div>)}</div>
       </InspectorSection>}
       {selected.kind !== "title" && selected.kind !== "object" && <InspectorSection title="クロップ" onReset={() => controller.updateClip(selected.id, { cropLeft: 0, cropRight: 0, cropTop: 0, cropBottom: 0 })}>
         <div className="field-grid crop-grid"><NumberField label="左" value={selected.cropLeft ?? 0} onChange={(value) => controller.updateClip(selected.id, { cropLeft: value })} /><NumberField label="右" value={selected.cropRight ?? 0} onChange={(value) => controller.updateClip(selected.id, { cropRight: value })} /><NumberField label="上" value={selected.cropTop ?? 0} onChange={(value) => controller.updateClip(selected.id, { cropTop: value })} /><NumberField label="下" value={selected.cropBottom ?? 0} onChange={(value) => controller.updateClip(selected.id, { cropBottom: value })} /></div>
       </InspectorSection>}
       {selected.kind !== "audio" && !selected.particleSystem && <EffectStack clipId={selected.id} effects={selected.effects ?? []} />}
+      {selected.kind === "video" && <MaskStack clipId={selected.id} masks={selected.masks ?? []} />}
       {selected.kind !== "title" && selected.kind !== "object" && <div className="inspector-section">
         <div className="section-title"><button className="section-toggle" onClick={() => setAudioOpen(!audioOpen)}>{audioOpen ? <ChevronDown /> : <ChevronRight />}<span>オーディオ</span></button><Button variant="ghost" size="icon" onClick={() => controller.updateClip(selected.id, { volume: 0, pan: 0 })}><RotateCcw /></Button></div>
         {audioOpen && <div className="section-body"><label className="range-field"><span>音量</span><Slider value={selected.volume ?? 0} min={-60} max={12} onChange={(event) => controller.updateClip(selected.id, { volume: Number(event.target.value) })} /><output>{(selected.volume ?? 0).toFixed(1)} dB</output></label><label className="range-field"><span>パン</span><Slider value={selected.pan ?? 0} min={-100} max={100} onChange={(event) => controller.updateClip(selected.id, { pan: Number(event.target.value) })} /><output>{selected.pan ? `${selected.pan > 0 ? "R" : "L"} ${Math.abs(selected.pan)}` : "中央"}</output></label></div>}
@@ -186,6 +305,57 @@ export function InspectorPanel() {
       </>}
     </section>
   );
+}
+
+function BezierEditor({ easing = { x1: 0.33, y1: 0, x2: 0.67, y2: 1 }, onChange }: { easing?: import("../core/interface").ClipKeyframe["easing"]; onChange: (value: { x1: number; y1: number; x2: number; y2: number }) => void }) {
+  const update = (key: keyof typeof easing, value: number) => onChange({ ...easing, [key]: key === "x1" || key === "x2" ? Math.max(0, Math.min(1, value)) : Math.max(-3, Math.min(3, value)) });
+  const beginHandleDrag = (index: 1 | 2, event: React.PointerEvent<SVGCircleElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
+    if (!rect) return;
+    const move = (pointer: PointerEvent) => {
+      const svgX = (pointer.clientX - rect.left) / Math.max(1, rect.width) * 64;
+      const svgY = (pointer.clientY - rect.top) / Math.max(1, rect.height) * 60;
+      const x = Math.max(0, Math.min(1, (svgX - 4) / 56));
+      const y = Math.max(-3, Math.min(3, (56 - svgY) / 52));
+      onChange(index === 1 ? { ...easing, x1: x, y1: y } : { ...easing, x2: x, y2: y });
+    };
+    const end = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end, { once: true });
+    window.addEventListener("pointercancel", end, { once: true });
+  };
+  const path = `M 4 56 C ${4 + easing.x1 * 56} ${56 - easing.y1 * 52}, ${4 + easing.x2 * 56} ${56 - easing.y2 * 52}, 60 4`;
+  return <div className="bezier-editor">
+    <svg viewBox="0 0 64 60" aria-label="Bezierカーブ"><path className="bezier-grid" d="M4 4V56H60M4 30H60M32 4V56" /><path className="bezier-handles" d={`M4 56L${4 + easing.x1 * 56} ${56 - easing.y1 * 52}M60 4L${4 + easing.x2 * 56} ${56 - easing.y2 * 52}`} /><path className="bezier-curve" d={path} /><circle aria-label="Bezier入力ハンドル" cx={4 + easing.x1 * 56} cy={56 - easing.y1 * 52} r="3" onPointerDown={(event) => beginHandleDrag(1, event)} /><circle aria-label="Bezier出力ハンドル" cx={4 + easing.x2 * 56} cy={56 - easing.y2 * 52} r="3" onPointerDown={(event) => beginHandleDrag(2, event)} /></svg>
+    <div><NumberField label="In X" value={easing.x1} onChange={(value) => update("x1", value)} /><NumberField label="In Y" value={easing.y1} onChange={(value) => update("y1", value)} /><NumberField label="Out X" value={easing.x2} onChange={(value) => update("x2", value)} /><NumberField label="Out Y" value={easing.y2} onChange={(value) => update("y2", value)} /></div>
+    <div className="bezier-presets"><button onClick={() => onChange({ x1: 0.42, y1: 0, x2: 1, y2: 1 })}>Ease In</button><button onClick={() => onChange({ x1: 0, y1: 0, x2: 0.58, y2: 1 })}>Ease Out</button><button onClick={() => onChange({ x1: 0.42, y1: 0, x2: 0.58, y2: 1 })}>Ease</button></div>
+  </div>;
+}
+
+function MaskStack({ clipId, masks }: { clipId: string; masks: ClipMask[] }) {
+  const { controller } = useEditor();
+  return <div className="inspector-section mask-stack">
+    <div className="section-title"><span>マスク</span><small>{masks.length}</small><Button size="sm" variant="ghost" onClick={() => controller.addMask(clipId, "rectangle")}><Plus />追加</Button></div>
+    <div className="section-body">
+      {masks.length === 0 && <div className="effect-empty">映像・画像の表示範囲を制限します</div>}
+      {masks.map((mask) => <div className={`mask-card ${mask.enabled ? "" : "disabled"}`} key={mask.id}>
+        <div className="mask-card-header"><button className="effect-enable" onClick={() => controller.updateMask(clipId, mask.id, { enabled: !mask.enabled })}>{mask.enabled ? <Eye /> : <EyeOff />}</button><input aria-label="マスク名" value={mask.name} onChange={(event) => controller.updateMask(clipId, mask.id, { name: event.target.value })} /><button aria-label="マスクを削除" onClick={() => controller.removeMask(clipId, mask.id)}><Trash2 /></button></div>
+        {mask.enabled && <>
+          <div className="field-grid"><label className="select-field"><span>形</span><select value={mask.shape} onChange={(event) => controller.updateMask(clipId, mask.id, { shape: event.target.value as ClipMask["shape"] })}><option value="rectangle">矩形</option><option value="ellipse">楕円</option></select></label><label className="select-field"><span>合成</span><select value={mask.mode} onChange={(event) => controller.updateMask(clipId, mask.id, { mode: event.target.value as ClipMask["mode"] })}><option value="add">加算</option><option value="subtract">減算</option><option value="intersect">交差</option></select></label></div>
+          <div className="field-grid"><NumberField label="X" value={mask.x} suffix="%" onChange={(x) => controller.updateMask(clipId, mask.id, { x })} /><NumberField label="Y" value={mask.y} suffix="%" onChange={(y) => controller.updateMask(clipId, mask.id, { y })} /></div>
+          <div className="field-grid"><NumberField label="幅" value={mask.width} suffix="%" onChange={(width) => controller.updateMask(clipId, mask.id, { width: Math.max(0.1, width) })} /><NumberField label="高さ" value={mask.height} suffix="%" onChange={(height) => controller.updateMask(clipId, mask.id, { height: Math.max(0.1, height) })} /></div>
+          <div className="field-grid"><NumberField label="ぼかし" value={mask.feather} suffix="%" onChange={(feather) => controller.updateMask(clipId, mask.id, { feather: Math.max(0, feather) })} /><NumberField label="不透明度" value={mask.opacity} suffix="%" onChange={(opacity) => controller.updateMask(clipId, mask.id, { opacity: Math.max(0, Math.min(100, opacity)) })} /></div>
+          <label className="checkbox-field"><input type="checkbox" checked={mask.inverted} onChange={(event) => controller.updateMask(clipId, mask.id, { inverted: event.target.checked })} /> 反転</label>
+        </>}
+      </div>)}
+    </div>
+  </div>;
 }
 
 function EffectStack({ clipId, effects }: { clipId: string; effects: ClipEffect[] }) {

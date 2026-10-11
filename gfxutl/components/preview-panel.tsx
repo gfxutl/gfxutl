@@ -1,4 +1,4 @@
-import { ChevronsLeft, ChevronsRight, Expand, ExternalLink, Pause, Play, SkipBack, SkipForward } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, Expand, ExternalLink, Pause, Play, Repeat2, SkipBack, SkipForward } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useEditor } from "../core/interface";
 import type { TimelineClip } from "../core/interface";
@@ -234,6 +234,7 @@ export function PreviewPanel() {
           <Tooltip label="末尾へ"><Button variant="ghost" size="icon" onClick={() => controller.setTime(state.duration)}><SkipForward /></Button></Tooltip>
         </div>
         <div className="transport-right">
+          <Tooltip label={`出力範囲をループ ${state.loopPlayback ? "ON" : "OFF"}`}><Button variant="ghost" size="icon" className={state.loopPlayback ? "active-soft" : ""} aria-pressed={state.loopPlayback} onClick={controller.toggleLoopPlayback}><Repeat2 /></Button></Tooltip>
           <Tooltip label="別ウィンドウで表示"><Button variant="ghost" size="icon" aria-label="プレビューを別ウィンドウで表示" onClick={popOutPreview} disabled={poppedOut}><ExternalLink /></Button></Tooltip>
           <Tooltip label="フルスクリーン"><Button variant="ghost" size="icon" onClick={() => panelRef.current?.requestFullscreen()}><Expand /></Button></Tooltip>
         </div>
@@ -263,11 +264,26 @@ function animatedClip(clip: TimelineClip, timelineTime: number): TimelineClip {
     if (left !== right && left.interpolation !== "step") {
       let alpha = Math.max(0, Math.min(1, (localTime - left.time) / Math.max(0.000001, right.time - left.time)));
       if (left.interpolation === "smooth") alpha = alpha * alpha * (3 - 2 * alpha);
+      else if (left.interpolation === "bezier") alpha = previewBezierAt(left.easing, alpha);
       value = left.value + (right.value - left.value) * alpha;
     }
     (result as unknown as Record<string, unknown>)[property] = value;
   }
   return result;
+}
+
+function previewBezierAt(easing: import("../core/interface").ClipKeyframe["easing"], x: number) {
+  const { x1, y1, x2, y2 } = easing ?? { x1: 0.33, y1: 0, x2: 0.67, y2: 1 };
+  let t = x;
+  for (let index = 0; index < 6; index++) {
+    const inverse = 1 - t;
+    const estimate = 3 * inverse * inverse * t * x1 + 3 * inverse * t * t * x2 + t * t * t;
+    const derivative = 3 * inverse * inverse * x1 + 6 * inverse * t * (x2 - x1) + 3 * t * t * (1 - x2);
+    if (Math.abs(derivative) < 0.000001) break;
+    t = Math.max(0, Math.min(1, t - (estimate - x) / derivative));
+  }
+  const inverse = 1 - t;
+  return 3 * inverse * inverse * t * y1 + 3 * inverse * t * t * y2 + t * t * t;
 }
 
 function previewBounds(clip: TimelineClip, asset?: MediaAsset): PreviewObjectBounds {

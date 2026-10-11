@@ -450,7 +450,7 @@ test("media and graphics worker becomes ready", async ({ page }) => {
   await expect(page.locator(".engine-light")).toHaveClass(/(webgpu|webgl2)/, { timeout: 20_000 });
   const gpu = page.locator(".gpu-context");
   await expect(gpu).toContainText(/WebGPU|WebGL/);
-  await expect(page.locator(".status-center > span")).toHaveCount(1);
+  await expect(page.locator(".status-center > span")).toHaveCount(2);
   await expect(page.locator(".status-bar")).not.toContainText("MediaBunny");
   await expect(page.locator(".status-bar")).not.toContainText("File System");
   const gpuBox = await gpu.boundingBox();

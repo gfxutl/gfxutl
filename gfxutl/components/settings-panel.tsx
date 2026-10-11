@@ -1,4 +1,4 @@
-import { AudioLines, Database, Settings2, Trash2 } from "lucide-react";
+import { AudioLines, Database, FileDown, FilePlus2, FolderOpen, Save, Settings2, Trash2 } from "lucide-react";
 import { useEditor } from "../core/interface";
 import { Button } from "./ui/button";
 
@@ -12,6 +12,17 @@ export function SettingsPanel() {
 
   return <div className="settings-panel">
     <div className="settings-heading"><Settings2 /><div><strong>エディター設定</strong><small>プレビューとオーディオの動作を設定します</small></div></div>
+
+    <section className="settings-group project-settings" aria-labelledby="project-settings">
+      <div className="settings-group-title" id="project-settings"><FileDown /> プロジェクト</div>
+      <label className="settings-field"><span>名前</span><input aria-label="プロジェクト名" value={state.projectName} onChange={(event) => controller.renameProject(event.target.value)} /></label>
+      <div className="project-actions">
+        <Button size="sm" variant="ghost" onClick={controller.newProject}><FilePlus2 />新規</Button>
+        <Button size="sm" variant="ghost" onClick={() => void controller.openProject()}><FolderOpen />開く</Button>
+        <Button size="sm" onClick={() => void controller.saveProject()}><Save />保存</Button>
+      </div>
+      <button className="project-save-as" type="button" onClick={() => void controller.saveProjectAs()}>別名で保存</button>
+    </section>
 
     <section className="settings-group" aria-labelledby="ram-preview-settings">
       <div className="settings-group-title" id="ram-preview-settings"><Database /> RAMプレビュー</div>

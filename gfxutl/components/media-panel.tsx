@@ -239,7 +239,13 @@ export function MediaPanel() {
   const directoryTrail = root && currentDirectory ? findNodeTrail(root, currentDirectory.id) : [];
   const gridChildren = (currentDirectory?.children ?? []).filter((node) => !query || node.name.toLowerCase().includes(query.toLowerCase()));
 
-  return <section className="media-panel panel">
+  return <section className="media-panel panel" onContextMenu={(event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const assetId = (event.target as HTMLElement).closest<HTMLElement>("[data-asset-id]")?.dataset.assetId;
+    if (assetId) controller.selectAsset(assetId);
+    controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "media", time: state.currentTime, timelineY: 32, positionX: 0, positionY: 0 });
+  }}>
     <div className="panel-tabs">
       <button className={state.leftPanelTab === "media" ? "active" : ""} onClick={() => controller.setLeftPanelTab("media")}>メディア</button>
       <button className={state.leftPanelTab === "export" ? "active" : ""} onClick={() => controller.setLeftPanelTab("export")}>出力</button>
@@ -293,7 +299,7 @@ function ExplorerGridCard({ node, asset, selectedAssetId, playing, onOpenDirecto
   const unavailable = asset?.fileStatus === "permission-required" || asset?.fileStatus === "missing";
   const status = asset?.fileStatus === "loading" ? "読込中" : unavailable ? "再接続" : asset?.width ? `${asset.width} × ${asset.height}` : extensionLabel(node.name);
   return <div className="explorer-grid-item" role="listitem">
-    <button className={`explorer-grid-card media-card ${asset?.id === selectedAssetId ? "selected" : ""} ${supported ? "" : "unsupported"}`} draggable={supported} disabled={!supported} aria-label={node.name} title={supported ? node.path : "未対応のファイル形式"} onClick={() => { if (asset?.fileStatus === "ready") onSelect(asset.id); else void onImport(node); }} onDragStart={(event) => {
+      <button data-asset-id={asset?.id} className={`explorer-grid-card media-card ${asset?.id === selectedAssetId ? "selected" : ""} ${supported ? "" : "unsupported"}`} draggable={supported} disabled={!supported} aria-label={node.name} title={supported ? node.path : "未対応のファイル形式"} onClick={() => { if (asset?.fileStatus === "ready") onSelect(asset.id); else void onImport(node); }} onDragStart={(event) => {
       if (asset?.fileStatus === "ready") { setAssetDragData(event.dataTransfer, asset.id); return; }
       const handle = node.handle?.kind === "file" ? node.handle : undefined;
       onStage(node.path, node.file, handle);
@@ -312,7 +318,7 @@ function GridAssetCard({ asset, selected, playing, onSelect, onRestore }: {
   const unavailable = asset.fileStatus === "permission-required" || asset.fileStatus === "missing";
   const status = asset.fileStatus === "loading" ? "読込中" : unavailable ? "再接続" : asset.width ? `${asset.width} × ${asset.height}` : extensionLabel(asset.name);
   return <div className="explorer-grid-item" role="listitem">
-    <button className={`explorer-grid-card media-card ${selected ? "selected" : ""} ${unavailable ? "media-unavailable" : ""}`} draggable={asset.fileStatus === "ready" || !asset.handle} aria-label={asset.name} onClick={() => { onSelect(asset.id); if (unavailable) void onRestore(asset.id); }} onDragStart={(event) => setAssetDragData(event.dataTransfer, asset.id)}>
+    <button data-asset-id={asset.id} className={`explorer-grid-card media-card ${selected ? "selected" : ""} ${unavailable ? "media-unavailable" : ""}`} draggable={asset.fileStatus === "ready" || !asset.handle} aria-label={asset.name} onClick={() => { onSelect(asset.id); if (unavailable) void onRestore(asset.id); }} onDragStart={(event) => setAssetDragData(event.dataTransfer, asset.id)}>
       <span className="grid-card-visual"><MediaThumbnail asset={asset} playing={playing} /></span>
       <span className="grid-card-name">{asset.name}</span>
       <small className={asset.fileStatus && asset.fileStatus !== "ready" ? "media-file-status" : ""}>{status}</small>
@@ -339,7 +345,7 @@ function ExplorerRow({ node, depth, forceExpanded, assetsByPath, selectedAssetId
   }
   const asset = assetsByPath.get(node.path);
   const supported = isSupported(node.name);
-  return <button role="treeitem" className={`media-tree-row file-row media-card ${asset?.id === selectedAssetId ? "selected" : ""} ${supported ? "" : "unsupported"}`} style={{ paddingLeft: 25 + depth * 15 }} draggable={supported} aria-label={node.name} title={supported ? node.path : "未対応のファイル形式"} onClick={() => { if (asset?.fileStatus === "ready") onSelect(asset.id); else void onImport(node); }} onDragStart={(event) => {
+  return <button data-asset-id={asset?.id} role="treeitem" className={`media-tree-row file-row media-card ${asset?.id === selectedAssetId ? "selected" : ""} ${supported ? "" : "unsupported"}`} style={{ paddingLeft: 25 + depth * 15 }} draggable={supported} aria-label={node.name} title={supported ? node.path : "未対応のファイル形式"} onClick={() => { if (asset?.fileStatus === "ready") onSelect(asset.id); else void onImport(node); }} onDragStart={(event) => {
     if (asset?.fileStatus === "ready") { setAssetDragData(event.dataTransfer, asset.id); return; }
     const handle = node.handle?.kind === "file" ? node.handle : undefined;
     onStage(node.path, node.file, handle);
@@ -351,7 +357,7 @@ function ExplorerRow({ node, depth, forceExpanded, assetsByPath, selectedAssetId
 
 function AssetRow({ asset, depth, selected, onSelect, onRestore }: { asset: MediaAsset; depth: number; selected: boolean; onSelect: (id: string | null) => void; onRestore: (id?: string) => Promise<void> }) {
   const unavailable = asset.fileStatus === "permission-required" || asset.fileStatus === "missing";
-  return <button className={`media-tree-row file-row media-card ${selected ? "selected" : ""}`} style={{ paddingLeft: 25 + depth * 15 }} draggable={asset.fileStatus === "ready" || !asset.handle} onClick={() => { onSelect(asset.id); if (unavailable) void onRestore(asset.id); }} onDragStart={(event) => setAssetDragData(event.dataTransfer, asset.id)}>
+  return <button data-asset-id={asset.id} className={`media-tree-row file-row media-card ${selected ? "selected" : ""}`} style={{ paddingLeft: 25 + depth * 15 }} draggable={asset.fileStatus === "ready" || !asset.handle} onClick={() => { onSelect(asset.id); if (unavailable) void onRestore(asset.id); }} onDragStart={(event) => setAssetDragData(event.dataTransfer, asset.id)}>
     <KindIcon kind={asset.kind} /><span>{asset.name}</span><small className={asset.fileStatus && asset.fileStatus !== "ready" ? "media-file-status" : ""}>{asset.fileStatus === "loading" ? "読込中" : unavailable ? "再接続" : asset.width ? `${asset.width} × ${asset.height}` : extensionLabel(asset.name)}</small>
   </button>;
 }

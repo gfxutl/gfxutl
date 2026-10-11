@@ -162,6 +162,14 @@ export class EngineClient {
     });
   }
 
+  exportStill(width: number, height: number, time: number, clips: RenderClip[], sceneSettings: SceneSettings) {
+    const requestId = crypto.randomUUID();
+    return new Promise<ExportResult>((resolve, reject) => {
+      this.pendingExports.set(requestId, { resolve, reject });
+      this.post({ type: "export-still", requestId, width, height, time, clips, sceneSettings });
+    });
+  }
+
   configurePreviewCache(enabled: boolean, maxBytes: number) { this.post({ type: "preview-cache-settings", enabled, maxBytes }); }
   clearCache() { this.post({ type: "clear-cache" }); }
   upsertGeometry(object: SceneObjectSpec) { this.post({ type: "geometry-upsert", object }); }

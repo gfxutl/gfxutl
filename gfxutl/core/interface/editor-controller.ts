@@ -1,8 +1,9 @@
-import type { ClipEffect, ClipEffectKind, ClipKeyframe, ContextMenuState, EditorLayout, EditorSettings, EditorState, EngineResponse, ExportSettings, FontFaceInfo, GeometryKind, KeyframeProperty, MediaAsset, RenderClip, SceneObjectSpec, SceneSettings, TimelineClip } from "./types";
+import type { ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ContextMenuState, EditorLayout, EditorSettings, EditorState, EngineResponse, ExportSettings, FontFaceInfo, GeometryKind, KeyframeProperty, MediaAsset, RenderClip, SceneKeyframe, SceneObjectSpec, SceneSettings, TimelineClip } from "./types";
 import { EngineClient } from "./engine-client";
 import { VirtualTimeline } from "./virtual-timeline";
 import { assignTimelineGroups, expandGroupToValidBoundary, hasGroupBoundaryCrossing, MIN_GROUP_HEIGHT, placeTimelineClip, timelineGroupDescendants } from "./timeline-groups";
 import { loadHandleProjects, saveHandleProject } from "../persistence/handle-project-store";
+import { createProjectDocument, parseProjectDocument, type ProjectDocument } from "../project/project-document";
 
 type Listener = () => void;
 
@@ -48,6 +49,11 @@ function loadSettings(): EditorSettings {
 const loadedSettings = loadSettings();
 
 const initialState: EditorState = {
+  projectName: "Untitled Project",
+  canUndo: false,
+  canRedo: false,
+  markers: [],
+  loopPlayback: false,
   fps: 30,
   duration: 32,
   currentTime: 0,
@@ -108,6 +114,10 @@ interface PreviewAudioVoice {
   panner?: StereoPannerNode;
 }
 
+type HistorySnapshot = Pick<EditorState, "projectName" | "fps" | "duration" | "snapEnabled" | "background" | "assets" | "clips" | "markers" | "loopPlayback" | "settings" | "exportSettings">;
+
+const HISTORY_KEYS = new Set<keyof EditorState>(["projectName", "fps", "duration", "snapEnabled", "background", "assets", "clips", "markers", "loopPlayback", "settings", "exportSettings"]);
+
 export class EditorController {
   private state = initialState;
   private listeners = new Set<Listener>();
@@ -137,6 +147,12 @@ export class EditorController {
   private audioPreviewToken = 0;
   private activeAudioSignature = "";
   private explorerFiles = new Map<string, { file?: File; handle?: FileSystemFileHandle }>();
+  private undoStack: HistorySnapshot[] = [];
+  private redoStack: HistorySnapshot[] = [];
+  private historySuspended = false;
+  private lastHistorySignature = "";
+  private lastHistoryAt = 0;
+  private projectFileHandle?: FileSystemFileHandle;
 
   constructor(worker: Worker) {
     this.engine = new EngineClient(worker, (message) => this.onEngineMessage(message));
@@ -151,9 +167,78 @@ export class EditorController {
   };
 
   private update(patch: Partial<EditorState>) {
+    this.recordHistory(patch);
     this.state = { ...this.state, ...patch };
     this.listeners.forEach((listener) => listener());
   }
+
+  private historySnapshot(state = this.state): HistorySnapshot {
+    return {
+      projectName: state.projectName,
+      fps: state.fps,
+      duration: state.duration,
+      snapEnabled: state.snapEnabled,
+      background: structuredClone(state.background),
+      assets: state.assets.map((asset) => ({ ...asset })),
+      clips: structuredClone(state.clips),
+      markers: structuredClone(state.markers),
+      loopPlayback: state.loopPlayback,
+      settings: structuredClone(state.settings),
+      exportSettings: structuredClone(state.exportSettings),
+    };
+  }
+
+  private recordHistory(patch: Partial<EditorState>) {
+    if (this.historySuspended) return;
+    const keys = Object.keys(patch).filter((key) => HISTORY_KEYS.has(key as keyof EditorState)).sort();
+    if (!keys.length) return;
+    const signature = keys.join("|");
+    const now = performance.now();
+    if (signature !== this.lastHistorySignature || now - this.lastHistoryAt > 350) {
+      this.undoStack.push(this.historySnapshot());
+      if (this.undoStack.length > 100) this.undoStack.shift();
+    }
+    this.redoStack.length = 0;
+    this.lastHistorySignature = signature;
+    this.lastHistoryAt = now;
+    patch.canUndo = true;
+    patch.canRedo = false;
+  }
+
+  private restoreHistory(snapshot: HistorySnapshot, canUndo: boolean, canRedo: boolean) {
+    this.historySuspended = true;
+    this.state = {
+      ...this.state,
+      ...snapshot,
+      canUndo,
+      canRedo,
+      selectedClipId: snapshot.clips.some((clip) => clip.id === this.state.selectedClipId) ? this.state.selectedClipId : null,
+      selectedClipIds: this.state.selectedClipIds.filter((id) => snapshot.clips.some((clip) => clip.id === id)),
+    };
+    this.historySuspended = false;
+    this.renderClipSource = null;
+    this.engine.clearCache();
+    this.schedulePersistence();
+    this.renderPreview(false);
+    if (this.state.playing) this.syncAudioPlayback(true, true);
+    this.listeners.forEach((listener) => listener());
+  }
+
+  undo = () => {
+    const snapshot = this.undoStack.pop();
+    if (!snapshot) return;
+    this.redoStack.push(this.historySnapshot());
+    this.restoreHistory(snapshot, this.undoStack.length > 0, true);
+    this.lastHistorySignature = "";
+  };
+
+  redo = () => {
+    const snapshot = this.redoStack.pop();
+    if (!snapshot) return;
+    this.undoStack.push(this.historySnapshot());
+    this.restoreHistory(snapshot, true, this.redoStack.length > 0);
+    this.lastHistorySignature = "";
+  };
 
   private invalidatePreviewCache() {
     this.previewCacheDirty = true;
@@ -167,8 +252,25 @@ export class EditorController {
   private schedulePersistence() {
     window.clearTimeout(this.persistenceTimer);
     this.persistenceTimer = window.setTimeout(() => {
-      for (const asset of this.state.assets) void saveHandleProject(asset, this.state.clips).catch(() => { /* Editing remains available if handle persistence is blocked. */ });
+      const document = this.currentProjectDocument();
+      const { assets: _assets, clips: _clips, ...project } = document;
+      for (const asset of this.state.assets) void saveHandleProject(asset, this.state.clips, project).catch(() => { /* Editing remains available if handle persistence is blocked. */ });
     }, 200);
+  }
+
+  private currentProjectDocument(): ProjectDocument {
+    return createProjectDocument({
+      name: this.state.projectName,
+      fps: this.state.fps,
+      duration: this.state.duration,
+      background: this.state.background,
+      assets: this.state.assets,
+      clips: this.state.clips,
+      markers: this.state.markers,
+      loopPlayback: this.state.loopPlayback,
+      settings: this.state.settings,
+      exportSettings: this.state.exportSettings,
+    });
   }
 
   private async restoreHandleProjects() {
@@ -177,13 +279,131 @@ export class EditorController {
       if (!records.length) return;
       const assets = records.map((record) => ({ ...record.asset, handle: record.handle, fileStatus: "loading" as const }));
       const clips = [...new Map(records.flatMap((record) => record.clips).map((clip) => [clip.id, clip])).values()];
-      this.update({ assets, clips, duration: Math.max(32, ...clips.map((clip) => clip.start + clip.duration + 2)) });
+      const project = [...records].sort((a, b) => b.savedAt - a.savedAt).find((record) => record.project)?.project;
+      this.historySuspended = true;
+      this.update({
+        assets,
+        clips,
+        markers: project?.markers ?? [],
+        loopPlayback: project?.loopPlayback ?? false,
+        projectName: project?.name ?? this.state.projectName,
+        fps: project?.fps ?? this.state.fps,
+        duration: project?.duration ?? Math.max(32, ...clips.map((clip) => clip.start + clip.duration + 2)),
+        background: project?.background ?? this.state.background,
+        settings: project?.settings ?? this.state.settings,
+        exportSettings: project?.exportSettings ?? this.state.exportSettings,
+      });
+      this.historySuspended = false;
       await Promise.allSettled(assets.map((asset) => this.restoreAssetFile(asset.id, false)));
       this.renderPreview(true);
     } catch {
       // IndexedDB or a persisted handle may be unavailable in private browsing.
+    } finally {
+      this.historySuspended = false;
     }
   }
+
+  saveProject = async () => {
+    try {
+      const project = this.currentProjectDocument();
+      const filename = `${project.name.replace(/[\\/:*?"<>|]/g, "-") || "Untitled Project"}.gfxutl`;
+      if (!this.projectFileHandle && window.showSaveFilePicker) {
+        this.projectFileHandle = await window.showSaveFilePicker({
+          suggestedName: filename,
+          types: [{ description: "GfxUtl Project", accept: { "application/json": [".gfxutl"] } }],
+        });
+      }
+      const json = JSON.stringify(project, null, 2);
+      if (this.projectFileHandle) {
+        const writable = await this.projectFileHandle.createWritable();
+        await writable.write(json);
+        await writable.close();
+      } else {
+        const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
+        const anchor = window.document.createElement("a");
+        anchor.href = url;
+        anchor.download = filename;
+        anchor.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      }
+      this.schedulePersistence();
+      this.toast(`${filename} を保存しました`);
+    } catch (error) {
+      if ((error as DOMException).name !== "AbortError") this.toast(error instanceof Error ? `保存失敗: ${error.message}` : "プロジェクトを保存できませんでした");
+    }
+  };
+
+  saveProjectAs = async () => {
+    this.projectFileHandle = undefined;
+    await this.saveProject();
+  };
+
+  openProject = async () => {
+    try {
+      let file: File;
+      if (window.showOpenFilePicker) {
+        const handles = await window.showOpenFilePicker({ multiple: false, types: [{ description: "GfxUtl Project", accept: { "application/json": [".gfxutl"] } }] });
+        this.projectFileHandle = handles[0];
+        file = await handles[0].getFile();
+      } else file = await this.openWithInput(".gfxutl,application/json");
+      const project = parseProjectDocument(await file.text());
+      const assets = project.assets.map((asset) => {
+        const connected = this.state.assets.find((item) => item.sourcePath && item.sourcePath === asset.sourcePath)
+          ?? this.state.assets.find((item) => item.name === asset.name && item.size === asset.size);
+        return connected ? { ...asset, handle: connected.handle, fileStatus: connected.fileStatus } : { ...asset, fileStatus: "missing" as const };
+      });
+      this.update({
+        projectName: project.name,
+        fps: project.fps,
+        duration: project.duration,
+        background: project.background,
+        assets,
+        clips: project.clips,
+        markers: project.markers,
+        loopPlayback: project.loopPlayback,
+        settings: project.settings,
+        exportSettings: project.exportSettings,
+        selectedClipId: null,
+        selectedClipIds: [],
+        selectedAssetId: null,
+        backgroundSelected: false,
+      });
+      this.renderClipSource = null;
+      this.engine.configurePreviewCache(project.settings.ramPreviewEnabled, project.settings.ramPreviewMaxBytes);
+      this.engine.clearCache();
+      this.renderPreview(true);
+      this.schedulePersistence();
+      this.toast(`${project.name} を開きました`);
+    } catch (error) {
+      if ((error as DOMException).name !== "AbortError") this.toast(error instanceof Error ? error.message : "プロジェクトを開けませんでした");
+    }
+  };
+
+  newProject = () => {
+    if ((this.state.clips.length || this.state.assets.length) && !window.confirm("現在の編集内容を閉じて新規プロジェクトを作成しますか？")) return;
+    this.projectFileHandle = undefined;
+    this.update({
+      projectName: "Untitled Project",
+      fps: 30,
+      duration: 32,
+      currentTime: 0,
+      playing: false,
+      background: { id: "background", name: "背景オブジェクト", color: 0xffffff, scene: structuredClone(defaultSceneSettings) },
+      assets: [],
+      clips: [],
+      markers: [],
+      loopPlayback: false,
+      selectedClipId: null,
+      selectedClipIds: [],
+      selectedAssetId: null,
+      backgroundSelected: false,
+      exportSettings: { ...initialState.exportSettings },
+    });
+    this.stopAudioPreview();
+    this.engine.clearCache();
+    this.renderClipSource = null;
+    this.renderPreview(true);
+  };
 
   private async restoreAssetFile(assetId: string, requestPermission: boolean) {
     const asset = this.state.assets.find((item) => item.id === assetId);
@@ -196,7 +416,10 @@ export class EditorController {
         return false;
       }
       const file = await asset.handle.getFile();
-      const info = { size: file.size, lastModified: file.lastModified, ...await this.registerRuntimeFile(asset, file) };
+      const info: Partial<MediaAsset> = { size: file.size, lastModified: file.lastModified, ...await this.registerRuntimeFile(asset, file) };
+      if (asset.kind === "audio") {
+        try { info.waveformPeaks = (await this.engine.getMediaThumbnail(asset.id)).peaks; } catch { /* Waveform is an optional visual aid. */ }
+      }
       this.update({ assets: this.state.assets.map((item) => item.id === assetId ? { ...item, ...info, fileStatus: "ready" } : item) });
       return true;
     } catch {
@@ -259,8 +482,12 @@ export class EditorController {
 
   private applyAudioMix(clip: TimelineClip, voice?: PreviewAudioVoice) {
     if (!voice || voice.token !== this.audioPreviewToken) return;
-    voice.gain.gain.value = Math.max(0, Math.min(4, 10 ** ((clip.volume ?? 0) / 20)));
-    if (voice.panner) voice.panner.pan.value = Math.max(-1, Math.min(1, (clip.pan ?? 0) / 100));
+    const volume = evaluateClipNumber(clip, "volume", this.state.currentTime, clip.volume ?? 0);
+    const pan = evaluateClipNumber(clip, "pan", this.state.currentTime, clip.pan ?? 0);
+    const speed = Math.max(0.25, Math.min(4, evaluateClipNumber(clip, "speed", this.state.currentTime, clip.speed ?? 100) / 100));
+    voice.gain.gain.value = volume <= -60 ? 0 : Math.max(0, Math.min(4, 10 ** (volume / 20)));
+    if (voice.panner) voice.panner.pan.value = Math.max(-1, Math.min(1, pan / 100));
+    for (const source of voice.sources) source.playbackRate.value = speed;
   }
 
   private async scheduleAudioPreview(clip: TimelineClip, token: number) {
@@ -268,7 +495,7 @@ export class EditorController {
     const context = this.audioContext ??= new AudioContext({ latencyHint: "interactive" });
     await context.resume();
     if (token !== this.audioPreviewToken || !this.state.playing) return;
-    const speed = Math.max(0.25, Math.min(4, (clip.speed ?? 100) / 100));
+    const speed = Math.max(0.25, Math.min(4, evaluateClipNumber(clip, "speed", this.state.currentTime, clip.speed ?? 100) / 100));
     const mediaStart = Math.max(0, clip.offset + (this.state.currentTime - clip.start) * speed);
     const mediaEnd = mediaStart + Math.max(0, clip.start + clip.duration - this.state.currentTime) * speed;
     const contextStart = context.currentTime + 0.04;
@@ -431,7 +658,7 @@ export class EditorController {
       layer: clip.layer ?? 0,
       parentId: clip.parentId,
       opacity: clip.opacity ?? 100,
-      volume: clip.volume ?? 100,
+      volume: clip.volume ?? 0,
       pan: clip.pan ?? 0,
       speed: clip.speed ?? 100,
       cropLeft: clip.cropLeft ?? 0,
@@ -439,8 +666,11 @@ export class EditorController {
       cropTop: clip.cropTop ?? 0,
       cropBottom: clip.cropBottom ?? 0,
       effects: clip.effects ?? [],
+      masks: clip.masks ?? [],
       keyframes: clip.keyframes ?? [],
       particleSystem: clip.particleSystem,
+      instanceCount: clip.instanceCount ?? 1,
+      instanceSpacing: clip.instanceSpacing ?? 2.5,
       timelineY: clip.y,
       renderOrder: depth.get(clip.id) ?? 1_000,
       sceneObject: this.sceneObjectForClip(clip, depth.get(clip.id) ?? 1_000),
@@ -473,7 +703,7 @@ export class EditorController {
         effects: clip.effects ?? [],
         opacity: visual.opacity,
         side: clip.kind === "title" ? "double" : clip.material?.side ?? "front",
-        depthTest: true, depthWrite: (clip.opacity ?? 100) >= 100, transparent: (clip.opacity ?? 100) < 100,
+        depthTest: true, depthWrite: (clip.opacity ?? 100) >= 100, transparent: true,
         outlineColor: clip.kind === "title" ? clip.textOutlineColor ?? 0xffffff : undefined,
         outlineWidth: clip.kind === "title" ? clip.textOutlineWidth ?? 0.02 : undefined,
       },
@@ -508,6 +738,9 @@ export class EditorController {
 
   togglePlayback = () => {
     const playing = !this.state.playing;
+    if (playing && this.state.loopPlayback && (this.state.currentTime < this.state.exportSettings.startTime || this.state.currentTime >= this.state.exportSettings.endTime)) {
+      this.state = { ...this.state, currentTime: this.state.exportSettings.startTime };
+    }
     this.update({ playing });
     if (playing) {
       this.lastTick = performance.now();
@@ -527,6 +760,17 @@ export class EditorController {
     if (!this.state.playing) return;
     this.lastTick = now;
     const next = this.playbackStartTime + (now - this.playbackStartedAt) / 1000;
+    const playbackEnd = this.state.loopPlayback ? Math.min(this.state.duration, this.state.exportSettings.endTime) : this.state.duration;
+    if (next >= playbackEnd && this.state.loopPlayback) {
+      const start = Math.max(0, Math.min(this.state.exportSettings.startTime, playbackEnd - 1 / this.state.fps));
+      this.playbackStartedAt = now;
+      this.playbackStartTime = start;
+      this.update({ currentTime: start });
+      this.syncAudioPlayback(true, true);
+      this.renderPreview(false);
+      this.frame = requestAnimationFrame(this.tick);
+      return;
+    }
     if (next >= this.state.duration) {
       this.update({ currentTime: 0, playing: false });
       this.syncAudioPlayback(false);
@@ -546,6 +790,23 @@ export class EditorController {
   nudge = (frames: number) => this.setTime(this.state.currentTime + frames / this.state.fps);
   setZoom = (zoom: number) => this.update({ zoom: Math.max(0.6, Math.min(2.4, zoom)) });
   toggleSnap = () => this.update({ snapEnabled: !this.state.snapEnabled });
+  toggleLoopPlayback = () => this.update({ loopPlayback: !this.state.loopPlayback });
+  addMarker = (time = this.state.currentTime, label?: string) => {
+    const markerTime = this.snapTime(time);
+    const existing = this.state.markers.find((marker) => Math.abs(marker.time - markerTime) < 0.5 / this.state.fps);
+    if (existing) return;
+    const colors = ["#f0c36a", "#72b7d2", "#c481d8", "#7dc58b"];
+    this.update({ markers: [...this.state.markers, { id: crypto.randomUUID(), time: markerTime, label: label?.trim() || `マーカー ${this.state.markers.length + 1}`, color: colors[this.state.markers.length % colors.length] }].sort((a, b) => a.time - b.time) });
+    this.schedulePersistence();
+  };
+  updateMarker = (id: string, patch: Partial<EditorState["markers"][number]>) => {
+    this.update({ markers: this.state.markers.map((marker) => marker.id === id ? { ...marker, ...patch, id: marker.id } : marker).sort((a, b) => a.time - b.time) });
+    this.schedulePersistence();
+  };
+  removeMarker = (id: string) => {
+    this.update({ markers: this.state.markers.filter((marker) => marker.id !== id) });
+    this.schedulePersistence();
+  };
   selectClip = (id: string, additive = false) => {
     const clip = this.state.clips.find((item) => item.id === id);
     const selectedClipIds = additive
@@ -581,9 +842,29 @@ export class EditorController {
     this.engine.clearCache();
     this.renderPreview(true);
   };
+  addSceneKeyframe = (property: string, value: number, interpolation: SceneKeyframe["interpolation"] = "smooth") => {
+    const keys = (this.state.background.scene.keyframes ?? []).map((keyframe) => ({ ...keyframe, easing: keyframe.easing ? { ...keyframe.easing } : undefined }));
+    const tolerance = 0.5 / this.state.fps;
+    const existing = keys.find((keyframe) => keyframe.property === property && Math.abs(keyframe.time - this.state.currentTime) <= tolerance);
+    const keyframes: SceneKeyframe[] = existing
+      ? keys.map((keyframe) => keyframe.id === existing.id ? { ...keyframe, value, interpolation, time: this.state.currentTime } : keyframe)
+      : [...keys, { id: crypto.randomUUID(), property, value, time: this.state.currentTime, interpolation }];
+    keyframes.sort((a, b) => a.time - b.time || a.property.localeCompare(b.property));
+    this.updateSceneSettings({ keyframes });
+    this.schedulePersistence();
+  };
+  updateSceneKeyframe = (id: string, patch: Partial<SceneKeyframe>) => {
+    this.updateSceneSettings({ keyframes: (this.state.background.scene.keyframes ?? []).map((keyframe) => keyframe.id === id ? { ...keyframe, ...patch } : keyframe).sort((a, b) => a.time - b.time) });
+    this.schedulePersistence();
+  };
+  removeSceneKeyframe = (id: string) => {
+    this.updateSceneSettings({ keyframes: (this.state.background.scene.keyframes ?? []).filter((keyframe) => keyframe.id !== id) });
+    this.schedulePersistence();
+  };
   openContextMenu = (menu: ContextMenuState) => this.update({ contextMenu: menu });
   closeContextMenu = () => this.update({ contextMenu: null });
   setLeftPanelTab = (tab: EditorState["leftPanelTab"]) => this.update({ leftPanelTab: tab });
+  renameProject = (projectName: string) => this.update({ projectName });
   updateSettings = (patch: Partial<EditorSettings>) => {
     const previous = this.state.settings;
     const next: EditorSettings = {
@@ -753,7 +1034,22 @@ export class EditorController {
   };
 
   updateClip = (id: string, patch: Partial<import("./types").TimelineClip>) => {
-    const proposed = this.state.clips.map((clip) => clip.id === id ? { ...clip, ...patch } : clip);
+    const current = this.state.clips.find((clip) => clip.id === id);
+    if (!current) return;
+    let proposed = this.state.clips.map((clip) => clip.id === id ? { ...clip, ...patch } : clip);
+    if (patch.speed !== undefined && current.kind !== "title" && current.kind !== "object" && (patch.ripple ?? current.ripple ?? true)) {
+      const oldSpeed = Math.max(1, current.speed ?? 100);
+      const newSpeed = Math.max(1, patch.speed);
+      const duration = Math.max(1 / this.state.fps, current.duration * oldSpeed / newSpeed);
+      const delta = duration - current.duration;
+      const oldEnd = current.start + current.duration;
+      const currentBottom = current.y + 46;
+      proposed = proposed.map((clip) => {
+        if (clip.id === id) return { ...clip, duration, ripple: true };
+        const verticallyRelated = clip.y < currentBottom && clip.y + (clip.groupHeight ?? 46) > current.y;
+        return verticallyRelated && clip.start >= oldEnd - 0.5 / this.state.fps ? { ...clip, start: Math.max(0, clip.start + delta) } : clip;
+      });
+    }
     if (hasGroupBoundaryCrossing(proposed)) return;
     this.update({ clips: assignTimelineGroups(proposed) });
     this.invalidatePreviewCache();
@@ -833,16 +1129,16 @@ export class EditorController {
     const id = crypto.randomUUID();
     const start = this.snapTime(placement?.time ?? this.state.currentTime);
     const stagger = this.objectStagger(start, placement?.positionX ?? 0, placement?.positionY ?? 0);
-    const names: Partial<Record<GeometryKind, string>> = { box: "立方体", sphere: "球体", plane: "平面", torus: "トーラス" };
+    const names: Partial<Record<GeometryKind, string>> = { box: "立方体", sphere: "球体", plane: "平面", torus: "トーラス", shape: "シェイプ" };
     const args: Partial<Record<GeometryKind, number[]>> = { box: [2, 2, 0.5], sphere: [1.25, 32, 20], plane: [2.5, 2.5], torus: [1, 0.32, 16, 48] };
     const clip: TimelineClip = {
       id, name: names[kind] ?? kind, kind: "object", color: "#4f83a8", start,
       y: Math.max(0, placement?.timelineY ?? 92), duration: 5, offset: 0,
       positionX: (placement?.positionX ?? 0) + stagger.x, positionY: (placement?.positionY ?? 0) + stagger.y,
       positionZ: 0,
-      scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: 18, rotationY: -24, opacity: 100, textColor: 0x3d73a0,
-      material: { kind: "standard", color: 0x3d73a0, roughness: 0.55, metalness: 0.08 }, castShadow: true, receiveShadow: true,
-      geometry: { id: `${id}:geometry`, kind, args: args[kind] },
+      scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: kind === "shape" ? 0 : 18, rotationY: kind === "shape" ? 0 : -24, opacity: 100, textColor: 0x3d73a0,
+      material: { kind: kind === "shape" ? "basic" : "standard", color: 0x3d73a0, roughness: 0.55, metalness: 0.08, side: "double" }, castShadow: kind !== "shape", receiveShadow: kind !== "shape",
+      geometry: { id: `${id}:geometry`, kind, args: args[kind], ...(kind === "shape" ? { points2D: [[-1.5, -1], [1.5, -1], [1.5, 1], [-1.5, 1]] as Array<[number, number]> } : {}) },
     };
     this.insertObjectClip(clip);
   };
@@ -975,6 +1271,23 @@ export class EditorController {
     this.renderPreview(false);
   };
 
+  addMask = (clipId: string, shape: ClipMask["shape"] = "rectangle") => {
+    const clip = this.state.clips.find((item) => item.id === clipId);
+    if (!clip || clip.kind !== "video") return;
+    const mask: ClipMask = { id: crypto.randomUUID(), name: `マスク ${(clip.masks?.length ?? 0) + 1}`, enabled: true, shape, mode: "add", inverted: false, x: 50, y: 50, width: 70, height: 70, feather: 0, opacity: 100 };
+    this.updateClip(clipId, { masks: [...(clip.masks ?? []), mask] });
+  };
+
+  updateMask = (clipId: string, maskId: string, patch: Partial<ClipMask>) => {
+    const clip = this.state.clips.find((item) => item.id === clipId);
+    if (clip) this.updateClip(clipId, { masks: (clip.masks ?? []).map((mask) => mask.id === maskId ? { ...mask, ...patch } : mask) });
+  };
+
+  removeMask = (clipId: string, maskId: string) => {
+    const clip = this.state.clips.find((item) => item.id === clipId);
+    if (clip) this.updateClip(clipId, { masks: (clip.masks ?? []).filter((mask) => mask.id !== maskId) });
+  };
+
   addEffect = (clipId: string, kind: ClipEffectKind) => {
     const effect = createEffect(kind);
     this.update({ clips: this.state.clips.map((clip) => clip.id === clipId ? { ...clip, effects: [...(clip.effects ?? []), effect] } : clip) });
@@ -1017,9 +1330,9 @@ export class EditorController {
     if (!clip) return;
     const time = Math.max(0, Math.min(clip.duration, this.state.currentTime - clip.start));
     const tolerance = 0.5 / this.state.fps;
-    const keyframes = [...(clip.keyframes ?? [])];
+    let keyframes: ClipKeyframe[] = (clip.keyframes ?? []).map((keyframe) => ({ ...keyframe, easing: keyframe.easing ? { ...keyframe.easing } : undefined }));
     const existing = keyframes.find((keyframe) => keyframe.property === property && Math.abs(keyframe.time - time) <= tolerance);
-    if (existing) Object.assign(existing, { value, interpolation, time });
+    if (existing) keyframes = keyframes.map((keyframe) => keyframe.id === existing.id ? { ...keyframe, value, interpolation, time } : keyframe);
     else keyframes.push({ id: crypto.randomUUID(), property, value, time, interpolation });
     keyframes.sort((a, b) => a.time - b.time || a.property.localeCompare(b.property));
     this.updateClip(clipId, { keyframes });
@@ -1092,6 +1405,31 @@ export class EditorController {
     }
   };
 
+  exportCurrentFrame = async () => {
+    const filename = `${this.state.exportSettings.filename.trim() || "GfxUtl Frame"}-${Math.round(this.state.currentTime * this.state.fps).toString().padStart(6, "0")}.png`;
+    try {
+      let handle: FileSystemFileHandle | undefined;
+      if (window.showSaveFilePicker) handle = await window.showSaveFilePicker({ suggestedName: filename, types: [{ description: "PNG Image", accept: { "image/png": [".png"] } }] });
+      const result = await this.engine.exportStill(this.state.exportSettings.width, this.state.exportSettings.height, this.state.currentTime, this.getRenderClips(), this.state.background.scene);
+      const blob = new Blob([result.buffer], { type: result.mimeType });
+      if (handle) {
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+      } else {
+        const url = URL.createObjectURL(blob);
+        const anchor = window.document.createElement("a");
+        anchor.href = url;
+        anchor.download = filename;
+        anchor.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      }
+      this.toast(`${filename} を書き出しました`);
+    } catch (error) {
+      if ((error as DOMException).name !== "AbortError") this.toast(error instanceof Error ? `静止画の書き出し失敗: ${error.message}` : "静止画を書き出せませんでした");
+    }
+  };
+
   private toast(message: string) {
     this.update({ notice: message });
     window.setTimeout(() => {
@@ -1158,10 +1496,14 @@ export class EditorController {
     });
     try {
       const info = await this.registerRuntimeFile(asset, file);
-      const readyAsset = { ...asset, ...info, fileStatus: "ready" as const };
+      const waveformPeaks = kind === "audio" ? await this.engine.getMediaThumbnail(id).then((thumbnail) => thumbnail.peaks).catch(() => undefined) : undefined;
+      const readyAsset = { ...asset, ...info, waveformPeaks, fileStatus: "ready" as const };
       this.update({ assets: this.state.assets.map((item) => item.id === id ? readyAsset : item) });
       this.renderPreview(true);
-      if (handle) await saveHandleProject(readyAsset, this.state.clips).catch(() => { /* Persistence failure must not invalidate a decoded asset. */ });
+      if (handle) {
+        const { assets: _assets, clips: _clips, ...project } = this.currentProjectDocument();
+        await saveHandleProject(readyAsset, this.state.clips, project).catch(() => { /* Persistence failure must not invalidate a decoded asset. */ });
+      }
       this.toast(`${file.name} を読み込みました${extension ? ` · ${extension.toUpperCase()}` : ""}`);
       return id;
     } catch (error) {
@@ -1238,6 +1580,33 @@ function mediaColor(kind: MediaAsset["kind"]) {
   if (kind === "model") return "#557f9d";
   if (kind === "image") return "#817869";
   return "#7e8072";
+}
+
+function evaluateClipNumber(clip: TimelineClip, property: KeyframeProperty, timelineTime: number, fallback: number) {
+  const keys = (clip.keyframes ?? []).filter((keyframe) => keyframe.property === property).sort((a, b) => a.time - b.time);
+  if (!keys.length) return fallback;
+  const localTime = Math.max(0, Math.min(clip.duration, timelineTime - clip.start));
+  const left = [...keys].reverse().find((keyframe) => keyframe.time <= localTime) ?? keys[0];
+  const right = keys.find((keyframe) => keyframe.time >= localTime) ?? keys.at(-1)!;
+  if (left === right || left.interpolation === "step") return left.value;
+  let alpha = Math.max(0, Math.min(1, (localTime - left.time) / Math.max(0.000001, right.time - left.time)));
+  if (left.interpolation === "smooth") alpha = alpha * alpha * (3 - 2 * alpha);
+  else if (left.interpolation === "bezier") alpha = cubicBezierAt(left.easing, alpha);
+  return left.value + (right.value - left.value) * alpha;
+}
+
+function cubicBezierAt(easing: ClipKeyframe["easing"], x: number) {
+  const { x1, y1, x2, y2 } = easing ?? { x1: 0.33, y1: 0, x2: 0.67, y2: 1 };
+  let t = x;
+  for (let index = 0; index < 6; index++) {
+    const inverse = 1 - t;
+    const estimate = 3 * inverse * inverse * t * x1 + 3 * inverse * t * t * x2 + t * t * t;
+    const derivative = 3 * inverse * inverse * x1 + 6 * inverse * t * (x2 - x1) + 3 * t * t * (1 - x2);
+    if (Math.abs(derivative) < 0.000001) break;
+    t = Math.max(0, Math.min(1, t - (estimate - x) / derivative));
+  }
+  const inverse = 1 - t;
+  return 3 * inverse * inverse * t * y1 + 3 * inverse * t * t * y2 + t * t * t;
 }
 
 function createEffect(kind: ClipEffectKind): ClipEffect {

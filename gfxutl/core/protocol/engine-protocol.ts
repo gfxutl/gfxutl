@@ -115,13 +115,49 @@ export interface ClipEffect {
   params: Record<string, number>;
 }
 
-export type KeyframeProperty = "positionX" | "positionY" | "positionZ" | "scale" | "scaleX" | "scaleY" | "rotation" | "rotationX" | "rotationY" | "opacity";
+export interface ClipMask {
+  id: string;
+  name: string;
+  enabled: boolean;
+  shape: "rectangle" | "ellipse";
+  mode: "add" | "subtract" | "intersect";
+  inverted: boolean;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  feather: number;
+  opacity: number;
+}
+
+export type KeyframeProperty =
+  | "positionX" | "positionY" | "positionZ"
+  | "scale" | "scaleX" | "scaleY"
+  | "rotation" | "rotationX" | "rotationY" | "opacity"
+  | "cropLeft" | "cropRight" | "cropTop" | "cropBottom"
+  | "volume" | "pan" | "speed"
+  | "fontSize" | "textDepth" | "textOutlineWidth"
+  | "instanceCount" | "instanceSpacing"
+  | `material.${"color" | "emissive" | "emissiveIntensity" | "roughness" | "metalness" | "clearcoat" | "clearcoatRoughness" | "transmission" | "thickness" | "ior" | "sheen" | "shininess" | "opacity" | "alphaTest" | "pointSize"}`
+  | `particleSystem.${"count" | "size" | "spread" | "speed" | "color"}`
+  | `mask.${string}.${"x" | "y" | "width" | "height" | "feather" | "opacity"}`
+  | `effect.${string}.${string}`;
 export interface ClipKeyframe {
   id: string;
   property: KeyframeProperty;
   time: number;
   value: number;
-  interpolation: "step" | "linear" | "smooth";
+  interpolation: "step" | "linear" | "smooth" | "bezier";
+  easing?: { x1: number; y1: number; x2: number; y2: number };
+}
+
+export interface SceneKeyframe {
+  id: string;
+  property: string;
+  time: number;
+  value: number;
+  interpolation: ClipKeyframe["interpolation"];
+  easing?: ClipKeyframe["easing"];
 }
 
 export interface ParticleSystemSpec {
@@ -196,6 +232,7 @@ export interface SceneSettings {
   camera: CameraSettings;
   renderer: RendererSettings;
   lights: LightSpec[];
+  keyframes?: SceneKeyframe[];
 }
 
 export interface RendererStats {
@@ -235,8 +272,11 @@ export interface RenderClip {
   cropTop: number;
   cropBottom: number;
   effects: ClipEffect[];
+  masks: ClipMask[];
   keyframes: ClipKeyframe[];
   particleSystem?: ParticleSystemSpec;
+  instanceCount: number;
+  instanceSpacing: number;
   sceneObject?: SceneObjectSpec;
   timelineY: number;
   renderOrder: number;
@@ -265,6 +305,7 @@ export type EngineRequest =
   | { type: "font-register"; fontId: string; buffer: ArrayBuffer }
   | { type: "pick"; requestId: string; ndcX: number; ndcY: number }
   | { type: "export"; requestId: string; settings: ExportSettings; duration: number; clips: RenderClip[]; sceneSettings: SceneSettings; audioChannels: "stereo" | "mono" }
+  | { type: "export-still"; requestId: string; width: number; height: number; time: number; clips: RenderClip[]; sceneSettings: SceneSettings }
   | { type: "preview-cache-settings"; enabled: boolean; maxBytes: number }
   | { type: "clear-cache" };
 

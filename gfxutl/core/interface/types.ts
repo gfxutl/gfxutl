@@ -1,7 +1,7 @@
 export type TrackKind = "video" | "audio" | "title" | "object" | "group";
 
-import type { ClipEffect, ClipKeyframe, ExportSettings, GeometrySpec, SceneMaterialSpec, SceneSettings } from "../protocol/engine-protocol";
-export type { BackgroundSettings, BlendMode, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, EngineRequest, EngineResponse, ExportSettings, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, RendererSettings, RendererStats, RenderClip, SceneMaterialSpec, SceneObjectSpec, SceneSettings, TimelinePatch, ToneMappingKind } from "../protocol/engine-protocol";
+import type { ClipEffect, ClipKeyframe, ClipMask, ExportSettings, GeometrySpec, SceneMaterialSpec, SceneSettings } from "../protocol/engine-protocol";
+export type { BackgroundSettings, BlendMode, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, EngineRequest, EngineResponse, ExportSettings, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, RendererSettings, RendererStats, RenderClip, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, TimelinePatch, ToneMappingKind } from "../protocol/engine-protocol";
 
 export interface MediaAsset {
   id: string;
@@ -13,6 +13,7 @@ export interface MediaAsset {
   height?: number;
   codec?: string;
   hasAudio?: boolean;
+  waveformPeaks?: number[];
   lastModified?: number;
   /** Path relative to the media explorer root. Used to reconnect tree entries. */
   sourcePath?: string;
@@ -50,6 +51,7 @@ export interface TimelineClip {
   speed?: number;
   ripple?: boolean;
   effects?: ClipEffect[];
+  masks?: ClipMask[];
   keyframes?: ClipKeyframe[];
   geometry?: GeometrySpec;
   material?: SceneMaterialSpec;
@@ -79,7 +81,7 @@ export interface TimelineClip {
 export interface ContextMenuState {
   x: number;
   y: number;
-  scope: "timeline" | "preview" | "clip";
+  scope: "timeline" | "preview" | "clip" | "media" | "inspector";
   time: number;
   timelineY: number;
   positionX: number;
@@ -98,6 +100,13 @@ export interface CacheState {
   maxBytes: number;
   entries: number;
   codec: "H.264";
+}
+
+export interface TimelineMarker {
+  id: string;
+  time: number;
+  label: string;
+  color: string;
 }
 
 export interface BackgroundObject {
@@ -120,6 +129,11 @@ export interface EditorSettings {
 }
 
 export interface EditorState {
+  projectName: string;
+  canUndo: boolean;
+  canRedo: boolean;
+  markers: TimelineMarker[];
+  loopPlayback: boolean;
   fps: number;
   duration: number;
   currentTime: number;

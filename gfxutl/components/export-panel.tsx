@@ -49,6 +49,7 @@ export function ExportPanel() {
       {busy && <div className="export-progress"><div><i style={{ width: `${state.exportProgress * 100}%` }} /></div><span>{Math.round(state.exportProgress * 100)}%</span></div>}
       {state.exportStatus === "done" && <div className="export-done"><CheckCircle2 /> 書き出しが完了しました</div>}
       <Button className="export-submit" disabled={busy} onClick={controller.exportVideo}>{busy ? "レンダリング中…" : "書き出しを開始"}</Button>
+      <Button variant="ghost" className="export-still" disabled={busy} onClick={() => void controller.exportCurrentFrame()}>現在フレームをPNGで保存</Button>
     </div>
   );
 }

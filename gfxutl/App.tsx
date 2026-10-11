@@ -19,6 +19,26 @@ export function App() {
   }, [state.layout]);
   useEffect(() => {
     const controlKeyboard = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const editingText = target?.matches("input, textarea, select, [contenteditable='true']");
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "z" && !editingText) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.shiftKey) controller.redo();
+        else controller.undo();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "y" && !editingText) {
+        event.preventDefault();
+        event.stopPropagation();
+        controller.redo();
+        return;
+      }
+      if (!editingText && !event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "m") {
+        event.preventDefault();
+        controller.addMarker();
+        return;
+      }
       if (event.code === "Space") {
         event.preventDefault();
         event.stopPropagation();
@@ -26,8 +46,7 @@ export function App() {
         return;
       }
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-      const target = event.target as HTMLElement | null;
-      if (target?.matches("input, textarea, select, [contenteditable='true']")) return;
+      if (editingText) return;
       if (!controller.getSnapshot().selectedClipIds.length && !controller.getSnapshot().selectedClipId) return;
       event.preventDefault();
       event.stopPropagation();

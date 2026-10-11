@@ -253,6 +253,13 @@ svg { width: 16px; height: 16px; stroke-width: 1.7; }
 .settings-choice small { color: #62676c; font-size: 7px; line-height: 1.35; }
 .settings-choice label:has(input:focus-visible) { outline: 1px solid #fff; outline-offset: 2px; }
 .settings-note { margin: 9px 0 0; color: #62676c; font-size: 7px; line-height: 1.5; }
+.project-settings .settings-field input { width: 128px; height: 23px; box-sizing: border-box; border: 1px solid #303338; border-radius: 3px; outline: 0; padding: 0 6px; background: #0e1011; color: #d0d2d4; font-size: 8px; }
+.project-settings .settings-field input:focus { border-color: #74797e; }
+.project-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 9px; }
+.project-actions .ui-button { min-width: 0; padding: 0 6px; font-size: 8px; }
+.project-actions .ui-button svg { width: 11px; height: 11px; }
+.project-save-as { display: block; margin: 8px 0 0 auto; border: 0; padding: 0; background: transparent; color: #777c81; font-size: 7px; cursor: pointer; }
+.project-save-as:hover { color: #d4d6d8; }
 
 .preview-popout-placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: #111; color: #aaa; font-size: 11px; }
 .preview-popout-placeholder svg { width: 24px; height: 24px; }
@@ -412,8 +419,52 @@ svg { width: 16px; height: 16px; stroke-width: 1.7; }
 .compact-color-field input { width: 100%; height: 25px; padding: 2px; border: 1px solid #2a2d31; border-radius: 3px; background: #0d0f10; }
 .light-editor { margin: 0 0 7px; padding: 7px; border: 1px solid #292d31; border-radius: 4px; background: #0d0f11; }
 .light-editor .field-grid:last-child { margin-bottom: 0; }
+.scene-keyframes { margin-top: 10px; border: 1px solid #292d31; border-radius: 4px; background: #0d0f11; }
+.scene-keyframes > summary { display: flex; min-height: 31px; padding: 0 8px; align-items: center; gap: 7px; color: #a7aaad; font-size: 9px; cursor: pointer; list-style: none; }
+.scene-keyframes > summary::-webkit-details-marker { display: none; }
+.scene-keyframes > summary::before { content: "›"; color: #666b70; transform: rotate(0deg); transition: transform .12s; }
+.scene-keyframes[open] > summary::before { transform: rotate(90deg); }
+.scene-keyframes > summary small { margin-left: auto; color: #62676b; font: 7px "IBM Plex Mono", monospace; }
+.scene-keyframe-body { padding: 7px; border-top: 1px solid #292d31; }
+.keyframe-add-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; }
+.keyframe-add-row select { min-width: 0; height: 26px; border: 1px solid #2d3034; border-radius: 3px; background: #111315; color: #b2b5b7; font-size: 8px; }
+.scene-keyframe-body > small { display: block; margin: 5px 0 7px; color: #5f6468; font-size: 7px; }
+.scene-keyframe-list { display: grid; gap: 6px; }
+.scene-keyframe-row { position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 7px 29px 7px 7px; border: 1px solid #292d31; border-radius: 3px; background: #111416; }
+.scene-keyframe-row > strong { grid-column: 1 / -1; overflow: hidden; color: #aeb1b4; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.scene-keyframe-row > .select-field { grid-column: 1 / -1; margin: 0; }
+.scene-keyframe-row > .bezier-editor { grid-column: 1 / -1; }
+.scene-keyframe-row > .ui-button { position: absolute; top: 4px; right: 3px; }
 .keyframe-list { display: grid; gap: 6px; margin-top: 8px; }
 .effect-item { padding: 6px; border: 1px solid #303338; border-radius: 4px; background: #131619; }
+.bezier-editor { display: grid; grid-template-columns: 72px 1fr; gap: 7px; margin-top: 6px; padding: 6px; border: 1px solid #2b2e32; border-radius: 4px; background: #0d0f11; }
+.bezier-editor svg { width: 72px; height: 68px; overflow: visible; }
+.bezier-grid { fill: none; stroke: #292d31; stroke-width: .7; }
+.bezier-handles { fill: none; stroke: #555b60; stroke-width: .7; stroke-dasharray: 2 2; }
+.bezier-curve { fill: none; stroke: #e0e2e3; stroke-width: 1.5; }
+.bezier-editor circle { fill: #fff; stroke: #111; stroke-width: 1; cursor: grab; touch-action: none; }
+.bezier-editor circle:active { cursor: grabbing; }
+.bezier-editor > div:nth-child(2) { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+.bezier-editor .number-field { min-width: 0; }
+.bezier-presets { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.bezier-presets button { height: 21px; border: 1px solid #303338; border-radius: 3px; background: #171a1d; color: #858a8f; font-size: 7px; cursor: pointer; }
+.bezier-presets button:hover { border-color: #666b70; color: #ddd; }
+.shape-path-editor { display: grid; gap: 6px; padding: 7px; border: 1px solid #2d3034; border-radius: 4px; background: #101214; }
+.shape-path-editor .text-decoration-title { margin: 0; display: flex; justify-content: space-between; }
+.shape-path-editor .text-decoration-title small { color: #63686d; font: 7px "IBM Plex Mono", monospace; }
+.shape-presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.shape-presets button { height: 22px; border: 1px solid #303338; border-radius: 3px; background: #191c1f; color: #969a9e; font-size: 7px; cursor: pointer; }
+.shape-presets button:hover { border-color: #74797e; color: #eee; }
+.shape-path-editor textarea { min-height: 74px; resize: vertical; border: 1px solid #303338; border-radius: 3px; outline: 0; padding: 5px; background: #0a0c0d; color: #c8cbcd; font: 8px/1.5 "IBM Plex Mono", monospace; }
+.shape-path-editor > small { color: #5f6469; font-size: 7px; line-height: 1.45; }
+.mask-stack .section-title .ui-button { width: auto; margin-left: auto; padding: 0 6px; font-size: 7px; }
+.mask-card { display: grid; gap: 6px; padding: 7px; border: 1px solid #303338; border-radius: 4px; background: #111416; }
+.mask-card + .mask-card { margin-top: 6px; }
+.mask-card.disabled { opacity: .55; }
+.mask-card-header { display: grid; grid-template-columns: 20px 1fr 20px; align-items: center; gap: 4px; }
+.mask-card-header button { display: grid; place-items: center; width: 20px; height: 20px; border: 0; background: transparent; color: #777c81; cursor: pointer; }
+.mask-card-header button svg { width: 11px; height: 11px; }
+.mask-card-header input { min-width: 0; height: 21px; border: 0; border-bottom: 1px solid #2d3034; outline: 0; background: transparent; color: #bbbfc2; font-size: 8px; }
 .effect-header { display: flex; min-height: 25px; align-items: center; gap: 6px; }
 .effect-header strong { flex: 1; font-size: 9px; font-weight: 500; }
 .effect-header small { color: #74787d; font: 8px "IBM Plex Mono", monospace; }
@@ -429,6 +480,10 @@ svg { width: 16px; height: 16px; stroke-width: 1.7; }
 .asset-drop-ghost { position: absolute; z-index: 70; width: 112px; height: 32px; display: grid; place-items: center; border: 1px dashed #fff; border-radius: 4px; background: #ffffff22; color: #fff; font-size: 8px; pointer-events: none; }
 .timeline-selection-box { position: absolute; z-index: 19000; border: 1px solid #fff; border-radius: 2px; background: #ffffff1c; box-shadow: inset 0 0 0 1px #ffffff0d; pointer-events: none; }
 .timeline-cursor-guide { position: absolute; z-index: 18000; top: 0; bottom: 0; width: 1px; background: #d9dde01f; box-shadow: 1px 0 #0004; pointer-events: none; }
+.timeline-marker { position: absolute; z-index: 19000; top: 1px; bottom: 0; width: 1px; border: 0; padding: 0; background: color-mix(in srgb, var(--marker-color) 42%, transparent); cursor: pointer; }
+.timeline-marker i { position: absolute; top: 0; left: -4px; width: 9px; height: 9px; background: var(--marker-color); transform: rotate(45deg); }
+.timeline-marker span { position: absolute; top: 4px; left: 8px; max-width: 100px; overflow: hidden; color: var(--marker-color); font-size: 7px; white-space: nowrap; text-overflow: ellipsis; opacity: 0; transition: opacity .12s ease; }
+.timeline-marker:hover span { opacity: 1; }
 .timeline-alignment-guide { position: absolute; z-index: 19500; width: 1px; min-height: 1px; border-left: 1px dashed #fff; background: #ffffff2b; box-shadow: 0 0 5px #ffffff66; pointer-events: none; }
 .timeline-alignment-guide::before, .timeline-alignment-guide::after { content: ""; position: absolute; left: -4px; width: 7px; height: 1px; background: #fff; box-shadow: 0 0 3px #000; }
 .timeline-alignment-guide::before { top: 0; }

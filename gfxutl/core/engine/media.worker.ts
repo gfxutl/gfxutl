@@ -1,13 +1,13 @@
 /// <reference lib="webworker" />
 
 import * as THREE from "three/webgpu";
-import { cos, distance, float, Fn, hue, instanceIndex, length, max, pow, saturation, sin, smoothstep, storage, texture as textureNode, uniform, uv, vec2, vec3, vec4, vertexIndex } from "three/tsl";
+import { abs, cos, distance, float, Fn, hue, instanceIndex, length, max, pow, saturation, sin, smoothstep, storage, texture as textureNode, uniform, uv, vec2, vec3, vec4, vertexIndex } from "three/tsl";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { clone as cloneSkinned } from "three/addons/utils/SkeletonUtils.js";
 import { ALL_FORMATS, AudioSample, AudioSampleSink, AudioSampleSource, BlobSource, BufferTarget, CanvasSource, Input, Mp4OutputFormat, Output, VideoSampleSink, WebMOutputFormat } from "mediabunny";
-import type { EngineRequest, EngineResponse, RenderClip, SceneObjectSpec, SceneSettings } from "../protocol/engine-protocol";
+import type { ClipKeyframe, EngineRequest, EngineResponse, RenderClip, SceneObjectSpec, SceneSettings } from "../protocol/engine-protocol";
 import { RamPreviewCache } from "./ram-preview-cache";
 import { createRenderPipeline, shadowTypeFrom, ThreeRendererCore, toneMappingFrom } from "./three-renderer-core";
 import { ThreeSceneCore } from "./three-scene-core";
@@ -370,7 +370,7 @@ function fittedPlaneSize(aspect: number) {
 }
 
 function visualEffectSignature(clip: RenderClip) {
-  return JSON.stringify(clip.effects.filter((effect) => effect.enabled && effect.kind !== "transform" && effect.kind !== "opacity"));
+  return JSON.stringify([clip.effects.filter((effect) => effect.enabled && effect.kind !== "transform" && effect.kind !== "opacity"), clip.masks]);
 }
 
 function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
@@ -382,7 +382,25 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
   }
   const sampled = textureNode(texture, texUv);
   let rgb = sampled.rgb;
-  let alpha = sampled.a;
+  let alpha: any = sampled.a;
+  let combinedMask: any = null;
+  for (const mask of clip.masks) {
+    if (!mask.enabled) continue;
+    const point = uv().sub(vec2(mask.x / 100, 1 - mask.y / 100));
+    const halfWidth = Math.max(0.0001, mask.width / 200);
+    const halfHeight = Math.max(0.0001, mask.height / 200);
+    const edge = mask.shape === "ellipse"
+      ? length(point.div(vec2(halfWidth, halfHeight)))
+      : max(abs(point.x).div(halfWidth), abs(point.y).div(halfHeight));
+    const feather = Math.max(0.0001, mask.feather / 100);
+    let value: any = float(1).sub(smoothstep(Math.max(0, 1 - feather), 1, edge)).mul(THREE.MathUtils.clamp(mask.opacity / 100, 0, 1));
+    if (mask.inverted) value = float(1).sub(value);
+    if (combinedMask === null) combinedMask = mask.mode === "subtract" ? float(1).sub(value) : value;
+    else if (mask.mode === "add") combinedMask = max(combinedMask, value);
+    else if (mask.mode === "subtract") combinedMask = combinedMask.mul(float(1).sub(value));
+    else combinedMask = combinedMask.mul(value);
+  }
+  if (combinedMask !== null) alpha = alpha.mul(combinedMask);
   for (const effect of clip.effects) {
     if (!effect.enabled) continue;
     if (effect.kind === "brightness") {
@@ -409,7 +427,7 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
       rgb = rgb.mul(float(1).sub(smoothstep(size * 0.5, Math.max(size * 0.5 + 0.001, 0.72), radius).mul(amount)));
     }
   }
-  const alphaMasked = clip.effects.some((effect) => effect.enabled && effect.kind === "chromaKey");
+  const alphaMasked = clip.masks.some((mask) => mask.enabled) || clip.effects.some((effect) => effect.enabled && effect.kind === "chromaKey");
   const material = new THREE.MeshBasicNodeMaterial({ transparent: alphaMasked || clip.opacity < 100, depthTest: true, depthWrite: !alphaMasked && clip.opacity >= 100, toneMapped: false });
   material.userData.gfxAlphaMasked = alphaMasked;
   material.colorNode = vec4(rgb, alpha);
@@ -875,7 +893,13 @@ function evaluateClipsAtTime(clips: RenderClip[], time: number) {
 
 function evaluateClipAtTime(clip: RenderClip, timelineTime: number) {
   if (!clip.keyframes.length) return clip;
-  const evaluated = { ...clip, sceneObject: clip.sceneObject ? structuredClone(clip.sceneObject) : undefined };
+  const evaluated = {
+    ...clip,
+    effects: structuredClone(clip.effects),
+    masks: structuredClone(clip.masks),
+    particleSystem: clip.particleSystem ? { ...clip.particleSystem } : undefined,
+    sceneObject: clip.sceneObject ? structuredClone(clip.sceneObject) : undefined,
+  };
   const localTime = THREE.MathUtils.clamp(timelineTime - clip.start, 0, clip.duration);
   const properties = new Set(clip.keyframes.map((keyframe) => keyframe.property));
   for (const property of properties) {
@@ -886,9 +910,10 @@ function evaluateClipAtTime(clip: RenderClip, timelineTime: number) {
     if (right !== left && left.interpolation !== "step") {
       let alpha = THREE.MathUtils.clamp((localTime - left.time) / Math.max(0.000001, right.time - left.time), 0, 1);
       if (left.interpolation === "smooth") alpha = alpha * alpha * (3 - 2 * alpha);
+      else if (left.interpolation === "bezier") alpha = cubicBezierAt(left.easing, alpha);
       value = THREE.MathUtils.lerp(left.value, right.value, alpha);
     }
-    (evaluated as unknown as Record<string, number>)[property] = value;
+    setAnimatedClipProperty(evaluated, property, value);
   }
   if (evaluated.sceneObject?.transform) {
     const transform = evaluated.sceneObject.transform;
@@ -910,7 +935,141 @@ function evaluateClipAtTime(clip: RenderClip, timelineTime: number) {
     transform.scale = scale;
     if (evaluated.sceneObject.material) evaluated.sceneObject.material.opacity = (evaluated.sceneObject.material.opacity ?? 1) * evaluated.opacity / Math.max(0.001, clip.opacity);
   }
+  if (evaluated.sceneObject?.material) {
+    for (const property of properties) {
+      if (!property.startsWith("material.")) continue;
+      const key = property.slice("material.".length);
+      const value = (evaluated.sceneObject.material as unknown as Record<string, unknown>)[key];
+      if (value === undefined) {
+        const source = (clip.sceneObject?.material as unknown as Record<string, unknown> | undefined)?.[key];
+        if (typeof source === "number") (evaluated.sceneObject.material as unknown as Record<string, number>)[key] = source;
+      }
+    }
+    evaluated.sceneObject.material.effects = structuredClone(evaluated.effects);
+  }
+  if (evaluated.sceneObject?.geometry) {
+    const geometry = evaluated.sceneObject.geometry;
+    if (properties.has("fontSize")) geometry.size = animatedNumber(evaluated, "fontSize", geometry.size ?? 1.2);
+    if (properties.has("textDepth")) geometry.depth = animatedNumber(evaluated, "textDepth", geometry.depth ?? 0.12);
+    if (properties.has("textOutlineWidth") && evaluated.sceneObject.material) evaluated.sceneObject.material.outlineWidth = animatedNumber(evaluated, "textOutlineWidth", evaluated.sceneObject.material.outlineWidth ?? 0.02);
+  }
+  if (evaluated.sceneObject && (properties.has("instanceCount") || properties.has("instanceSpacing"))) {
+    const count = Math.max(1, Math.min(1_000, Math.floor(evaluated.instanceCount)));
+    evaluated.sceneObject.instances = count > 1 ? Array.from({ length: count }, (_, index) => ({
+      position: [(index - (count - 1) / 2) * evaluated.instanceSpacing, 0, 0] as [number, number, number],
+    })) : undefined;
+  }
   return evaluated;
+}
+
+function setAnimatedClipProperty(clip: RenderClip & Record<string, unknown>, property: string, value: number) {
+  if (property.startsWith("material.")) {
+    const key = property.slice("material.".length);
+    const material = clip.sceneObject?.material as unknown as Record<string, number> | undefined;
+    if (material) material[key] = value;
+    return;
+  }
+  if (property.startsWith("particleSystem.")) {
+    const key = property.slice("particleSystem.".length);
+    if (clip.particleSystem) (clip.particleSystem as unknown as Record<string, number>)[key] = value;
+    return;
+  }
+  if (property.startsWith("effect.")) {
+    const [, effectId, key] = property.split(".");
+    const effect = clip.effects.find((item) => item.id === effectId);
+    if (effect && key) effect.params[key] = value;
+    return;
+  }
+  if (property.startsWith("mask.")) {
+    const [, maskId, key] = property.split(".");
+    const mask = clip.masks.find((item) => item.id === maskId);
+    if (mask && key) (mask as unknown as Record<string, number>)[key] = value;
+    return;
+  }
+  clip[property] = value;
+}
+
+function animatedNumber(value: object, property: string, fallback: number) {
+  const result = (value as Record<string, unknown>)[property];
+  return typeof result === "number" ? result : fallback;
+}
+
+function cubicBezierAt(easing: ClipKeyframe["easing"], x: number) {
+  const { x1, y1, x2, y2 } = easing ?? { x1: 0.33, y1: 0, x2: 0.67, y2: 1 };
+  let t = x;
+  for (let index = 0; index < 6; index++) {
+    const inverse = 1 - t;
+    const estimate = 3 * inverse * inverse * t * x1 + 3 * inverse * t * t * x2 + t * t * t;
+    const derivative = 3 * inverse * inverse * x1 + 6 * inverse * t * (x2 - x1) + 3 * t * t * (1 - x2);
+    if (Math.abs(derivative) < 0.000001) break;
+    t = THREE.MathUtils.clamp(t - (estimate - x) / derivative, 0, 1);
+  }
+  const inverse = 1 - t;
+  return 3 * inverse * inverse * t * y1 + 3 * inverse * t * t * y2 + t * t * t;
+}
+
+function evaluateSceneSettingsAtTime(settings: SceneSettings, time: number) {
+  if (!settings.keyframes?.length) return settings;
+  const evaluated = structuredClone(settings);
+  const properties = new Set(settings.keyframes.map((keyframe) => keyframe.property));
+  for (const property of properties) {
+    const keys = settings.keyframes.filter((keyframe) => keyframe.property === property).sort((a, b) => a.time - b.time);
+    const left = [...keys].reverse().find((keyframe) => keyframe.time <= time) ?? keys[0];
+    const right = keys.find((keyframe) => keyframe.time >= time) ?? keys.at(-1)!;
+    let value = left.value;
+    if (right !== left && left.interpolation !== "step") {
+      let alpha = THREE.MathUtils.clamp((time - left.time) / Math.max(0.000001, right.time - left.time), 0, 1);
+      if (left.interpolation === "smooth") alpha = alpha * alpha * (3 - 2 * alpha);
+      else if (left.interpolation === "bezier") alpha = cubicBezierAt(left.easing, alpha);
+      value = THREE.MathUtils.lerp(left.value, right.value, alpha);
+    }
+    setAnimatedSceneProperty(evaluated, property, value);
+  }
+  return evaluated;
+}
+
+function setAnimatedSceneProperty(settings: SceneSettings, property: string, value: number) {
+  if (property.startsWith("light:")) {
+    const [, id, field, axis] = property.split(":");
+    const light = settings.lights.find((item) => item.id === id);
+    if (!light || !field) return;
+    const current = (light as unknown as Record<string, unknown>)[field];
+    if (Array.isArray(current) && axis !== undefined) current[Number(axis)] = value;
+    else (light as unknown as Record<string, unknown>)[field] = value;
+    return;
+  }
+  const [section, field, axis] = property.split(".");
+  const target = (settings as unknown as Record<string, unknown>)[section] as Record<string, unknown> | undefined;
+  if (!target || !field) return;
+  const current = target[field];
+  if (Array.isArray(current) && axis !== undefined) current[Number(axis)] = value;
+  else target[field] = value;
+}
+
+function applyExportFrameSettings(renderer: THREE.WebGPURenderer, camera: THREE.OrthographicCamera | THREE.PerspectiveCamera, settings: SceneSettings, width: number, height: number) {
+  renderer.setClearColor(settings.background.color, settings.renderer.transparentBackground ? settings.background.alpha : 1);
+  renderer.toneMapping = toneMappingFrom(settings.renderer.toneMapping);
+  renderer.toneMappingExposure = Math.max(0, settings.renderer.exposure);
+  renderer.shadowMap.enabled = settings.renderer.shadows;
+  renderer.shadowMap.type = shadowTypeFrom(settings.renderer.shadowType);
+  camera.position.set(...settings.camera.position);
+  camera.up.set(0, 1, 0);
+  camera.lookAt(...settings.camera.target);
+  camera.near = Math.max(0.0001, settings.camera.near);
+  camera.far = Math.max(camera.near + 0.001, settings.camera.far);
+  camera.zoom = Math.max(0.001, settings.camera.zoom);
+  if (camera instanceof THREE.OrthographicCamera) {
+    const halfHeight = Math.max(0.001, settings.camera.orthographicHeight) / 2;
+    const aspect = Math.max(1, width) / Math.max(1, height);
+    camera.left = -halfHeight * aspect;
+    camera.right = halfHeight * aspect;
+    camera.top = halfHeight;
+    camera.bottom = -halfHeight;
+  } else if (camera instanceof THREE.PerspectiveCamera) {
+    camera.aspect = Math.max(1, width) / Math.max(1, height);
+    camera.fov = THREE.MathUtils.clamp(settings.camera.fov, 1, 179);
+  }
+  camera.updateProjectionMatrix();
 }
 
 async function renderRealtime(time: number, _shouldCache: boolean, clips: RenderClip[] = []) {
@@ -940,6 +1099,7 @@ async function render(time: number, shouldCache: boolean, mode: "realtime" | "pl
   previewFps = Math.max(1, Math.min(120, fps));
   playbackActive = mode === "playback";
   if (mode === "playback" && ramPreviewEnabled && await renderCachedPreview(time, previewFps)) return;
+  if (sceneSettings.keyframes?.length) graphics?.applySettings(evaluateSceneSettingsAtTime(sceneSettings, time));
   const frameMs = await renderRealtime(time, false, clips);
   // Populate the RAM cache from the frame already on screen. The old prefetcher
   // rendered a future frame and then rendered the current frame again, doubling
@@ -1130,14 +1290,16 @@ async function createExportAudioCursors(message: Extract<EngineRequest, { type: 
   const exportEnd = exportStart + duration;
   for (const clip of message.clips) {
     if (!clip.assetId) continue;
-    const sink = mediaRuntimes.get(clip.assetId)?.audioSink;
+    const runtime = mediaRuntimes.get(clip.assetId);
+    const sink = runtime?.audioSink;
     if (!sink) continue;
     const timelineStart = Math.max(exportStart, clip.start);
     const timelineEnd = Math.min(exportEnd, clip.start + clip.duration);
-    if (timelineEnd <= timelineStart || clip.volume <= 0) continue;
-    const speed = Math.max(0.25, Math.min(4, clip.speed / 100));
-    const sourceStart = Math.max(0, clip.offset + (timelineStart - clip.start) * speed);
-    const sourceEnd = Math.max(sourceStart, clip.offset + (timelineEnd - clip.start) * speed);
+    if (timelineEnd <= timelineStart || clip.volume <= -60) continue;
+    const maximumKeyedSpeed = Math.max(clip.speed, ...clip.keyframes.filter((keyframe) => keyframe.property === "speed").map((keyframe) => keyframe.value));
+    const speed = Math.max(0.25, Math.min(10, maximumKeyedSpeed / 100));
+    const sourceStart = Math.max(0, clip.offset);
+    const sourceEnd = Math.min(runtime?.duration ?? Infinity, Math.max(sourceStart, clip.offset + (timelineEnd - clip.start) * speed));
     cursors.push({
       clip,
       iterator: sink.samples(sourceStart, sourceEnd),
@@ -1155,7 +1317,7 @@ function exportHasAudio(message: Extract<EngineRequest, { type: "export" }>, dur
   const exportStart = message.settings.startTime;
   const exportEnd = exportStart + duration;
   return message.clips.some((clip) => clip.assetId
-    && clip.volume > 0
+    && clip.volume > -60
     && clip.start < exportEnd
     && clip.start + clip.duration > exportStart
     && Boolean(mediaRuntimes.get(clip.assetId)?.audioSink));
@@ -1174,8 +1336,9 @@ async function encodeExportAudio(source: AudioSampleSource, message: Extract<Eng
         const outputTime = (blockStartFrame + frame) / sampleRate;
         for (const cursor of cursors) {
           if (outputTime < cursor.outputStart || outputTime >= cursor.outputEnd) continue;
-          const speed = Math.max(0.25, Math.min(4, cursor.clip.speed / 100));
           const timelineTime = message.settings.startTime + outputTime;
+          const animatedClip = evaluateClipAtTime(cursor.clip, timelineTime);
+          const speed = Math.max(0.25, Math.min(4, animatedClip.speed / 100));
           const sourceTime = cursor.clip.offset + (timelineTime - cursor.clip.start) * speed;
           await advanceExportAudioCursor(cursor, sourceTime);
           const sample = cursor.sample;
@@ -1183,11 +1346,11 @@ async function encodeExportAudio(source: AudioSampleSource, message: Extract<Eng
           const sampleFrame = Math.min(sample.numberOfFrames - 1, Math.max(0, Math.floor((sourceTime - sample.timestamp) * sample.sampleRate)));
           const monoOrLeft = cursor.planes[0]?.[sampleFrame] ?? 0;
           const right = cursor.planes[Math.min(1, cursor.planes.length - 1)]?.[sampleFrame] ?? monoOrLeft;
-          const volume = Math.max(0, cursor.clip.volume / 100);
+          const volume = animatedClip.volume <= -60 ? 0 : Math.min(4, 10 ** (animatedClip.volume / 20));
           if (channelCount === 1) {
             mixed[frame] += (monoOrLeft + right) * 0.5 * volume;
           } else {
-            const pan = Math.max(-1, Math.min(1, cursor.clip.pan / 100));
+            const pan = Math.max(-1, Math.min(1, animatedClip.pan / 100));
             const leftGain = Math.cos((pan + 1) * Math.PI / 4) * Math.SQRT2 * volume;
             const rightGain = Math.sin((pan + 1) * Math.PI / 4) * Math.SQRT2 * volume;
             mixed[frame * 2] += monoOrLeft * leftGain;
@@ -1219,28 +1382,26 @@ async function exportVideo(message: Extract<EngineRequest, { type: "export" }>) 
   const duration = Math.max(1 / fps, message.duration);
   const totalFrames = Math.ceil(duration * fps);
   const exportCanvas = new OffscreenCanvas(exportWidth, exportHeight);
-  graphics.applySettings(message.sceneSettings);
+  const initialSettings = evaluateSceneSettingsAtTime(message.sceneSettings, message.settings.startTime);
+  graphics.applySettings(initialSettings);
   const exportRenderer = new THREE.WebGPURenderer({
     canvas: exportCanvas,
-    antialias: message.sceneSettings.renderer.antialias,
-    samples: message.sceneSettings.renderer.samples,
-    alpha: message.sceneSettings.renderer.transparentBackground,
-    outputBufferType: message.sceneSettings.renderer.outputBuffer === "float16" ? THREE.HalfFloatType : THREE.UnsignedByteType,
+    antialias: initialSettings.renderer.antialias,
+    samples: initialSettings.renderer.samples,
+    alpha: initialSettings.renderer.transparentBackground,
+    outputBufferType: initialSettings.renderer.outputBuffer === "float16" ? THREE.HalfFloatType : THREE.UnsignedByteType,
   });
   exportRenderer.setPixelRatio(1);
   exportRenderer.setSize(exportWidth, exportHeight, false);
-  exportRenderer.setClearColor(message.sceneSettings.background.color, message.sceneSettings.renderer.transparentBackground ? message.sceneSettings.background.alpha : 1);
-  exportRenderer.toneMapping = toneMappingFrom(message.sceneSettings.renderer.toneMapping);
-  exportRenderer.toneMappingExposure = message.sceneSettings.renderer.exposure;
   exportRenderer.outputColorSpace = THREE.SRGBColorSpace;
-  exportRenderer.shadowMap.enabled = message.sceneSettings.renderer.shadows;
-  exportRenderer.shadowMap.type = shadowTypeFrom(message.sceneSettings.renderer.shadowType);
   await exportRenderer.init();
   const exportCamera = graphics.createCameraForSize(exportWidth, exportHeight);
+  applyExportFrameSettings(exportRenderer, exportCamera, initialSettings, exportWidth, exportHeight);
   await exportRenderer.compileAsync(graphics.scene, exportCamera);
-  const exportPipeline = message.sceneSettings.renderer.postProcessing
-    ? createRenderPipeline(exportRenderer, graphics.scene, exportCamera, message.sceneSettings)
+  let exportPipeline = initialSettings.renderer.postProcessing
+    ? createRenderPipeline(exportRenderer, graphics.scene, exportCamera, initialSettings)
     : null;
+  let pipelineSignature = JSON.stringify([initialSettings.renderer.postProcessing, initialSettings.renderer.fxaa, initialSettings.renderer.bloomStrength, initialSettings.renderer.bloomRadius, initialSettings.renderer.bloomThreshold]);
 
   const target = new BufferTarget();
   const format = message.settings.format === "mp4"
@@ -1268,6 +1429,15 @@ async function exportVideo(message: Extract<EngineRequest, { type: "export" }>) 
     for (let frame = 0; frame < totalFrames; frame++) {
       const time = frame * frameDuration;
       const timelineTime = message.settings.startTime + time;
+      const frameSettings = evaluateSceneSettingsAtTime(message.sceneSettings, timelineTime);
+      graphics.applySettings(frameSettings);
+      applyExportFrameSettings(exportRenderer, exportCamera, frameSettings, exportWidth, exportHeight);
+      const nextPipelineSignature = JSON.stringify([frameSettings.renderer.postProcessing, frameSettings.renderer.fxaa, frameSettings.renderer.bloomStrength, frameSettings.renderer.bloomRadius, frameSettings.renderer.bloomThreshold]);
+      if (nextPipelineSignature !== pipelineSignature) {
+        exportPipeline?.dispose();
+        exportPipeline = frameSettings.renderer.postProcessing ? createRenderPipeline(exportRenderer, graphics.scene, exportCamera, frameSettings) : null;
+        pipelineSignature = nextPipelineSignature;
+      }
       const frameClips = evaluateClipsAtTime(message.clips, timelineTime);
       updateTimelineSceneObjects(timelineTime, frameClips);
       updateImageSurfaces(timelineTime, frameClips);
@@ -1300,6 +1470,51 @@ async function exportVideo(message: Extract<EngineRequest, { type: "export" }>) 
   } finally {
     exportPipeline?.dispose();
     await exportRenderer.dispose();
+    graphics.applySettings(sceneSettings);
+    await render(lastTimelineTime, false, "realtime", previewFps);
+  }
+}
+
+async function exportStill(message: Extract<EngineRequest, { type: "export-still" }>) {
+  if (!graphics) throw new Error("レンダーエンジンの準備が完了していません");
+  const exportWidth = Math.max(1, Math.min(7680, Math.floor(message.width)));
+  const exportHeight = Math.max(1, Math.min(4320, Math.floor(message.height)));
+  const exportCanvas = new OffscreenCanvas(exportWidth, exportHeight);
+  const stillSettings = evaluateSceneSettingsAtTime(message.sceneSettings, message.time);
+  graphics.applySettings(stillSettings);
+  const renderer = new THREE.WebGPURenderer({
+    canvas: exportCanvas,
+    antialias: stillSettings.renderer.antialias,
+    samples: stillSettings.renderer.samples,
+    alpha: true,
+    outputBufferType: stillSettings.renderer.outputBuffer === "float16" ? THREE.HalfFloatType : THREE.UnsignedByteType,
+  });
+  renderer.setPixelRatio(1);
+  renderer.setSize(exportWidth, exportHeight, false);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  const camera = graphics.createCameraForSize(exportWidth, exportHeight);
+  applyExportFrameSettings(renderer, camera, stillSettings, exportWidth, exportHeight);
+  let pipeline: ReturnType<typeof createRenderPipeline> | null = null;
+  try {
+    await renderer.init();
+    const clips = evaluateClipsAtTime(message.clips, message.time);
+    updateTimelineSceneObjects(message.time, clips);
+    updateImageSurfaces(message.time, clips);
+    updateModelSurfaces(message.time, clips);
+    updateParticleSurfaces(message.time, clips, renderer);
+    const { retiredFrames, samplesToClose } = await updateVideoSurfaces(message.time, clips);
+    await renderer.compileAsync(graphics.scene, camera);
+    pipeline = stillSettings.renderer.postProcessing ? createRenderPipeline(renderer, graphics.scene, camera, stillSettings) : null;
+    if (pipeline) pipeline.render();
+    else renderer.render(graphics.scene, camera);
+    retiredFrames.forEach((frame) => frame.close());
+    samplesToClose.forEach((sample) => sample?.close());
+    const blob = await exportCanvas.convertToBlob({ type: "image/png" });
+    const buffer = await blob.arrayBuffer();
+    send({ type: "export-complete", requestId: message.requestId, buffer, mimeType: "image/png" }, [buffer]);
+  } finally {
+    pipeline?.dispose();
+    await renderer.dispose();
     graphics.applySettings(sceneSettings);
     await render(lastTimelineTime, false, "realtime", previewFps);
   }
@@ -1350,6 +1565,7 @@ async function handleMessage(message: EngineRequest) {
     if (message.type === "decode-audio-preview") await decodeAudioPreview(message);
     if (message.type === "media-thumbnail") await createMediaThumbnail(message);
     if (message.type === "export") await exportVideo(message);
+    if (message.type === "export-still") await exportStill(message);
     if (message.type === "preview-cache-settings") {
       ramPreviewEnabled = message.enabled;
       cache.setMaxBytes(Math.max(1, message.maxBytes));
