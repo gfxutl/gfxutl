@@ -253,7 +253,7 @@ export function MediaPanel() {
     </div>
     {state.leftPanelTab === "export" ? <ExportPanel /> : state.leftPanelTab === "settings" ? <SettingsPanel /> : <div className="media-explorer">
       <div className="media-toolbar">
-        <Button onClick={() => void openDirectory()} aria-label="フォルダを開く" title="メディアフォルダを開く"><FolderOpen /><span>フォルダを開く</span></Button>
+        <Button size="icon" onClick={() => void openDirectory()} aria-label="フォルダを開く" title="メディアフォルダを開く"><FolderOpen /></Button>
         <Tooltip label="単体ファイルを読み込む"><Button size="icon" variant="ghost" onClick={controller.openMedia} aria-label="ファイルを読み込む"><Plus /></Button></Tooltip>
         <span className="spacer" />
         <Tooltip label="階層表示"><Button size="icon" variant="ghost" className={view === "tree" ? "active-soft" : ""} onClick={() => changeView("tree")} aria-label="階層表示"><ListTree /></Button></Tooltip>

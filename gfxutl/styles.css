@@ -457,17 +457,18 @@ svg { width: 16px; height: 16px; stroke-width: 1.7; }
 
 /* Timeline */
 .timeline-panel { z-index: 11; left: var(--rail-w); right: 0; bottom: var(--status-h); height: var(--timeline-h); border-width: 1px 0 0; background: #0e1012; overflow: hidden; }
-.timeline-transport-pill { position: absolute; z-index: 25000; top: 7px; left: 50%; height: 30px; display: flex; align-items: center; padding: 0 11px; border: 1px solid #3a3e42; border-radius: 999px; background: #181b1eea; color: #d9dbdc; box-shadow: 0 5px 16px #0009, inset 0 1px #ffffff0a; backdrop-filter: blur(10px); transform: translateX(-50%); transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }
-.timeline-transport-pill:hover, .timeline-transport-pill:focus-within { border-color: #62676b; background: #1d2023f5; box-shadow: 0 8px 24px #000b, inset 0 1px #ffffff12; }
+.timeline-transport-pill { position: absolute; z-index: 25000; top: 7px; left: 50%; height: 30px; display: flex; align-items: center; padding: 0 11px; border: 1px solid #3a3e42; border-radius: 999px; background: #181b1eea; color: #d9dbdc; box-shadow: 0 5px 16px #0009, inset 0 1px #ffffff0a; backdrop-filter: blur(10px); transform: translateX(-50%); transform-origin: center top; transition: height .2s cubic-bezier(.2,.8,.2,1), border-color .16s ease, background .16s ease, box-shadow .16s ease; }
+.timeline-transport-pill:hover, .timeline-transport-pill:focus-within { height: 38px; border-color: #62676b; background: #1d2023f5; box-shadow: 0 10px 27px #000b, inset 0 1px #ffffff12; }
 .timeline-pill-clock { flex: none; color: #f0f1f1; font: 10px "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; letter-spacing: .02em; }
 .timeline-pill-clock-precise { display: none; }
 .timeline-transport-pill:hover .timeline-pill-clock-compact, .timeline-transport-pill:focus-within .timeline-pill-clock-compact { display: none; }
 .timeline-transport-pill:hover .timeline-pill-clock-precise, .timeline-transport-pill:focus-within .timeline-pill-clock-precise { display: inline; }
 .timeline-pill-expanded { width: 0; display: flex; align-items: center; gap: 3px; overflow: hidden; opacity: 0; pointer-events: none; white-space: nowrap; transition: width .2s cubic-bezier(.2,.8,.2,1), margin-left .2s cubic-bezier(.2,.8,.2,1), opacity .12s ease; }
-.timeline-transport-pill:hover .timeline-pill-expanded, .timeline-transport-pill:focus-within .timeline-pill-expanded { width: 286px; margin-left: 8px; opacity: 1; pointer-events: auto; }
+.timeline-transport-pill:hover .timeline-pill-expanded, .timeline-transport-pill:focus-within .timeline-pill-expanded { width: 318px; margin-left: 8px; opacity: 1; pointer-events: auto; }
 .timeline-pill-duration { flex: none; width: 63px; color: #696e73; font: 8px "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
 .timeline-pill-divider { flex: none; width: 1px; height: 14px; margin: 0 2px; background: #3a3e42; }
-.timeline-pill-expanded button { flex: none; width: 24px; height: 24px; display: grid; place-items: center; border: 0; border-radius: 50%; padding: 0; background: transparent; color: #858a8e; cursor: pointer; }
+.timeline-pill-expanded button { flex: none; width: 24px; height: 24px; display: grid; place-items: center; border: 0; border-radius: 50%; padding: 0; background: transparent; color: #858a8e; cursor: pointer; transition: width .2s cubic-bezier(.2,.8,.2,1), height .2s cubic-bezier(.2,.8,.2,1), background .12s ease, color .12s ease; }
+.timeline-transport-pill:hover .timeline-pill-expanded button, .timeline-transport-pill:focus-within .timeline-pill-expanded button { width: 28px; height: 28px; }
 .timeline-pill-expanded button:hover, .timeline-pill-expanded button:focus-visible, .timeline-pill-expanded button.active { outline: 0; background: #303438; color: #fff; }
 .timeline-pill-expanded button svg { width: 12px; height: 12px; }
 .timeline-pill-expanded .play-button { background: #eceeed; color: #151719; }

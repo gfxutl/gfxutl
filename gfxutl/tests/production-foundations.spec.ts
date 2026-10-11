@@ -111,12 +111,15 @@ test("preview transport is replaced by a hover-expanding timeline time pill", as
   const pill = page.locator(".timeline-transport-pill");
   await expect(page.locator(".timeline-pill-clock-compact")).toHaveText("00:00:00");
   await expect(page.locator(".timeline-pill-clock-precise")).toBeHidden();
-  const collapsedWidth = (await pill.boundingBox())?.width ?? 0;
+  const collapsedBox = await pill.boundingBox();
+  const collapsedWidth = collapsedBox?.width ?? 0;
+  const collapsedHeight = collapsedBox?.height ?? 0;
   await pill.hover();
   await expect(page.locator(".timeline-pill-expanded")).toHaveCSS("opacity", "1");
   await expect(page.locator(".timeline-pill-clock-precise")).toHaveText("00:00:00.00");
   await expect(page.locator(".timeline-pill-clock-precise")).toBeVisible();
   await expect.poll(async () => (await pill.boundingBox())?.width ?? 0).toBeGreaterThan(collapsedWidth + 200);
+  await expect.poll(async () => (await pill.boundingBox())?.height ?? 0).toBeGreaterThan(collapsedHeight + 6);
   await expect(page.getByRole("button", { name: "再生" })).toBeVisible();
 
   await page.getByRole("button", { name: "1フレーム進む" }).click();
@@ -124,4 +127,5 @@ test("preview transport is replaced by a hover-expanding timeline time pill", as
   await expect(page.locator(".timeline-pill-expanded")).toHaveCSS("opacity", "0");
   await expect(page.locator(".timeline-pill-clock-precise")).toBeHidden();
   await expect.poll(async () => (await pill.boundingBox())?.width ?? 0).toBeLessThan(collapsedWidth + 10);
+  await expect.poll(async () => (await pill.boundingBox())?.height ?? 0).toBeLessThan(collapsedHeight + 2);
 });
