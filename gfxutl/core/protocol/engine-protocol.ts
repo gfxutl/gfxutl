@@ -289,15 +289,32 @@ export interface TimelinePatch {
   invalidatedRanges: Array<{ start: number; end: number }>;
 }
 
+export interface MediaFileSource {
+  name: string;
+  type: string;
+  size: number;
+  lastModified: number;
+  handle?: FileSystemFileHandle;
+  file?: File;
+}
+
+export interface SourceIoProfile {
+  backend: "file-reader-sync";
+  bytesRead: number;
+  readOperations: number;
+  largestRead: number;
+}
+
 export type EngineRequest =
   | { type: "init"; canvas: OffscreenCanvas; port: MessagePort; width: number; height: number; dpr: number }
   | { type: "attach-canvas"; canvas: OffscreenCanvas; width: number; height: number; dpr: number }
   | { type: "resize"; width: number; height: number; dpr: number }
   | { type: "timeline-patch"; patch: TimelinePatch }
   | { type: "render"; sequence: number; time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; sceneSettings?: SceneSettings }
-  | { type: "inspect-media"; requestId: string; assetId: string; file: File }
-  | { type: "inspect-image"; requestId: string; assetId: string; file: File }
-  | { type: "inspect-model"; requestId: string; assetId: string; file: File }
+  | { type: "inspect-media"; requestId: string; assetId: string; source: MediaFileSource }
+  | { type: "inspect-image"; requestId: string; assetId: string; source: MediaFileSource }
+  | { type: "inspect-model"; requestId: string; assetId: string; source: MediaFileSource }
+  | { type: "release-media"; assetId: string }
   | { type: "decode-audio-preview"; requestId: string; assetId: string; startTime: number; endTime: number }
   | { type: "media-thumbnail"; requestId: string; assetId: string; time: number }
   | { type: "geometry-upsert"; object: SceneObjectSpec }
@@ -311,9 +328,18 @@ export type EngineRequest =
 
 export type EngineResponse =
   | { type: "ready"; backend: "webgpu" | "webgl2"; mediaBunnyReady: boolean; cameraProjection: "orthographic" | "perspective" }
-  | { type: "media-info"; requestId: string; duration: number; width?: number; height?: number; codec?: string; hasAudio?: boolean }
+  | {
+      type: "media-info";
+      requestId: string;
+      duration: number;
+      width?: number;
+      height?: number;
+      codec?: string;
+      hasAudio?: boolean;
+      sourceProfile?: SourceIoProfile;
+    }
   | { type: "audio-preview-data"; requestId: string; chunks: Array<{ timestamp: number; duration: number; sampleRate: number; channels: ArrayBuffer[] }> }
-  | { type: "media-thumbnail"; requestId: string; bitmap?: ImageBitmap; peaks?: number[] }
+  | { type: "media-thumbnail"; requestId: string; bitmap?: ImageBitmap; frame?: VideoFrame; peaks?: number[] }
   | { type: "export-progress"; requestId: string; progress: number }
   | { type: "export-complete"; requestId: string; buffer: ArrayBuffer; mimeType: string }
   | { type: "geometry-ready"; id: string }

@@ -6,12 +6,13 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { clone as cloneSkinned } from "three/addons/utils/SkeletonUtils.js";
-import { ALL_FORMATS, AudioSample, AudioSampleSink, AudioSampleSource, BlobSource, BufferTarget, CanvasSource, Input, Mp4OutputFormat, Output, VideoSampleSink, WebMOutputFormat } from "mediabunny";
+import { ALL_FORMATS, AudioSample, AudioSampleSink, AudioSampleSource, BufferTarget, CanvasSource, Input, Mp4OutputFormat, Output, VideoSampleSink, WebMOutputFormat } from "mediabunny";
 import type { ClipKeyframe, EngineRequest, EngineResponse, RenderClip, SceneObjectSpec, SceneSettings } from "../protocol/engine-protocol";
 import { RamPreviewCache } from "./ram-preview-cache";
 import { createRenderPipeline, shadowTypeFrom, ThreeRendererCore, toneMappingFrom } from "./three-renderer-core";
 import { ThreeSceneCore } from "./three-scene-core";
 import { registerLocalFont } from "./three-geometry-factory";
+import { openWorkerFileSource } from "./worker-file-source";
 
 const worker = self as unknown as DedicatedWorkerGlobalScope;
 let channelPort: MessagePort | null = null;
@@ -1114,9 +1115,10 @@ async function render(time: number, shouldCache: boolean, mode: "realtime" | "pl
 }
 
 async function inspectMedia(message: Extract<EngineRequest, { type: "inspect-media" }>) {
+  const workerSource = await openWorkerFileSource(message.source);
   const input = new Input({
     formats: ALL_FORMATS,
-    source: new BlobSource(message.file, { maxCacheSize: 2 * 1024 * 1024 }),
+    source: workerSource.mediaSource,
   });
   let retainInput = false;
   try {
@@ -1142,10 +1144,21 @@ async function inspectMedia(message: Extract<EngineRequest, { type: "inspect-med
       });
       retainInput = true;
     }
-    send({ type: "media-info", requestId: message.requestId, duration, width: mediaWidth, height: mediaHeight, codec: codec ?? undefined, hasAudio: Boolean(audio) });
+    send({
+      type: "media-info", requestId: message.requestId, duration, width: mediaWidth, height: mediaHeight,
+      codec: codec ?? undefined, hasAudio: Boolean(audio),
+      sourceProfile: { backend: "file-reader-sync", ...workerSource.profile },
+    });
   } finally {
     if (!retainInput) input.dispose();
   }
+}
+
+function releaseMedia(assetId: string) {
+  const runtime = mediaRuntimes.get(assetId);
+  if (!runtime) return;
+  runtime.input.dispose();
+  mediaRuntimes.delete(assetId);
 }
 
 async function decodeAudioPreview(message: Extract<EngineRequest, { type: "decode-audio-preview" }>) {
@@ -1179,15 +1192,24 @@ async function createMediaThumbnail(message: Extract<EngineRequest, { type: "med
   if (!runtime) throw new Error("メディアを読み込んでからサムネイルを生成してください");
   if (runtime.videoSink) {
     const time = Math.max(0, Math.min(message.time, Math.max(0, runtime.duration - 0.001)));
-    const sample = await runtime.videoSink.getSample(time);
+    let sample = await runtime.videoSink.getSample(time);
+    // getSample() returns null when the requested time precedes a track's first
+    // presentation timestamp. This is common with MP4 edit lists and delayed
+    // WebM tracks, especially for the first frame of a hover preview.
+    if (!sample) {
+      const samples = runtime.videoSink.samples();
+      const first = await samples.next();
+      sample = first.done ? null : first.value;
+      await samples.return(undefined);
+    }
     if (!sample) throw new Error("動画フレームを取得できませんでした");
+    const frame = sample.toVideoFrame();
     try {
-      const frame = sample.toVideoFrame();
       try {
-        const bitmap = await createImageBitmap(frame);
-        send({ type: "media-thumbnail", requestId: message.requestId, bitmap }, [bitmap]);
-      } finally {
+        send({ type: "media-thumbnail", requestId: message.requestId, frame }, [frame]);
+      } catch (error) {
         frame.close();
+        throw error;
       }
     } finally {
       sample.close();
@@ -1218,12 +1240,18 @@ async function createMediaThumbnail(message: Extract<EngineRequest, { type: "med
 }
 
 async function inspectImage(message: Extract<EngineRequest, { type: "inspect-image" }>) {
-  const extension = message.file.name.split(".").pop()?.toLowerCase();
+  const workerSource = await openWorkerFileSource(message.source);
+  const bytes = workerSource.readAll();
+  const extension = message.source.name.split(".").pop()?.toLowerCase();
   let bitmap: ImageBitmap | undefined;
   let sourceTexture: THREE.Texture | undefined;
-  if (extension === "hdr") sourceTexture = new RGBELoader().createDataTexture(await message.file.arrayBuffer());
-  else if (extension === "exr") sourceTexture = new EXRLoader().createDataTexture(await message.file.arrayBuffer());
-  else bitmap = await createImageBitmap(message.file, { imageOrientation: "from-image" });
+  if (extension === "hdr") {
+    sourceTexture = new RGBELoader().createDataTexture(bytes.buffer);
+  } else if (extension === "exr") {
+    sourceTexture = new EXRLoader().createDataTexture(bytes.buffer);
+  } else {
+    bitmap = await createImageBitmap(new Blob([bytes], { type: message.source.type }), { imageOrientation: "from-image" });
+  }
   const textureImage = sourceTexture?.image as { width?: number; height?: number } | undefined;
   const width = bitmap?.width ?? textureImage?.width ?? 1;
   const height = bitmap?.height ?? textureImage?.height ?? 1;
@@ -1234,13 +1262,18 @@ async function inspectImage(message: Extract<EngineRequest, { type: "inspect-ima
   previous?.sourceTexture?.dispose();
   imageRuntimes.set(message.assetId, { bitmap, sourceTexture, width, height });
   graphics?.applySettings(sceneSettings);
-  send({ type: "media-info", requestId: message.requestId, duration: 0, width, height, codec: extension?.toUpperCase() || message.file.type || "image" });
+  send({
+    type: "media-info", requestId: message.requestId, duration: 0, width, height,
+    codec: extension?.toUpperCase() || message.source.type || "image",
+    sourceProfile: { backend: "file-reader-sync", ...workerSource.profile },
+  });
 }
 
 async function inspectModel(message: Extract<EngineRequest, { type: "inspect-model" }>) {
   for (const [clipId, surface] of modelSurfaces) if (surface.assetId === message.assetId) removeModelSurface(clipId);
+  const workerSource = await openWorkerFileSource(message.source);
   const loader = new GLTFLoader();
-  const gltf = await loader.parseAsync(await message.file.arrayBuffer(), "");
+  const gltf = await loader.parseAsync(workerSource.readAll().buffer, "");
   const scene = gltf.scene;
   scene.updateMatrixWorld(true);
   const bounds = new THREE.Box3().setFromObject(scene);
@@ -1254,7 +1287,10 @@ async function inspectModel(message: Extract<EngineRequest, { type: "inspect-mod
   }
   const duration = gltf.animations.reduce((maximum, animation) => Math.max(maximum, animation.duration), 0);
   modelRuntimes.set(message.assetId, { scene, animations: gltf.animations, duration });
-  send({ type: "media-info", requestId: message.requestId, duration: duration || 5, codec: "glTF 2.0" });
+  send({
+    type: "media-info", requestId: message.requestId, duration: duration || 5, codec: "glTF 2.0",
+    sourceProfile: { backend: "file-reader-sync", ...workerSource.profile },
+  });
 }
 
 interface ExportAudioCursor {
@@ -1560,6 +1596,7 @@ async function handleMessage(message: EngineRequest) {
       await render(message.time, message.cache, message.mode, message.fps);
     }
     if (message.type === "inspect-media") await inspectMedia(message);
+    if (message.type === "release-media") releaseMedia(message.assetId);
     if (message.type === "inspect-image") await inspectImage(message);
     if (message.type === "inspect-model") await inspectModel(message);
     if (message.type === "decode-audio-preview") await decodeAudioPreview(message);

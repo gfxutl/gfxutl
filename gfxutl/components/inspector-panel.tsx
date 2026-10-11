@@ -4,6 +4,7 @@ import { useEditor } from "../core/interface";
 import type { ClipEffect, ClipEffectKind, ClipMask, GeometryKind, GeometrySpec, KeyframeProperty, MaterialKind, MediaAsset, SceneSettings, TimelineClip } from "../core/interface";
 import { Button } from "./ui/button";
 import { Slider } from "./ui/slider";
+import { FontPicker } from "./font-picker";
 
 const GEOMETRY_OPTIONS: GeometryKind[] = ["box", "capsule", "circle", "cone", "cylinder", "dodecahedron", "icosahedron", "octahedron", "plane", "ring", "sphere", "tetrahedron", "torus", "torusKnot", "lathe", "shape", "extrude", "tube", "polyhedron", "edges", "wireframe", "buffer"];
 const THREE_RAD_TO_DEG = 180 / Math.PI;
@@ -215,7 +216,7 @@ export function InspectorPanel() {
         <div className="section-title"><span>テキストメッシュ</span><small>THREE.TEXT</small></div>
         <div className="section-body">
           <label className="text-editor-field"><span>内容</span><textarea aria-label="テキスト内容" value={selected.text ?? selected.name} onChange={(event) => controller.updateClip(selected.id, { text: event.target.value, name: event.target.value.split("\n")[0].slice(0, 36) || "Text" })} /></label>
-          <label className="select-field"><span>フォント</span><select aria-label="フォント" value={selected.fontId ?? ""} onChange={(event) => void controller.setTextFont(selected.id, event.target.value)}><option value="">Helvetiker（内蔵）</option>{state.fonts.map((font) => <option value={font.postscriptName} key={font.postscriptName}>{font.family} {font.style}</option>)}</select></label>
+          <FontPicker fonts={state.fonts} value={selected.fontId} loadPreview={controller.loadFontPreview} onChange={(fontId) => void controller.setTextFont(selected.id, fontId)} />
           <div className="font-access-row"><small>{selected.fontFamily ?? "Helvetiker"}</small><Button size="sm" variant="ghost" onClick={controller.loadFonts}>{state.fonts.length ? "フォントを再読込" : "ローカルフォントを読込"}</Button></div>
           <div className="field-grid"><NumberField label="サイズ" value={selected.fontSize ?? 1.2} onChange={(value) => controller.updateClip(selected.id, { fontSize: Math.max(0.01, value) })} /><NumberField label="奥行き" value={selected.textDepth ?? 0.12} onChange={(value) => controller.updateClip(selected.id, { textDepth: Math.max(0, value) })} /></div>
           <label className="color-field"><span>色</span><input aria-label="テキスト色" type="color" value={`#${(selected.textColor ?? 0x202020).toString(16).padStart(6, "0")}`} onChange={(event) => controller.updateClip(selected.id, { textColor: Number.parseInt(event.target.value.slice(1), 16) })} /></label>
@@ -407,6 +408,8 @@ function MetadataView({ clip, asset, fps }: { clip?: import("../core/interface")
     ["解像度", asset?.width && asset.height ? `${asset.width} × ${asset.height}` : "—"],
     ["メディア長", asset?.duration ? formatMetadataTime(asset.duration, fps) : "静止画"],
     ["ファイルサイズ", asset ? formatBytes(asset.size) : "—"],
+    ["ソースI/O", asset?.sourceProfile ? `FileReaderSync · ${asset.sourceProfile.readOperations} reads · ${formatBytes(asset.sourceProfile.bytesRead)}` : "—"],
+    ["最大read", asset?.sourceProfile ? formatBytes(asset.sourceProfile.largestRead) : "—"],
     ["クリップ開始", clip ? formatMetadataTime(clip.start, fps) : "—"],
     ["クリップ長", clip ? formatMetadataTime(clip.duration, fps) : "—"],
     ["ソースオフセット", clip ? formatMetadataTime(clip.offset, fps) : "—"],

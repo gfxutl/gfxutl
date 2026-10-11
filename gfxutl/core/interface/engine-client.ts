@@ -1,9 +1,9 @@
-import type { EngineRequest, EngineResponse, ExportSettings, RenderClip, SceneObjectSpec, SceneSettings, TimelinePatch } from "../protocol/engine-protocol";
+import type { EngineRequest, EngineResponse, ExportSettings, MediaFileSource, RenderClip, SceneObjectSpec, SceneSettings, TimelinePatch } from "../protocol/engine-protocol";
 
-type MediaInfo = { duration: number; width?: number; height?: number; codec?: string; hasAudio?: boolean };
+type MediaInfo = Extract<EngineResponse, { type: "media-info" }>;
 type ExportResult = { buffer: ArrayBuffer; mimeType: string };
 export type AudioPreviewChunk = { timestamp: number; duration: number; sampleRate: number; channels: ArrayBuffer[] };
-export type MediaThumbnail = { bitmap?: ImageBitmap; peaks?: number[] };
+export type MediaThumbnail = { bitmap?: ImageBitmap; frame?: VideoFrame; peaks?: number[] };
 
 export class EngineClient {
   private port: MessagePort | null = null;
@@ -106,29 +106,31 @@ export class EngineClient {
     });
   }
 
-  inspectMedia(file: File, assetId: string) {
+  inspectMedia(file: File, assetId: string, handle?: FileSystemFileHandle) {
     const requestId = crypto.randomUUID();
     return new Promise<MediaInfo>((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject });
-      this.post({ type: "inspect-media", requestId, assetId, file });
+      this.post({ type: "inspect-media", requestId, assetId, source: mediaFileSource(file, handle) });
     });
   }
 
-  inspectImage(file: File, assetId: string) {
+  inspectImage(file: File, assetId: string, handle?: FileSystemFileHandle) {
     const requestId = crypto.randomUUID();
     return new Promise<MediaInfo>((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject });
-      this.post({ type: "inspect-image", requestId, assetId, file });
+      this.post({ type: "inspect-image", requestId, assetId, source: mediaFileSource(file, handle) });
     });
   }
 
-  inspectModel(file: File, assetId: string) {
+  inspectModel(file: File, assetId: string, handle?: FileSystemFileHandle) {
     const requestId = crypto.randomUUID();
     return new Promise<MediaInfo>((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject });
-      this.post({ type: "inspect-model", requestId, assetId, file });
+      this.post({ type: "inspect-model", requestId, assetId, source: mediaFileSource(file, handle) });
     });
   }
+
+  releaseMedia(assetId: string) { this.post({ type: "release-media", assetId }); }
 
   decodeAudioPreview(assetId: string, startTime: number, endTime: number) {
     const requestId = crypto.randomUUID();
@@ -175,6 +177,23 @@ export class EngineClient {
   upsertGeometry(object: SceneObjectSpec) { this.post({ type: "geometry-upsert", object }); }
   removeGeometry(id: string) { this.post({ type: "geometry-remove", id }); }
   registerFont(fontId: string, buffer: ArrayBuffer) { this.post({ type: "font-register", fontId, buffer }, [buffer]); }
+}
+
+function mediaFileSource(file: File, handle?: FileSystemFileHandle): MediaFileSource {
+  let cloneableHandle: FileSystemFileHandle | undefined;
+  if (handle) {
+    try {
+      structuredClone(handle);
+      cloneableHandle = handle;
+    } catch { /* Test doubles and legacy handles fall back to the File object. */ }
+  }
+  return {
+    name: file.name,
+    type: file.type,
+    size: file.size,
+    lastModified: file.lastModified,
+    ...(cloneableHandle ? { handle: cloneableHandle } : { file }),
+  };
 }
 
 function mergeTimelinePatches(previous: TimelinePatch | null, next: TimelinePatch): TimelinePatch {

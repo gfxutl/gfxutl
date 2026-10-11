@@ -42,17 +42,23 @@ function MediaThumbnail({ asset, playing }: { asset: MediaAsset; playing: boolea
       const time = isPreviewing ? elapsed % asset.duration : asset.kind === "video" ? Math.min(asset.duration * 0.1, Math.max(0, asset.duration - 0.04)) : 0;
       try {
         const thumbnail = await controller.getMediaThumbnail(asset.id, time);
-        if (cancelled) { thumbnail.bitmap?.close(); return; }
+        const raster = thumbnail.frame ?? thumbnail.bitmap;
+        if (cancelled) { raster?.close(); return; }
         const canvas = canvasRef.current;
         const context = canvas?.getContext("2d");
         if (canvas && context) {
           context.clearRect(0, 0, canvas.width, canvas.height);
-          if (thumbnail.bitmap) {
-            const scale = Math.max(canvas.width / thumbnail.bitmap.width, canvas.height / thumbnail.bitmap.height);
-            const targetWidth = thumbnail.bitmap.width * scale;
-            const targetHeight = thumbnail.bitmap.height * scale;
-            context.drawImage(thumbnail.bitmap, (canvas.width - targetWidth) / 2, (canvas.height - targetHeight) / 2, targetWidth, targetHeight);
-            thumbnail.bitmap.close();
+          if (raster) {
+            const sourceWidth = raster instanceof VideoFrame ? raster.displayWidth : raster.width;
+            const sourceHeight = raster instanceof VideoFrame ? raster.displayHeight : raster.height;
+            const scale = Math.max(canvas.width / sourceWidth, canvas.height / sourceHeight);
+            const targetWidth = sourceWidth * scale;
+            const targetHeight = sourceHeight * scale;
+            try {
+              context.drawImage(raster, (canvas.width - targetWidth) / 2, (canvas.height - targetHeight) / 2, targetWidth, targetHeight);
+            } finally {
+              raster.close();
+            }
           } else if (thumbnail.peaks?.length) {
             context.fillStyle = "#182923";
             context.fillRect(0, 0, canvas.width, canvas.height);
@@ -63,7 +69,7 @@ function MediaThumbnail({ asset, playing }: { asset: MediaAsset; playing: boolea
               context.fillRect(index * barWidth + 1, (canvas.height - barHeight) / 2, Math.max(1, barWidth - 2), barHeight);
             });
           }
-        }
+        } else raster?.close();
       } catch { /* A disconnected handle is represented by the status badge. */ }
       if (!cancelled && isPreviewing) timer = window.setTimeout(draw, 100);
     };
@@ -103,6 +109,58 @@ function ExplorerImageThumbnail({ node }: { node: ExplorerNode }) {
   return url
     ? <img className="explorer-image-thumbnail" src={url} alt={`${node.name} のサムネイル`} draggable={false} />
     : <FileImage />;
+}
+
+function ExplorerVideoThumbnail({ node, playing }: { node: ExplorerNode; playing: boolean }) {
+  const { controller } = useEditor();
+  const hostRef = useRef<HTMLSpanElement>(null);
+  const [visible, setVisible] = useState(false);
+  const [previewAsset, setPreviewAsset] = useState<MediaAsset | null>(null);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting), { rootMargin: "80px" });
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!visible) { setPreviewAsset(null); return; }
+    let cancelled = false;
+    const previewId = `explorer-preview:${crypto.randomUUID()}`;
+    void (async () => {
+      try {
+        const handle = node.handle?.kind === "file" ? node.handle : undefined;
+        const file = node.file ?? await handle?.getFile();
+        if (!file || cancelled) return;
+        const info = await controller.prepareMediaPreview(file, previewId, handle);
+        if (cancelled) { controller.releaseMediaPreview(previewId); return; }
+        setPreviewAsset({
+          id: previewId,
+          name: node.name,
+          kind: "video",
+          duration: info.duration,
+          size: file.size,
+          width: info.width,
+          height: info.height,
+          codec: info.codec,
+          hasAudio: info.hasAudio,
+          lastModified: file.lastModified,
+          color: "#49636f",
+          fileStatus: "ready",
+        });
+      } catch { /* Unsupported codecs keep the lightweight file icon. */ }
+    })();
+    return () => {
+      cancelled = true;
+      controller.releaseMediaPreview(previewId);
+    };
+  }, [controller, node.file, node.handle, node.name, node.path, visible]);
+
+  return <span ref={hostRef} className="explorer-video-thumbnail">
+    {previewAsset ? <MediaThumbnail asset={previewAsset} playing={playing} /> : <FileVideo />}
+  </span>;
 }
 
 export function MediaPanel() {
@@ -305,7 +363,13 @@ function ExplorerGridCard({ node, asset, selectedAssetId, playing, onOpenDirecto
       onStage(node.path, node.file, handle);
       setExplorerDragData(event.dataTransfer, node.path);
     }}>
-      <span className="grid-card-visual">{asset ? <MediaThumbnail asset={asset} playing={playing} /> : isBrowserPreviewImage(node.name) ? <ExplorerImageThumbnail node={node} /> : <FileKindIcon name={node.name} />}</span>
+      <span className="grid-card-visual">{asset
+        ? <MediaThumbnail asset={asset} playing={playing} />
+        : isBrowserPreviewImage(node.name)
+          ? <ExplorerImageThumbnail node={node} />
+          : isBrowserPreviewVideo(node.name)
+            ? <ExplorerVideoThumbnail node={node} playing={playing} />
+            : <FileKindIcon name={node.name} />}</span>
       <span className="grid-card-name">{node.name}</span>
       <small className={asset?.fileStatus && asset.fileStatus !== "ready" ? "media-file-status" : ""}>{status}</small>
     </button>
@@ -471,6 +535,7 @@ function setExplorerDragData(dataTransfer: DataTransfer, path: string) { dataTra
 function supportedExtension(extension: string) { return SUPPORTED_EXTENSIONS.has(extension); }
 function isSupported(name: string) { return supportedExtension(extensionLabel(name).toLowerCase()); }
 function isBrowserPreviewImage(name: string) { return ["png", "jpg", "jpeg", "webp"].includes(extensionLabel(name).toLowerCase()); }
+function isBrowserPreviewVideo(name: string) { return ["mp4", "mov", "webm", "mkv"].includes(extensionLabel(name).toLowerCase()); }
 function extensionLabel(name: string) { return name.includes(".") ? name.split(".").pop()!.toUpperCase() : "FILE"; }
 function formatDuration(value: number) { return `${Math.floor(value / 60)}:${Math.floor(value % 60).toString().padStart(2, "0")}`; }
 function formatBytes(value: number) { return value >= 1024 * 1024 ? `${(value / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(value / 1024))} KB`; }

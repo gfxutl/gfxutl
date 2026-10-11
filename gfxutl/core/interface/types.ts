@@ -1,7 +1,7 @@
 export type TrackKind = "video" | "audio" | "title" | "object" | "group";
 
-import type { ClipEffect, ClipKeyframe, ClipMask, ExportSettings, GeometrySpec, SceneMaterialSpec, SceneSettings } from "../protocol/engine-protocol";
-export type { BackgroundSettings, BlendMode, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, EngineRequest, EngineResponse, ExportSettings, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, RendererSettings, RendererStats, RenderClip, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, TimelinePatch, ToneMappingKind } from "../protocol/engine-protocol";
+import type { ClipEffect, ClipKeyframe, ClipMask, ExportSettings, GeometrySpec, SceneMaterialSpec, SceneSettings, SourceIoProfile } from "../protocol/engine-protocol";
+export type { BackgroundSettings, BlendMode, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, EngineRequest, EngineResponse, ExportSettings, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, RendererSettings, RendererStats, RenderClip, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, SourceIoProfile, TimelinePatch, ToneMappingKind } from "../protocol/engine-protocol";
 
 export interface MediaAsset {
   id: string;
@@ -13,6 +13,7 @@ export interface MediaAsset {
   height?: number;
   codec?: string;
   hasAudio?: boolean;
+  sourceProfile?: SourceIoProfile;
   waveformPeaks?: number[];
   lastModified?: number;
   /** Path relative to the media explorer root. Used to reconnect tree entries. */

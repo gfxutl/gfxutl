@@ -20,7 +20,9 @@ export function App() {
   useEffect(() => {
     const controlKeyboard = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      const editingText = target?.matches("input, textarea, select, [contenteditable='true']");
+      const editingText = Boolean(target?.closest(
+        "input, textarea, select, [role='textbox'], [role='combobox'], [role='listbox'], [contenteditable]:not([contenteditable='false'])",
+      ));
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "z" && !editingText) {
         event.preventDefault();
         event.stopPropagation();
@@ -39,7 +41,7 @@ export function App() {
         controller.addMarker();
         return;
       }
-      if (event.code === "Space") {
+      if (!editingText && event.code === "Space") {
         event.preventDefault();
         event.stopPropagation();
         if (!event.repeat) controller.togglePlayback();

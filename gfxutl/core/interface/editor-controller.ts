@@ -141,6 +141,7 @@ export class EditorController {
   private persistenceTimer = 0;
   private localFontEntries = new Map<string, LocalFontEntry>();
   private registeredFonts = new Set<string>();
+  private fontPreviewLoads = new Map<string, Promise<string | undefined>>();
   private memoryClipboard: ClipboardPayload | null = null;
   private audioContext: AudioContext | null = null;
   private audioVoices = new Map<string, PreviewAudioVoice>();
@@ -439,9 +440,9 @@ export class EditorController {
   };
 
   private async registerRuntimeFile(asset: MediaAsset, file: File) {
-    if (asset.kind === "image") return this.engine.inspectImage(file, asset.id);
-    if (asset.kind === "model") return this.engine.inspectModel(file, asset.id);
-    const info = await this.engine.inspectMedia(file, asset.id);
+    if (asset.kind === "image") return this.engine.inspectImage(file, asset.id, asset.handle);
+    if (asset.kind === "model") return this.engine.inspectModel(file, asset.id, asset.handle);
+    const info = await this.engine.inspectMedia(file, asset.id, asset.handle);
     return info;
   }
 
@@ -899,6 +900,8 @@ export class EditorController {
   };
 
   getMediaThumbnail = (assetId: string, time = 0) => this.engine.getMediaThumbnail(assetId, time);
+  prepareMediaPreview = (file: File, previewId: string, handle?: FileSystemFileHandle) => this.engine.inspectMedia(file, previewId, handle);
+  releaseMediaPreview = (previewId: string) => this.engine.releaseMedia(previewId);
   pickPreview = (ndcX: number, ndcY: number) => this.engine.pick(ndcX, ndcY);
 
   setLayout = (patch: Partial<EditorLayout>, persist = false) => {
@@ -1177,6 +1180,28 @@ export class EditorController {
       }
     }
     this.updateClip(clipId, { fontId: entry ? fontId : undefined, fontFamily: entry?.family ?? "Helvetiker" });
+  };
+
+  loadFontPreview = (fontId: string) => {
+    const cached = this.fontPreviewLoads.get(fontId);
+    if (cached) return cached;
+    const entry = this.localFontEntries.get(fontId);
+    if (!entry) return Promise.resolve(undefined);
+    const family = `GfxUtl Preview ${fontId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+    const pending = entry.blob()
+      .then((blob) => blob.arrayBuffer())
+      .then(async (buffer) => {
+        const face = new FontFace(family, buffer);
+        await face.load();
+        document.fonts.add(face);
+        return family;
+      })
+      .catch(() => {
+        this.fontPreviewLoads.delete(fontId);
+        return undefined;
+      });
+    this.fontPreviewLoads.set(fontId, pending);
+    return pending;
   };
 
   copySelection = async () => {

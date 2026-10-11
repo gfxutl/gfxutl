@@ -468,7 +468,7 @@ test("media and graphics worker becomes ready", async ({ page }) => {
   await expect(page.locator(".preview-stage canvas")).toHaveAttribute("data-camera-projection", "orthographic");
 });
 
-test("pure white is the UI accent and Space controls playback from every focus", async ({ page }) => {
+test("pure white is the UI accent and Space preserves text editing", async ({ page }) => {
   const accent = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim());
   expect(accent).toBe("#fff");
   const playing = async () => page.evaluate(async () => {
@@ -479,13 +479,14 @@ test("pure white is the UI accent and Space controls playback from every focus",
 
   const search = page.locator(".search-box input");
   await search.focus();
+  await search.fill("clip");
   await page.keyboard.press("Space");
-  await expect.poll(playing).toBe(true);
-  await expect(search).toHaveValue("");
+  await expect.poll(playing).toBe(false);
+  await expect(search).toHaveValue("clip ");
 
   await page.getByRole("button", { name: "メディア", exact: true }).focus();
   await page.keyboard.press("Space");
-  await expect.poll(playing).toBe(false);
+  await expect.poll(playing).toBe(true);
 });
 
 test("128 MB H.264 RAM preview is live when stopped and cached during playback", async ({ page }) => {
@@ -923,6 +924,12 @@ test("images render through Three and media clips share resize handles", async (
   await chooser.setFiles({ name: "still.png", mimeType: "image/png", buffer: Buffer.from(pngBytes) });
   const card = page.locator(".media-card", { hasText: "still.png" });
   await expect(card).toContainText("120 × 60");
+  const imageIo = await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    return editorController.getSnapshot().assets.find((asset: { name: string }) => asset.name === "still.png")?.sourceProfile;
+  });
+  expect(imageIo).toMatchObject({ backend: "file-reader-sync", readOperations: 1 });
   await card.dragTo(page.locator(".timeline-workspace"), { targetPosition: { x: 20, y: 80 } });
   const canvas = page.locator(".preview-stage canvas");
   await expect(canvas).toHaveAttribute("data-active-image-objects", "1", { timeout: 10_000 });
@@ -1137,10 +1144,21 @@ test("Local Font Access data is registered for editable text meshes", async ({ p
   await page.evaluate((base64) => {
     const binary = atob(base64);
     const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-    Object.defineProperty(window, "queryLocalFonts", { configurable: true, value: async () => [{
-      postscriptName: "DejaVuSans", fullName: "DejaVu Sans", family: "DejaVu Sans", style: "Book",
-      blob: async () => new Blob([bytes], { type: "font/ttf" }),
-    }] });
+    const reads: string[] = [];
+    Object.defineProperty(window, "__fontBlobReads", { configurable: true, value: reads });
+    Object.defineProperty(window, "queryLocalFonts", { configurable: true, value: async () => Array.from({ length: 24 }, (_, index) => {
+      const postscriptName = index === 0 ? "DejaVuSans" : `LazyFont${index}`;
+      return {
+        postscriptName,
+        fullName: index === 0 ? "DejaVu Sans" : `Lazy Font ${index}`,
+        family: index === 0 ? "DejaVu Sans" : `Lazy Font ${index}`,
+        style: "Book",
+        blob: async () => {
+          reads.push(postscriptName);
+          return new Blob([bytes], { type: "font/ttf" });
+        },
+      };
+    }) });
   }, fontBase64);
   const vertices = await page.evaluate(async (base64) => {
     const binary = atob(base64);
@@ -1157,16 +1175,28 @@ test("Local Font Access data is registered for editable text meshes", async ({ p
   await page.locator(".timeline-workspace").click({ button: "right", position: { x: 180, y: 90 } });
   await page.getByRole("menuitem", { name: "テキスト" }).click();
   await page.getByRole("button", { name: "ローカルフォントを読込" }).click();
-  await expect(page.getByLabel("フォント").locator("option")).toHaveCount(2);
+  expect(await page.evaluate(() => (window as unknown as { __fontBlobReads: string[] }).__fontBlobReads.length)).toBe(0);
+  await page.getByRole("combobox", { name: "フォント" }).click();
+  await expect(page.getByRole("listbox", { name: "フォント一覧" }).getByRole("option")).toHaveCount(25);
+  await expect(page.locator(".font-load-marker")).toHaveCount(4);
+  const firstFont = page.locator('[data-font-id="DejaVuSans"]');
+  await expect(firstFont).toHaveAttribute("data-font-loaded", "true", { timeout: 10_000 });
+  const initiallyLoaded = await page.evaluate(() => new Set((window as unknown as { __fontBlobReads: string[] }).__fontBlobReads).size);
+  expect(initiallyLoaded).toBeGreaterThan(0);
+  expect(initiallyLoaded).toBeLessThan(24);
+  const lastFont = page.locator('[data-font-id="LazyFont23"]');
+  await lastFont.scrollIntoViewIfNeeded();
+  await expect(lastFont).toHaveAttribute("data-font-loaded", "true", { timeout: 10_000 });
+  expect(await firstFont.locator("span").evaluate((element) => getComputedStyle(element).fontFamily)).toContain("GfxUtl Preview DejaVuSans");
   const canvas = page.locator(".preview-stage canvas");
   const before = Number(await canvas.getAttribute("data-geometry-objects"));
-  await page.getByLabel("フォント").selectOption("DejaVuSans");
+  await firstFont.click();
   await page.getByLabel("テキスト内容").fill("Local Font");
   await expect.poll(async () => Number(await canvas.getAttribute("data-geometry-objects")), { timeout: 10_000 }).toBeGreaterThan(before);
   await expect(page.locator(".font-access-row")).toContainText("DejaVu Sans");
 });
 
-test("MediaBunny VideoFrame is rendered through Three VideoFrameTexture", async ({ page }) => {
+test("video thumbnails animate before timeline insertion and render through Three VideoFrameTexture", async ({ page }) => {
   await expect(page.locator(".engine-light")).toHaveClass(/(webgpu|webgl2)/, { timeout: 20_000 });
   const bytes = await page.evaluate(async () => {
     const canvas = document.createElement("canvas");
@@ -1192,6 +1222,36 @@ test("MediaBunny VideoFrame is rendered through Three VideoFrameTexture", async 
     return Array.from(new Uint8Array(await new Blob(chunks, { type: recorder.mimeType }).arrayBuffer()));
   });
 
+  await page.evaluate((videoBytes) => {
+    const clip = {
+      kind: "file",
+      name: "browser-only.webm",
+      getFile: async () => new File([Uint8Array.from(videoBytes)], "browser-only.webm", { type: "video/webm" }),
+    };
+    const root = { kind: "directory", name: "Preview Files", async *values() { yield clip; } };
+    Object.defineProperty(window, "showDirectoryPicker", { configurable: true, value: async () => root });
+  }, bytes);
+  await page.getByRole("button", { name: "フォルダを開く" }).click();
+  await page.getByRole("button", { name: "グリッド表示" }).click();
+  const browserCard = page.locator(".media-card", { hasText: "browser-only.webm" });
+  const browserThumbnail = browserCard.getByLabel("browser-only.webm のサムネイル");
+  await expect.poll(async () => browserThumbnail.evaluate((canvas: HTMLCanvasElement) => {
+    const pixels = canvas.getContext("2d")?.getImageData(0, 0, canvas.width, canvas.height).data;
+    if (!pixels) return 0;
+    let alpha = 0;
+    for (let index = 3; index < pixels.length; index += 4) alpha += pixels[index];
+    return alpha;
+  }), { timeout: 15_000 }).toBeGreaterThan(0);
+  expect(await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    return editorController.getSnapshot().assets.length;
+  })).toBe(0);
+  const browserThumbnailBeforeHover = await browserThumbnail.screenshot();
+  await browserThumbnail.hover();
+  await expect.poll(async () => (await browserThumbnail.screenshot()).equals(browserThumbnailBeforeHover), { timeout: 5_000 }).toBe(false);
+  await page.getByRole("button", { name: "フォルダを閉じる" }).click();
+
   await page.evaluate(() => Object.defineProperty(window, "showOpenFilePicker", { configurable: true, value: undefined }));
   const chooserPromise = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "読み込む" }).click();
@@ -1199,6 +1259,25 @@ test("MediaBunny VideoFrame is rendered through Three VideoFrameTexture", async 
   await chooser.setFiles({ name: "direct-frame.webm", mimeType: "video/webm", buffer: Buffer.from(bytes) });
   const card = page.locator(".media-card", { hasText: "direct-frame.webm" });
   await expect(card).toContainText("64 × 64", { timeout: 15_000 });
+  const videoIo = await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    return editorController.getSnapshot().assets.find((asset: { name: string }) => asset.name === "direct-frame.webm")?.sourceProfile;
+  });
+  expect(videoIo?.backend).toBe("file-reader-sync");
+  expect(videoIo?.readOperations).toBeGreaterThan(0);
+  await page.getByRole("button", { name: "グリッド表示" }).click();
+  const mediaThumbnail = card.getByLabel("direct-frame.webm のサムネイル");
+  await expect.poll(async () => mediaThumbnail.evaluate((canvas: HTMLCanvasElement) => {
+    const pixels = canvas.getContext("2d")?.getImageData(0, 0, canvas.width, canvas.height).data;
+    if (!pixels) return 0;
+    let alpha = 0;
+    for (let index = 3; index < pixels.length; index += 4) alpha += pixels[index];
+    return alpha;
+  }), { timeout: 15_000 }).toBeGreaterThan(0);
+  const thumbnailBeforeHover = await mediaThumbnail.screenshot();
+  await mediaThumbnail.hover();
+  await expect.poll(async () => (await mediaThumbnail.screenshot()).equals(thumbnailBeforeHover), { timeout: 5_000 }).toBe(false);
   await page.evaluate(async () => {
     // @ts-expect-error Vite resolves this browser-only module URL during the test.
     const { editorController } = await import("/core/interface/index.ts");
