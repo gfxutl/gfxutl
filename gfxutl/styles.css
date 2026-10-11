@@ -379,8 +379,7 @@ svg { width: 16px; height: 16px; stroke-width: 1.7; }
 .property-action-stack-heading strong { color: #d0d2d4; font-size: 10px; }
 .property-action-stack-heading small { color: #62676c; font-size: 7px; }
 .property-action-stack-heading > span { min-width: 22px; height: 18px; display: grid; place-items: center; border: 1px solid #383d42; border-radius: 10px; color: #aeb2b6; font: 8px "IBM Plex Mono", monospace; }
-.property-action-list { position: relative; padding: 7px 7px 2px 14px; }
-.property-action-list::before { content: ""; position: absolute; top: 7px; bottom: 2px; left: 7px; width: 1px; background: #34383d; }
+.property-action-list { position: relative; padding: 7px 7px 2px; }
 .property-action-card { position: relative; margin-bottom: 7px; overflow: hidden; border: 1px solid #34383d; border-radius: 4px; background: #111315; box-shadow: 0 2px 8px #0003; }
 .property-action-card::before { content: ""; position: absolute; z-index: 2; top: 12px; left: -8px; width: 8px; height: 1px; background: #34383d; }
 .property-action-card-header { height: 25px; display: flex; align-items: center; gap: 2px; padding: 0 3px; border-bottom: 1px solid #292d31; background: #1a1d20; }
