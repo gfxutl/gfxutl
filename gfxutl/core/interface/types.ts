@@ -1,7 +1,14 @@
 export type TrackKind = "video" | "audio" | "title" | "object" | "group";
 
-import type { ClipEffect, ClipKeyframe, ClipMask, ExportSettings, GeometrySpec, SceneMaterialSpec, SceneSettings, SourceIoProfile } from "../protocol/engine-protocol";
-export type { BackgroundSettings, BlendMode, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, EngineRequest, EngineResponse, ExportSettings, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, RendererSettings, RendererStats, RenderClip, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, SourceIoProfile, TimelinePatch, ToneMappingKind } from "../protocol/engine-protocol";
+export type ClipPropertyActionKind = "transform" | "sceneGraph" | "keyframes" | "crop" | "effects" | "postProcess" | "masks" | "audio" | "speed";
+
+export interface ClipPropertyAction {
+  id: string;
+  kind: ClipPropertyActionKind;
+}
+
+import type { ClipEffect, ClipKeyframe, ClipMask, ClipPostProcess, ExportSettings, GeometrySpec, SceneMaterialSpec, SceneSettings, SourceIoProfile } from "../protocol/engine-protocol";
+export type { BackgroundSettings, BlendMode, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, EngineRequest, EngineResponse, ExportSettings, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, RendererSettings, RendererStats, RenderClip, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, SceneSettingsPatch, SourceIoProfile, TimelinePatch, ToneMappingKind } from "../protocol/engine-protocol";
 
 export interface MediaAsset {
   id: string;
@@ -52,6 +59,7 @@ export interface TimelineClip {
   speed?: number;
   ripple?: boolean;
   effects?: ClipEffect[];
+  postProcess?: ClipPostProcess;
   masks?: ClipMask[];
   keyframes?: ClipKeyframe[];
   geometry?: GeometrySpec;
@@ -77,6 +85,8 @@ export interface TimelineClip {
   groupHeight?: number;
   /** Direct timeline container. This is separate from the Three.js scene parentId. */
   groupId?: string;
+  /** Ordered, removable property operations applied on top of the base object. */
+  propertyActions?: ClipPropertyAction[];
 }
 
 export interface ContextMenuState {
@@ -87,6 +97,8 @@ export interface ContextMenuState {
   timelineY: number;
   positionX: number;
   positionY: number;
+  /** Marker explicitly hit when opening a timeline context menu. */
+  markerId?: string;
 }
 
 export interface FontFaceInfo {

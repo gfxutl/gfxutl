@@ -1,4 +1,4 @@
-import { Box, Clipboard, ClipboardPaste, Copy, Flag, FolderTree, Magnet, Scissors, Sparkles, Type, Circle, Undo2, Redo2, Pentagon } from "lucide-react";
+import { Box, Clipboard, ClipboardPaste, Copy, Flag, FolderTree, Magnet, Scissors, Sparkles, Type, Circle, Undo2, Redo2, Pentagon, Trash2 } from "lucide-react";
 import { useEffect, type MouseEvent } from "react";
 import { useEditor } from "../core/interface";
 
@@ -28,6 +28,7 @@ export function EditorContextMenu() {
   }, [controller]);
 
   if (!menu) return null;
+  const targetMarker = menu.markerId ? state.markers.find((marker) => marker.id === menu.markerId) : undefined;
   const placement = { time: menu.time, timelineY: menu.timelineY, positionX: menu.positionX, positionY: menu.positionY };
   const run = (event: MouseEvent, action: () => void | Promise<unknown>) => {
     event.stopPropagation();
@@ -42,16 +43,22 @@ export function EditorContextMenu() {
     onContextMenu={(event) => event.preventDefault()}
   >
     <div className="context-menu-label"><Clipboard /> 編集</div>
-    <button role="menuitem" disabled={!state.canUndo} onClick={(event) => run(event, () => { controller.undo(); controller.closeContextMenu(); })}><Undo2 />元に戻す<kbd>⌘Z</kbd></button>
-    <button role="menuitem" disabled={!state.canRedo} onClick={(event) => run(event, () => { controller.redo(); controller.closeContextMenu(); })}><Redo2 />やり直す<kbd>⇧⌘Z</kbd></button>
-    <button role="menuitem" disabled={!state.selectedClipId} onClick={(event) => run(event, async () => { await controller.cutSelection(); controller.closeContextMenu(); })}><Scissors />切り取り<kbd>⌘X</kbd></button>
-    <button role="menuitem" disabled={!state.selectedClipId} onClick={(event) => run(event, async () => { await controller.copySelection(); controller.closeContextMenu(); })}><Copy />コピー<kbd>⌘C</kbd></button>
-    <button role="menuitem" onClick={(event) => run(event, () => controller.pasteFromClipboard())}><ClipboardPaste />貼り付け<kbd>⌘V</kbd></button>
+    <div className="context-menu-action-row context-menu-action-row-two" role="group" aria-label="履歴操作">
+      <button role="menuitem" aria-keyshortcuts="Meta+Z Control+Z" title="元に戻す (⌘Z)" disabled={!state.canUndo} onClick={(event) => run(event, () => { controller.undo(); controller.closeContextMenu(); })}><Undo2 /><span>元に戻す</span></button>
+      <button role="menuitem" aria-keyshortcuts="Meta+Shift+Z Control+Shift+Z" title="やり直す (⇧⌘Z)" disabled={!state.canRedo} onClick={(event) => run(event, () => { controller.redo(); controller.closeContextMenu(); })}><Redo2 /><span>やり直す</span></button>
+    </div>
+    <div className="context-menu-action-row context-menu-action-row-three" role="group" aria-label="クリップボード操作">
+      <button role="menuitem" aria-keyshortcuts="Meta+X Control+X" title="切り取り (⌘X)" disabled={!state.selectedClipId} onClick={(event) => run(event, async () => { await controller.cutSelection(); controller.closeContextMenu(); })}><Scissors /><span>切り取り</span></button>
+      <button role="menuitem" aria-keyshortcuts="Meta+C Control+C" title="コピー (⌘C)" disabled={!state.selectedClipId} onClick={(event) => run(event, async () => { await controller.copySelection(); controller.closeContextMenu(); })}><Copy /><span>コピー</span></button>
+      <button role="menuitem" aria-keyshortcuts="Meta+V Control+V" title="貼り付け (⌘V)" onClick={(event) => run(event, () => controller.pasteFromClipboard())}><ClipboardPaste /><span>貼り付け</span></button>
+    </div>
     {(menu.scope === "timeline" || menu.scope === "clip") && <>
       <div className="context-menu-separator" />
       <div className="context-menu-label">タイムライン</div>
       <button role="menuitem" disabled={!state.selectedClipIds.length} onClick={(event) => run(event, () => { controller.splitSelectionAt(menu.time); controller.closeContextMenu(); })}><Scissors />カット<kbd>{menu.time.toFixed(2)}s</kbd></button>
-      <button role="menuitem" onClick={(event) => run(event, () => { controller.addMarker(menu.time); controller.closeContextMenu(); })}><Flag />マーカーを追加<kbd>M</kbd></button>
+      {targetMarker
+        ? <button role="menuitem" onClick={(event) => run(event, () => { controller.removeMarker(targetMarker.id); controller.closeContextMenu(); })}><Trash2 />このマーカーを削除</button>
+        : <button role="menuitem" onClick={(event) => run(event, () => { controller.addMarker(menu.time); controller.closeContextMenu(); })}><Flag />マーカーを追加<kbd>M</kbd></button>}
       <button role="menuitemcheckbox" aria-checked={state.snapEnabled} className={state.snapEnabled ? "checked" : ""} onClick={(event) => run(event, () => { controller.toggleSnap(); controller.closeContextMenu(); })}><Magnet />マグネット<kbd>{state.snapEnabled ? "ON" : "OFF"}</kbd></button>
     </>}
     <div className="context-menu-separator" />

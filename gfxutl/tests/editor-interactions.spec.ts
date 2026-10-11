@@ -18,6 +18,26 @@ async function clickPlay(page: Page) {
   await page.locator(".play-button").click();
 }
 
+async function samplePreviewPixel(page: Page, xRatio: number, yRatio: number) {
+  const png = await page.locator(".preview-stage canvas").screenshot();
+  return page.evaluate(async ({ base64, xRatio, yRatio }) => {
+    const image = new Image();
+    image.src = `data:image/png;base64,${base64}`;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const context = canvas.getContext("2d")!;
+    context.drawImage(image, 0, 0);
+    const pixels = context.getImageData(Math.floor(image.width * xRatio) - 2, Math.floor(image.height * yRatio) - 2, 5, 5).data;
+    const channels = [0, 0, 0];
+    for (let index = 0; index < pixels.length; index += 4) {
+      channels[0] += pixels[index]; channels[1] += pixels[index + 1]; channels[2] += pixels[index + 2];
+    }
+    return channels.map((channel) => channel / (pixels.length / 4));
+  }, { base64: png.toString("base64"), xRatio, yRatio });
+}
+
 async function seedTimeline(page: Page) {
   await page.evaluate(async () => {
     // @ts-expect-error Vite resolves this browser-only module URL during the test.
@@ -312,7 +332,7 @@ test("nearby timeline edges show an alignment suggestion and snap while dragging
   await page.mouse.up();
 });
 
-test("requested panels expose export and metadata without the tool rail", async ({ page }) => {
+test("requested panels expose export, realtime layers, and metadata without the tool rail", async ({ page }) => {
   await expect(page.locator("#main > aside")).toHaveCount(0);
   const mediaTabs = page.locator("#main > section").nth(0).locator(":scope > div").nth(0).locator(":scope > button");
   await expect(mediaTabs).toHaveCount(3);
@@ -323,23 +343,42 @@ test("requested panels expose export and metadata without the tool rail", async 
   await expect(page.locator(".export-field", { hasText: "ビットレート" })).toBeVisible();
 
   const inspectorTabs = page.locator("#main > section").nth(2).locator(":scope > div").nth(0).locator(":scope > button");
+  await expect(inspectorTabs).toHaveCount(3);
+  await expect(inspectorTabs).toHaveText(["プロパティ", "インスペクター", "メタデータ"]);
+  await expect(inspectorTabs.nth(0).locator("svg")).toHaveCount(0);
+  await seedTimeline(page);
+  await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    editorController.setTime(3);
+  });
   await inspectorTabs.nth(1).click();
-  await expect(page.locator(".metadata-empty")).toContainText("選択してください");
+  await expect(page.locator(".realtime-layer-inspector")).toHaveAttribute("data-active-layers", "1");
+  await expect(page.locator(".layer-inspector-item")).toContainText("Seed.png");
+  await expect(page.locator(".layer-inspector-head time")).toHaveText("00:03:00");
+  await inspectorTabs.nth(2).click();
+  await expect(page.locator(".metadata-view")).toContainText("Seed.png");
 });
 
-test("requested chrome is removed and inspector sections compact below fixed headers", async ({ page }) => {
+test("requested chrome is removed and property actions compact below fixed headers", async ({ page }) => {
   await seedTimeline(page);
   await expect(page.locator("#main > .panel-resizer > span")).toHaveCount(0);
   await expect(page.locator("#main > section").nth(1).locator(":scope > .preview-header")).toHaveCount(0);
   await expect(page.locator("#main > section").nth(2).locator(":scope > .selected-clip > .clip-icon")).toHaveCount(0);
 
-  const firstSection = page.locator(".inspector-panel > .inspector-section").first();
-  const body = firstSection.locator(":scope > .section-body");
+  const firstSection = page.locator(".property-action-card").first();
+  expect((await firstSection.locator(".property-action-card-header").boundingBox())!.height).toBeLessThanOrEqual(26);
+  const keyframeBody = page.locator('.property-action-card[data-action-kind="keyframes"] .property-action-body');
+  const keyframeFieldBox = await keyframeBody.locator(":scope > label").boundingBox();
+  const keyframeButtonBox = await keyframeBody.locator(":scope > button").boundingBox();
+  expect(Math.abs((keyframeFieldBox!.y + keyframeFieldBox!.height / 2) - (keyframeButtonBox!.y + keyframeButtonBox!.height / 2))).toBeLessThan(2);
+  expect(keyframeFieldBox!.x + keyframeFieldBox!.width).toBeLessThanOrEqual(keyframeButtonBox!.x);
+  const body = firstSection.locator(":scope > .property-action-body");
   await expect(body).toBeVisible();
-  await firstSection.locator(":scope > .section-title > .section-collapse-toggle").click();
+  await firstSection.locator(":scope > .property-action-card-header > .property-action-toggle").click();
   await expect(firstSection).toHaveClass(/compact/);
   await expect(body).toHaveCount(0);
-  await firstSection.locator(":scope > .section-title > .section-collapse-toggle").click();
+  await firstSection.locator(":scope > .property-action-card-header > .property-action-toggle").click();
   await expect(body).toBeVisible();
 
   const inspector = page.locator(".inspector-panel");
@@ -351,6 +390,69 @@ test("requested chrome is removed and inspector sections compact below fixed hea
   const after = { tabs: await tabs.boundingBox(), selection: await selection.boundingBox() };
   expect(Math.round(after.tabs!.y)).toBe(Math.round(before.tabs!.y));
   expect(Math.round(after.selection!.y)).toBe(Math.round(before.selection!.y));
+});
+
+test("property actions can be removed, restored, reordered, and persist their neutral state", async ({ page }) => {
+  await seedTimeline(page);
+  await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    editorController.updateClip("seed-clip", { cropLeft: 18, cropRight: 7 });
+  });
+
+  const cards = page.locator(".property-action-card");
+  await expect(cards).toHaveCount(7);
+  const crop = page.locator('.property-action-card[data-action-kind="crop"]');
+  await crop.getByRole("button", { name: "クロップ作用を削除" }).click();
+  await expect(crop).toHaveCount(0);
+  await expect.poll(() => page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    const clip = editorController.getSnapshot().clips.find((item: { id: string }) => item.id === "seed-clip");
+    return { left: clip?.cropLeft, right: clip?.cropRight, kinds: clip?.propertyActions?.map((action: { kind: string }) => action.kind) };
+  })).toEqual({ left: 0, right: 0, kinds: ["transform", "keyframes", "effects", "masks", "audio", "speed"] });
+
+  await page.getByLabel("追加する作用").selectOption("crop");
+  await page.getByRole("button", { name: "作用を追加" }).click();
+  await expect(page.locator('.property-action-card[data-action-kind="crop"]')).toBeVisible();
+  await page.getByRole("button", { name: "クロップを上へ" }).click();
+  await expect.poll(() => page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    return editorController.getSnapshot().clips.find((item: { id: string }) => item.id === "seed-clip")?.propertyActions?.map((action: { kind: string }) => action.kind);
+  })).toEqual(["transform", "keyframes", "effects", "masks", "audio", "crop", "speed"]);
+});
+
+test("post-process action compiles GLSL to WGSL with Naga WASM and reports diagnostics", async ({ page }) => {
+  await seedTimeline(page);
+  await page.getByLabel("追加する作用").selectOption("postProcess");
+  await page.getByRole("button", { name: "作用を追加" }).click();
+
+  const editor = page.locator(".post-process-editor");
+  await expect(editor).toHaveAttribute("data-compile-status", "ready", { timeout: 30_000 });
+  await expect(editor.locator(".shader-status, .shader-signature, .shader-wgsl, .shader-runtime-row small, .shader-compile-row small, textarea")).toHaveCount(0);
+  const codeEditor = page.getByLabel("GLSLシェーダー");
+  await expect(codeEditor).toHaveAttribute("contenteditable", "true");
+  await expect(editor.locator(".cm-content span").first()).toBeVisible();
+  await codeEditor.click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Tab");
+  await expect.poll(() => codeEditor.innerText()).toMatch(/^  vec4/);
+
+  await page.getByLabel("GLSLプリセット").selectOption("invert");
+  await page.getByRole("button", { name: "コンパイルして適用" }).click();
+  await expect(editor).toHaveAttribute("data-compile-status", "ready", { timeout: 30_000 });
+  await expect.poll(() => page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    const shader = editorController.getSnapshot().clips.find((clip: { id: string }) => clip.id === "seed-clip")?.postProcess;
+    return { source: shader?.glsl, wgsl: shader?.wgsl, status: shader?.compileStatus };
+  })).toMatchObject({ source: expect.stringContaining("vec3(1.0)"), wgsl: expect.stringContaining("fn gfxPostProcess"), status: "ready" });
+
+  await codeEditor.fill("invalid glsl");
+  await page.getByRole("button", { name: "コンパイルして適用" }).click();
+  await expect(editor).toHaveAttribute("data-compile-status", "error", { timeout: 30_000 });
+  await expect(page.locator(".shader-diagnostic")).toContainText("Expected end of file");
 });
 
 test("media items drag into the free timeline canvas", async ({ page }) => {
@@ -454,6 +556,11 @@ test("timeline zoom uses Ctrl-wheel and trackpad pinch wheel events", async ({ p
   const pillBox = await pill.boundingBox();
   await pill.dispatchEvent("wheel", { ctrlKey: true, deltaY: -90, deltaMode: 0, clientX: pillBox!.x + pillBox!.width / 2, clientY: pillBox!.y + pillBox!.height / 2 });
   await expect.poll(zoom).toBeGreaterThan(beforeOverlayPinch);
+
+  await timeline.dispatchEvent("wheel", { ctrlKey: true, deltaY: -100_000, deltaMode: 0, clientX: 300, clientY: 120 });
+  await expect.poll(zoom).toBe(64);
+  await timeline.dispatchEvent("wheel", { ctrlKey: true, deltaY: 100_000, deltaMode: 0, clientX: 300, clientY: 120 });
+  await expect.poll(zoom).toBe(0.05);
 });
 
 test("media and graphics worker becomes ready", async ({ page }) => {
@@ -747,6 +854,26 @@ test("timeline context menu cuts at the pointer and toggles magnet", async ({ pa
   expect(snapEnabled).toBe(false);
 });
 
+test("right-clicking a timeline marker replaces add with delete for that marker", async ({ page }) => {
+  await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    editorController.addMarker(2.5, "Delete me");
+  });
+  const marker = page.locator(".timeline-marker", { hasText: "Delete me" });
+  await expect(marker).toBeVisible();
+  await marker.click({ button: "right" });
+  const menu = page.getByRole("menu", { name: "編集メニュー" });
+  await expect(menu.getByRole("menuitem", { name: "このマーカーを削除" })).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: /マーカーを追加/ })).toHaveCount(0);
+  await menu.getByRole("menuitem", { name: "このマーカーを削除" }).click();
+  await expect(page.locator(".timeline-marker")).toHaveCount(0);
+
+  await page.locator(".timeline-workspace").click({ button: "right", position: { x: 320, y: 140 } });
+  await expect(page.getByRole("menuitem", { name: /マーカーを追加/ })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "このマーカーを削除" })).toHaveCount(0);
+});
+
 test("smaller timeline y renders in front across videos and Three objects", async ({ page }) => {
   const orders = await page.evaluate(async () => {
     // @ts-expect-error Vite resolves this browser-only module URL during the test.
@@ -933,6 +1060,18 @@ test("images render through Three and media clips share resize handles", async (
   await card.dragTo(page.locator(".timeline-workspace"), { targetPosition: { x: 20, y: 80 } });
   const canvas = page.locator(".preview-stage canvas");
   await expect(canvas).toHaveAttribute("data-active-image-objects", "1", { timeout: 10_000 });
+  const beforeCrop = await samplePreviewPixel(page, 0.35, 0.5);
+  expect(beforeCrop[0]).toBeGreaterThan(beforeCrop[2]);
+  const framesBeforeCrop = Number(await canvas.getAttribute("data-preview-frames"));
+  await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    const clip = editorController.getSnapshot().clips.find((item: { name: string }) => item.name === "still.png");
+    editorController.updateClip(clip.id, { cropLeft: 60 });
+  });
+  await expect.poll(async () => Number(await canvas.getAttribute("data-preview-frames"))).toBeGreaterThan(framesBeforeCrop);
+  const afterCrop = await samplePreviewPixel(page, 0.35, 0.5);
+  expect(afterCrop[2]).toBeGreaterThan(afterCrop[0]);
 
   const stage = page.locator(".preview-stage");
   const stageBox = await stage.boundingBox();
@@ -1320,6 +1459,8 @@ test("blank preview selects the persistent background object", async ({ page }) 
 
 test("preview canvas pops out and can attach back to the editor", async ({ page }) => {
   await expect(page.locator(".engine-light")).toHaveClass(/(webgpu|webgl2)/, { timeout: 20_000 });
+  await page.locator(".timeline-transport-pill").hover();
+  await page.waitForTimeout(250);
   const popupPromise = page.waitForEvent("popup");
   await page.getByRole("button", { name: "プレビューを別ウィンドウで表示" }).click();
   const popup = await popupPromise;

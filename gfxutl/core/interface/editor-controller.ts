@@ -1,9 +1,11 @@
-import type { ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ContextMenuState, EditorLayout, EditorSettings, EditorState, EngineResponse, ExportSettings, FontFaceInfo, GeometryKind, KeyframeProperty, MediaAsset, RenderClip, SceneKeyframe, SceneObjectSpec, SceneSettings, TimelineClip } from "./types";
+import type { ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ClipPropertyActionKind, ContextMenuState, EditorLayout, EditorSettings, EditorState, EngineResponse, ExportSettings, FontFaceInfo, GeometryKind, KeyframeProperty, MediaAsset, RenderClip, SceneKeyframe, SceneObjectSpec, SceneSettings, TimelineClip } from "./types";
+import { applicableClipActionKinds, DEFAULT_POST_PROCESS_GLSL, resetPatchForClipAction, resolveClipPropertyActions } from "./clip-actions";
 import { EngineClient } from "./engine-client";
 import { VirtualTimeline } from "./virtual-timeline";
 import { assignTimelineGroups, expandGroupToValidBoundary, hasGroupBoundaryCrossing, MIN_GROUP_HEIGHT, placeTimelineClip, timelineGroupDescendants } from "./timeline-groups";
 import { loadHandleProjects, saveHandleProject } from "../persistence/handle-project-store";
 import { createProjectDocument, parseProjectDocument, type ProjectDocument } from "../project/project-document";
+import { clampTimelineZoom } from "./timeline-zoom";
 
 type Listener = () => void;
 
@@ -564,17 +566,21 @@ export class EditorController {
       this.update({ activeSceneObjects: message.count });
     } else if (message.type === "image-object-count") {
       this.update({ activeImageObjects: message.count });
-    } else if (message.type === "preview-source") {
-      this.pendingPreviewFrames++;
-      this.pendingCachedFrames += message.source === "cache" ? 1 : 0;
-      this.pendingPreviewSource = message.source;
-      if (message.source !== this.state.previewSource) this.flushPreviewMetrics();
-      else if (!this.previewMetricTimer) this.previewMetricTimer = window.setTimeout(() => this.flushPreviewMetrics(), 250);
-    } else if (message.type === "renderer-stats") {
-      this.update({ rendererStats: message.stats });
+    } else if (message.type === "render-complete") {
+      if (message.videoFramesReady) this.update({ videoFramesRendered: this.state.videoFramesRendered + message.videoFramesReady });
+      if (message.rendererStats) this.update({ rendererStats: message.rendererStats });
+      if (message.previewSource) this.recordPreviewMetric(message.previewSource);
     } else if (message.type === "error") {
       this.toast(message.message);
     }
+  }
+
+  private recordPreviewMetric(source: "realtime" | "cache") {
+    this.pendingPreviewFrames++;
+    this.pendingCachedFrames += source === "cache" ? 1 : 0;
+    this.pendingPreviewSource = source;
+    if (source !== this.state.previewSource) this.flushPreviewMetrics();
+    else if (!this.previewMetricTimer) this.previewMetricTimer = window.setTimeout(() => this.flushPreviewMetrics(), 250);
   }
 
   private flushPreviewMetrics() {
@@ -667,12 +673,12 @@ export class EditorController {
       cropTop: clip.cropTop ?? 0,
       cropBottom: clip.cropBottom ?? 0,
       effects: clip.effects ?? [],
+      postProcess: clip.postProcess,
       masks: clip.masks ?? [],
       keyframes: clip.keyframes ?? [],
       particleSystem: clip.particleSystem,
       instanceCount: clip.instanceCount ?? 1,
       instanceSpacing: clip.instanceSpacing ?? 2.5,
-      timelineY: clip.y,
       renderOrder: depth.get(clip.id) ?? 1_000,
       sceneObject: this.sceneObjectForClip(clip, depth.get(clip.id) ?? 1_000),
     }));
@@ -789,7 +795,7 @@ export class EditorController {
   };
 
   nudge = (frames: number) => this.setTime(this.state.currentTime + frames / this.state.fps);
-  setZoom = (zoom: number) => this.update({ zoom: Math.max(0.6, Math.min(2.4, zoom)) });
+  setZoom = (zoom: number) => this.update({ zoom: clampTimelineZoom(zoom) });
   toggleSnap = () => this.update({ snapEnabled: !this.state.snapEnabled });
   toggleLoopPlayback = () => this.update({ loopPlayback: !this.state.loopPlayback });
   addMarker = (time = this.state.currentTime, label?: string) => {
@@ -827,7 +833,6 @@ export class EditorController {
     const next = { ...this.state.background, ...patch };
     if (patch.color !== undefined) next.scene = { ...next.scene, background: { ...next.scene.background, color: patch.color } };
     this.update({ background: next, backgroundSelected: true });
-    this.engine.clearCache();
     this.renderPreview(true);
   };
   updateSceneSettings = (patch: Partial<SceneSettings>) => {
@@ -840,7 +845,6 @@ export class EditorController {
       lights: patch.lights ?? this.state.background.scene.lights,
     };
     this.update({ background: { ...this.state.background, color: scene.background.color, scene }, backgroundSelected: true });
-    this.engine.clearCache();
     this.renderPreview(true);
   };
   addSceneKeyframe = (property: string, value: number, interpolation: SceneKeyframe["interpolation"] = "smooth") => {
@@ -902,7 +906,7 @@ export class EditorController {
   getMediaThumbnail = (assetId: string, time = 0) => this.engine.getMediaThumbnail(assetId, time);
   prepareMediaPreview = (file: File, previewId: string, handle?: FileSystemFileHandle) => this.engine.inspectMedia(file, previewId, handle);
   releaseMediaPreview = (previewId: string) => this.engine.releaseMedia(previewId);
-  pickPreview = (ndcX: number, ndcY: number) => this.engine.pick(ndcX, ndcY);
+  pickPreview = (ndcX: number, ndcY: number, coalesce = false) => this.engine.pick(ndcX, ndcY, coalesce);
 
   setLayout = (patch: Partial<EditorLayout>, persist = false) => {
     const layout = { ...this.state.layout, ...patch };
@@ -1059,6 +1063,69 @@ export class EditorController {
     this.schedulePersistence();
     this.renderPreview(false);
     if (this.state.playing) this.syncAudioPlayback(true, "start" in patch || "duration" in patch || "offset" in patch || "speed" in patch);
+  };
+
+  addClipPropertyAction = (id: string, kind: ClipPropertyActionKind) => {
+    const clip = this.state.clips.find((item) => item.id === id);
+    if (!clip || !applicableClipActionKinds(clip).includes(kind)) return;
+    const actions = resolveClipPropertyActions(clip);
+    if (actions.some((action) => action.kind === kind)) return;
+    const postProcess: ClipPostProcess | undefined = kind === "postProcess" ? {
+      id: crypto.randomUUID(), name: "GLSLシェーダー", enabled: true,
+      glsl: DEFAULT_POST_PROCESS_GLSL, compileStatus: "draft",
+    } : undefined;
+    this.updateClip(id, {
+      ...resetPatchForClipAction(kind),
+      ...(postProcess ? { postProcess } : {}),
+      propertyActions: [...actions, { id: crypto.randomUUID(), kind }],
+    });
+    if (postProcess) void this.compileClipPostProcess(id, postProcess.glsl);
+  };
+
+  removeClipPropertyAction = (id: string, actionId: string) => {
+    const clip = this.state.clips.find((item) => item.id === id);
+    if (!clip) return;
+    const actions = resolveClipPropertyActions(clip);
+    const action = actions.find((item) => item.id === actionId);
+    if (!action) return;
+    this.updateClip(id, {
+      ...resetPatchForClipAction(action.kind),
+      propertyActions: actions.filter((item) => item.id !== actionId),
+    });
+  };
+
+  moveClipPropertyAction = (id: string, actionId: string, direction: -1 | 1) => {
+    const clip = this.state.clips.find((item) => item.id === id);
+    if (!clip) return;
+    const actions = resolveClipPropertyActions(clip);
+    const index = actions.findIndex((item) => item.id === actionId);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= actions.length) return;
+    [actions[index], actions[target]] = [actions[target], actions[index]];
+    this.updateClip(id, { propertyActions: actions });
+  };
+
+  updateClipPostProcess = (id: string, patch: Partial<ClipPostProcess>) => {
+    const clip = this.state.clips.find((item) => item.id === id);
+    if (!clip?.postProcess) return;
+    this.updateClip(id, { postProcess: { ...clip.postProcess, ...patch } });
+  };
+
+  compileClipPostProcess = async (id: string, glsl: string) => {
+    const clip = this.state.clips.find((item) => item.id === id);
+    if (!clip?.postProcess) return;
+    const compiling: ClipPostProcess = { ...clip.postProcess, glsl, wgsl: undefined, compileStatus: "compiling", compileError: undefined };
+    this.updateClip(id, { postProcess: compiling });
+    try {
+      const wgsl = await this.engine.compileGlsl(glsl);
+      const current = this.state.clips.find((item) => item.id === id)?.postProcess;
+      if (!current || current.glsl !== glsl) return;
+      this.updateClip(id, { postProcess: { ...current, wgsl, compileStatus: "ready", compileError: undefined } });
+    } catch (error) {
+      const current = this.state.clips.find((item) => item.id === id)?.postProcess;
+      if (!current || current.glsl !== glsl) return;
+      this.updateClip(id, { postProcess: { ...current, wgsl: undefined, compileStatus: "error", compileError: error instanceof Error ? error.message : String(error) } });
+    }
   };
 
   removeClip = (id: string) => {

@@ -1,4 +1,5 @@
 /target/
+gfxutl/core/naga-wasm/target/
 gfxutl/node_modules/
 gfxutl/dist/
 gfxutl/*.tsbuildinfo

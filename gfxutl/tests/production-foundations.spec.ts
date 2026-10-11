@@ -85,6 +85,17 @@ test("scene animation, markers, and loop state are durable editor features", asy
 test("custom context menu is available in both upper side panes", async ({ page }) => {
   await page.locator(".media-panel").click({ button: "right", position: { x: 24, y: 90 } });
   await expect(page.getByRole("menu", { name: "編集メニュー" })).toBeVisible();
+  const actionRows = await page.locator(".context-menu-action-row").evaluateAll((rows) => rows.map((row) => ({
+    columns: [...row.querySelectorAll("button")].map((button) => {
+      const rect = button.getBoundingClientRect();
+      return { left: rect.left, top: rect.top };
+    }),
+  })));
+  expect(actionRows.map((row) => row.columns.length)).toEqual([2, 3]);
+  for (const row of actionRows) {
+    expect(new Set(row.columns.map((column) => Math.round(column.top))).size).toBe(1);
+    expect(row.columns.map((column) => column.left)).toEqual([...row.columns.map((column) => column.left)].sort((a, b) => a - b));
+  }
   let scope = await page.evaluate(async () => {
     // @ts-expect-error Vite resolves this browser-only module URL during the test.
     const { editorController } = await import("/core/interface/index.ts");
@@ -114,12 +125,14 @@ test("preview transport is replaced by a hover-expanding timeline time pill", as
   const collapsedBox = await pill.boundingBox();
   const collapsedWidth = collapsedBox?.width ?? 0;
   const collapsedHeight = collapsedBox?.height ?? 0;
+  expect(parseFloat(await pill.evaluate((element) => getComputedStyle(element).borderRadius))).toBeGreaterThan(100);
   await pill.hover();
   await expect(page.locator(".timeline-pill-expanded")).toHaveCSS("opacity", "1");
   await expect(page.locator(".timeline-pill-clock-precise")).toHaveText("00:00:00.00");
   await expect(page.locator(".timeline-pill-clock-precise")).toBeVisible();
   await expect.poll(async () => (await pill.boundingBox())?.width ?? 0).toBeGreaterThan(collapsedWidth + 200);
   await expect.poll(async () => (await pill.boundingBox())?.height ?? 0).toBeGreaterThan(collapsedHeight + 6);
+  await expect.poll(() => pill.evaluate((element) => parseFloat(getComputedStyle(element).borderRadius))).toBeLessThanOrEqual(7);
   await expect(page.getByRole("button", { name: "再生" })).toBeVisible();
 
   await page.getByRole("button", { name: "1フレーム進む" }).click();

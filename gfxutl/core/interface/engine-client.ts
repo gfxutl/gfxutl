@@ -1,4 +1,4 @@
-import type { EngineRequest, EngineResponse, ExportSettings, MediaFileSource, RenderClip, SceneObjectSpec, SceneSettings, TimelinePatch } from "../protocol/engine-protocol";
+import type { EngineRequest, EngineResponse, ExportSettings, MediaFileSource, RenderClip, SceneObjectSpec, SceneSettings, SceneSettingsPatch, TimelinePatch } from "../protocol/engine-protocol";
 
 type MediaInfo = Extract<EngineResponse, { type: "media-info" }>;
 type ExportResult = { buffer: ArrayBuffer; mimeType: string };
@@ -13,11 +13,16 @@ export class EngineClient {
   private pendingAudio = new Map<string, { resolve: (value: AudioPreviewChunk[]) => void; reject: (reason: Error) => void }>();
   private pendingThumbnails = new Map<string, { resolve: (value: MediaThumbnail) => void; reject: (reason: Error) => void }>();
   private pendingPicks = new Map<string, (clipId: string | undefined) => void>();
+  private pendingShaders = new Map<string, { resolve: (wgsl: string) => void; reject: (reason: Error) => void }>();
+  private pickInFlight = false;
+  private pickQueue: Array<{ ndcX: number; ndcY: number; coalescible: boolean; resolves: Array<(clipId: string | undefined) => void> }> = [];
   private renderSequence = 0;
   private renderInFlight = false;
   private pendingRender: { time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; sceneSettings: SceneSettings } | null = null;
   private pendingTimelinePatch: TimelinePatch | null = null;
   private lastSceneSettings: SceneSettings | null = null;
+  private lastResize = "";
+  private initialPreviewCache: { enabled: boolean; maxBytes: number } | undefined;
 
   constructor(private worker: Worker, private onMessage: (message: EngineResponse) => void) {
     this.worker.onerror = (event) => this.onMessage({ type: "error", message: event.message || "Workerの初期化に失敗しました" });
@@ -40,6 +45,9 @@ export class EngineClient {
     } else if (message.type === "pick-result") {
       this.pendingPicks.get(message.requestId)?.(message.clipId);
       this.pendingPicks.delete(message.requestId);
+    } else if (message.type === "glsl-compiled") {
+      this.pendingShaders.get(message.requestId)?.resolve(message.wgsl);
+      this.pendingShaders.delete(message.requestId);
     } else if (message.type === "render-complete") {
       this.renderInFlight = false;
       this.flushPendingRender();
@@ -48,10 +56,14 @@ export class EngineClient {
       this.pendingExports.get(message.requestId)?.reject(new Error(message.message));
       this.pendingAudio.get(message.requestId)?.reject(new Error(message.message));
       this.pendingThumbnails.get(message.requestId)?.reject(new Error(message.message));
+      this.pendingPicks.get(message.requestId)?.(undefined);
+      this.pendingShaders.get(message.requestId)?.reject(new Error(message.message));
       this.pending.delete(message.requestId);
       this.pendingExports.delete(message.requestId);
       this.pendingAudio.delete(message.requestId);
       this.pendingThumbnails.delete(message.requestId);
+      this.pendingPicks.delete(message.requestId);
+      this.pendingShaders.delete(message.requestId);
     }
     this.onMessage(message);
   };
@@ -70,16 +82,26 @@ export class EngineClient {
     this.port = channel.port1;
     this.port.onmessage = this.receive;
     this.port.start();
-    const message: Extract<EngineRequest, { type: "init" }> = { type: "init", canvas, port: channel.port2, width, height, dpr };
+    const message: Extract<EngineRequest, { type: "init" }> = {
+      type: "init", canvas, port: channel.port2, width, height, dpr,
+      ...(this.initialPreviewCache ? { previewCache: this.initialPreviewCache } : {}),
+    };
     this.worker.postMessage(message, [canvas, channel.port2]);
+    this.lastResize = `${width}:${height}:${dpr}`;
     for (const queued of this.outbox.splice(0)) this.port.postMessage(queued.message, queued.transfer);
   }
 
   attachCanvas(canvas: OffscreenCanvas, width: number, height: number, dpr: number) {
+    this.lastResize = `${width}:${height}:${dpr}`;
     this.post({ type: "attach-canvas", canvas, width, height, dpr }, [canvas]);
   }
 
-  resize(width: number, height: number, dpr: number) { this.post({ type: "resize", width, height, dpr }); }
+  resize(width: number, height: number, dpr: number) {
+    const signature = `${width}:${height}:${dpr}`;
+    if (signature === this.lastResize) return;
+    this.lastResize = signature;
+    this.post({ type: "resize", width, height, dpr });
+  }
   patchTimeline(patch: TimelinePatch) { this.pendingTimelinePatch = mergeTimelinePatches(this.pendingTimelinePatch, patch); }
   render(time: number, cache: boolean, mode: "realtime" | "playback", fps: number, sceneSettings: SceneSettings) {
     // Keep at most one GPU/decode operation in flight. During a slow frame the
@@ -93,16 +115,16 @@ export class EngineClient {
     const next = this.pendingRender;
     this.pendingRender = null;
     const sequence = ++this.renderSequence;
-    const settingsChanged = next.sceneSettings !== this.lastSceneSettings;
-    if (settingsChanged) this.lastSceneSettings = next.sceneSettings;
     const patch = this.pendingTimelinePatch;
     this.pendingTimelinePatch = null;
-    if (patch) this.post({ type: "timeline-patch", patch });
+    const sceneSettingsPatch = diffSceneSettings(this.lastSceneSettings, next.sceneSettings);
+    this.lastSceneSettings = next.sceneSettings;
     this.renderInFlight = true;
     this.post({
       type: "render", sequence, time: next.time, cache: next.cache,
       mode: next.mode, fps: next.fps,
-      ...(settingsChanged ? { sceneSettings: next.sceneSettings } : {}),
+      ...(patch ? { timelinePatch: patch } : {}),
+      ...(sceneSettingsPatch ? { sceneSettingsPatch } : {}),
     });
   }
 
@@ -148,12 +170,39 @@ export class EngineClient {
     });
   }
 
-  pick(ndcX: number, ndcY: number) {
-    const requestId = crypto.randomUUID();
+  pick(ndcX: number, ndcY: number, coalesce = false) {
     return new Promise<string | undefined>((resolve) => {
-      this.pendingPicks.set(requestId, resolve);
-      this.post({ type: "pick", requestId, ndcX, ndcY });
+      const tail = this.pickQueue.at(-1);
+      if (coalesce && tail?.coalescible) {
+        tail.ndcX = ndcX;
+        tail.ndcY = ndcY;
+        tail.resolves.push(resolve);
+      } else {
+        this.pickQueue.push({ ndcX, ndcY, coalescible: coalesce, resolves: [resolve] });
+      }
+      this.flushPendingPick();
     });
+  }
+
+  compileGlsl(source: string) {
+    const requestId = crypto.randomUUID();
+    return new Promise<string>((resolve, reject) => {
+      this.pendingShaders.set(requestId, { resolve, reject });
+      this.post({ type: "compile-glsl", requestId, source });
+    });
+  }
+
+  private flushPendingPick() {
+    if (this.pickInFlight || !this.pickQueue.length) return;
+    const next = this.pickQueue.shift()!;
+    this.pickInFlight = true;
+    const requestId = crypto.randomUUID();
+    this.pendingPicks.set(requestId, (clipId) => {
+      for (const resolve of next.resolves) resolve(clipId);
+      this.pickInFlight = false;
+      this.flushPendingPick();
+    });
+    this.post({ type: "pick", requestId, ndcX: next.ndcX, ndcY: next.ndcY });
   }
 
   exportVideo(settings: ExportSettings, duration: number, clips: RenderClip[], sceneSettings: SceneSettings, audioChannels: "stereo" | "mono") {
@@ -172,7 +221,13 @@ export class EngineClient {
     });
   }
 
-  configurePreviewCache(enabled: boolean, maxBytes: number) { this.post({ type: "preview-cache-settings", enabled, maxBytes }); }
+  configurePreviewCache(enabled: boolean, maxBytes: number) {
+    if (!this.port) {
+      this.initialPreviewCache = { enabled, maxBytes };
+      return;
+    }
+    this.post({ type: "preview-cache-settings", enabled, maxBytes });
+  }
   clearCache() { this.post({ type: "clear-cache" }); }
   upsertGeometry(object: SceneObjectSpec) { this.post({ type: "geometry-upsert", object }); }
   removeGeometry(id: string) { this.post({ type: "geometry-remove", id }); }
@@ -206,17 +261,45 @@ function mergeTimelinePatches(previous: TimelinePatch | null, next: TimelinePatc
     revision: next.revision,
     upserts: [...upserts.values()],
     removes: [...removes],
-    invalidatedRanges: mergeInvalidatedRanges([...previous.invalidatedRanges, ...next.invalidatedRanges]),
   };
 }
 
-function mergeInvalidatedRanges(ranges: Array<{ start: number; end: number }>) {
-  const sorted = ranges.slice().sort((a, b) => a.start - b.start);
-  const merged: Array<{ start: number; end: number }> = [];
-  for (const range of sorted) {
-    const tail = merged.at(-1);
-    if (tail && range.start <= tail.end) tail.end = Math.max(tail.end, range.end);
-    else merged.push({ ...range });
+function diffSceneSettings(previous: SceneSettings | null, next: SceneSettings): SceneSettingsPatch | null {
+  if (!previous) return {
+    background: next.background,
+    camera: next.camera,
+    renderer: next.renderer,
+    lights: next.lights,
+    keyframes: next.keyframes ?? null,
+  };
+  const patch: SceneSettingsPatch = {};
+  const background = diffRecord(previous.background, next.background);
+  const camera = diffRecord(previous.camera, next.camera);
+  const renderer = diffRecord(previous.renderer, next.renderer);
+  if (background) patch.background = background;
+  if (camera) patch.camera = camera;
+  if (renderer) patch.renderer = renderer;
+  if (!sameValue(previous.lights, next.lights)) patch.lights = next.lights;
+  if (!sameValue(previous.keyframes, next.keyframes)) patch.keyframes = next.keyframes ?? null;
+  return Object.keys(patch).length ? patch : null;
+}
+
+function diffRecord<T extends object>(previous: T, next: T): Partial<T> | null {
+  const patch: Partial<T> = {};
+  for (const key of Object.keys(next) as Array<keyof T>) {
+    if (!sameValue(previous[key], next[key])) patch[key] = next[key];
   }
-  return merged;
+  return Object.keys(patch).length ? patch : null;
+}
+
+function sameValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    const a = left[index];
+    const b = right[index];
+    if (Object.is(a, b)) continue;
+    if (typeof a !== "object" || a === null || typeof b !== "object" || b === null || JSON.stringify(a) !== JSON.stringify(b)) return false;
+  }
+  return true;
 }

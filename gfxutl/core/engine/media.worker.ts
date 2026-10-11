@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 
 import * as THREE from "three/webgpu";
-import { abs, cos, distance, float, Fn, hue, instanceIndex, length, max, pow, saturation, sin, smoothstep, storage, texture as textureNode, uniform, uv, vec2, vec3, vec4, vertexIndex } from "three/tsl";
+import { abs, cos, distance, float, Fn, glslFn, hue, instanceIndex, length, max, pow, saturation, sin, smoothstep, storage, texture as textureNode, uniform, uv, vec2, vec3, vec4, vertexIndex, wgslFn } from "three/tsl";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
@@ -39,6 +39,10 @@ let previewFps = 30;
 let lastTimelineTime = 0;
 let lastRendererStatsAt = -Infinity;
 let playbackActive = false;
+let cacheStatusTimer = 0;
+let lastCacheStatus = "";
+let nagaModulePromise: Promise<typeof import("../naga-wasm/pkg/naga_wasm.js")> | null = null;
+const postProcessTime = uniform(0);
 let sceneSettings: SceneSettings = {
   background: { color: 0xffffff, alpha: 1, fogEnabled: false, fogColor: 0xffffff, fogNear: 5, fogFar: 30, environmentIntensity: 1, environmentRotation: 0, backgroundBlurriness: 0 },
   camera: { projection: "orthographic", position: [0, 0, 10], target: [0, 0, 0], near: 0.01, far: 1_000, fov: 50, zoom: 1, orthographicHeight: 9 },
@@ -153,15 +157,36 @@ function send(message: EngineResponse, transfer: Transferable[] = []) {
   channelPort?.postMessage(message, transfer);
 }
 
-function cacheStatus() {
+async function compileGlslWithNaga(source: string) {
+  nagaModulePromise ??= import("../naga-wasm/pkg/naga_wasm.js");
+  const naga = await nagaModulePromise;
+  await naga.default();
+  return naga.compile_glsl_to_wgsl(source);
+}
+
+function flushCacheStatus() {
+  if (cacheStatusTimer) worker.clearTimeout(cacheStatusTimer);
+  cacheStatusTimer = 0;
+  const signature = `${cache.usedBytes}:${cache.maxBytes}:${cache.size}`;
+  if (signature === lastCacheStatus) return;
+  lastCacheStatus = signature;
   send({ type: "cache", usedBytes: cache.usedBytes, maxBytes: cache.maxBytes, entries: cache.size });
 }
 
+function cacheStatus(immediate = false) {
+  if (immediate) { flushCacheStatus(); return; }
+  if (!cacheStatusTimer) cacheStatusTimer = worker.setTimeout(flushCacheStatus, 250);
+}
+
 async function initialize(message: Extract<EngineRequest, { type: "init" }>) {
+  if (message.previewCache) {
+    ramPreviewEnabled = message.previewCache.enabled;
+    cache.setMaxBytes(Math.max(1, message.previewCache.maxBytes));
+  }
   await replaceCanvas(message.canvas, message.width, message.height, message.dpr);
   if (!graphics) throw new Error("Three.js scene is not initialized");
   send({ type: "ready", backend: graphics.backend, mediaBunnyReady: true, cameraProjection: sceneSettings.camera.projection });
-  cacheStatus();
+  cacheStatus(true);
 }
 
 async function replaceCanvas(nextCanvas: OffscreenCanvas, nextWidth: number, nextHeight: number, nextDpr: number) {
@@ -347,7 +372,6 @@ async function renderCachedPreview(time: number, fps: number) {
   surface.mesh.visible = true;
   graphics.render();
   retired?.close();
-  send({ type: "preview-source", source: "cache", frame: Number(previewFrameKey(time, fps)) });
   return true;
 }
 
@@ -371,7 +395,7 @@ function fittedPlaneSize(aspect: number) {
 }
 
 function visualEffectSignature(clip: RenderClip) {
-  return JSON.stringify([clip.effects.filter((effect) => effect.enabled && effect.kind !== "transform" && effect.kind !== "opacity"), clip.masks]);
+  return JSON.stringify([clip.effects.filter((effect) => effect.enabled && effect.kind !== "transform" && effect.kind !== "opacity"), clip.masks, clip.postProcess]);
 }
 
 function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
@@ -381,7 +405,11 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
     const cells = Math.max(1, effect.params.size ?? 8);
     texUv = texUv.mul(cells).floor().add(0.5).div(cells);
   }
-  const sampled = textureNode(texture, texUv);
+  // An explicit UV node disables TextureNode's transform matrix by default.
+  // Re-enable it so offset/repeat changes made by the crop action reach both
+  // WebGPU and the WebGL2 fallback without rebuilding the material.
+  const sampled: any = textureNode(texture, texUv);
+  sampled.setUpdateMatrix(true);
   let rgb = sampled.rgb;
   let alpha: any = sampled.a;
   let combinedMask: any = null;
@@ -429,9 +457,19 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
     }
   }
   const alphaMasked = clip.masks.some((mask) => mask.enabled) || clip.effects.some((effect) => effect.enabled && effect.kind === "chromaKey");
+  let outputColor: any = vec4(rgb, alpha);
+  const shader = clip.postProcess;
+  if (shader?.enabled && shader.compileStatus === "ready" && shader.wgsl) {
+    try {
+      const shaderFunction = graphics?.backend === "webgpu" ? wgslFn(shader.wgsl) : glslFn(shader.glsl);
+      outputColor = shaderFunction({ color: outputColor, uv: uv(), time: postProcessTime });
+    } catch (error) {
+      send({ type: "error", message: `${shader.name}: ${error instanceof Error ? error.message : String(error)}` });
+    }
+  }
   const material = new THREE.MeshBasicNodeMaterial({ transparent: alphaMasked || clip.opacity < 100, depthTest: true, depthWrite: !alphaMasked && clip.opacity >= 100, toneMapped: false });
   material.userData.gfxAlphaMasked = alphaMasked;
-  material.colorNode = vec4(rgb, alpha);
+  material.colorNode = outputColor;
   return material;
 }
 
@@ -503,10 +541,16 @@ function applyVisualTransform(mesh: THREE.Object3D, material: THREE.Material, cl
 }
 
 function applyTextureCrop(texture: THREE.Texture, clip: RenderClip, sourceWidth: number, sourceHeight: number) {
-  texture.offset.set(THREE.MathUtils.clamp(clip.cropLeft / sourceWidth, 0, 0.99), THREE.MathUtils.clamp(clip.cropBottom / sourceHeight, 0, 0.99));
+  const width = Math.max(1, sourceWidth);
+  const height = Math.max(1, sourceHeight);
+  const left = THREE.MathUtils.clamp(clip.cropLeft, 0, width - 1);
+  const right = THREE.MathUtils.clamp(clip.cropRight, 0, width - left - 1);
+  const top = THREE.MathUtils.clamp(clip.cropTop, 0, height - 1);
+  const bottom = THREE.MathUtils.clamp(clip.cropBottom, 0, height - top - 1);
+  texture.offset.set(left / width, bottom / height);
   texture.repeat.set(
-    Math.max(0.001, 1 - (clip.cropLeft + clip.cropRight) / sourceWidth),
-    Math.max(0.001, 1 - (clip.cropTop + clip.cropBottom) / sourceHeight),
+    Math.max(1 / width, 1 - (left + right) / width),
+    Math.max(1 / height, 1 - (top + bottom) / height),
   );
 }
 
@@ -1074,7 +1118,7 @@ function applyExportFrameSettings(renderer: THREE.WebGPURenderer, camera: THREE.
 }
 
 async function renderRealtime(time: number, _shouldCache: boolean, clips: RenderClip[] = []) {
-  if (!graphics) return 0;
+  if (!graphics) return { frameMs: 0, videoFramesReady: 0 };
   clips = evaluateClipsAtTime(clips, time);
   if (cachedPreviewSurface) cachedPreviewSurface.mesh.visible = false;
   updateTimelineSceneObjects(time, clips);
@@ -1089,9 +1133,8 @@ async function renderRealtime(time: number, _shouldCache: boolean, clips: Render
   samplesToClose.forEach((sample) => sample?.close());
   for (const ready of readyClipIds) {
     reportedVideoClips.add(ready.clipId);
-    send({ type: "video-frame-ready", ...ready });
   }
-  return renderedAt - renderStartedAt;
+  return { frameMs: renderedAt - renderStartedAt, videoFramesReady: readyClipIds.length };
 }
 
 async function render(time: number, shouldCache: boolean, mode: "realtime" | "playback", fps: number) {
@@ -1099,19 +1142,27 @@ async function render(time: number, shouldCache: boolean, mode: "realtime" | "pl
   lastTimelineTime = time;
   previewFps = Math.max(1, Math.min(120, fps));
   playbackActive = mode === "playback";
-  if (mode === "playback" && ramPreviewEnabled && await renderCachedPreview(time, previewFps)) return;
+  postProcessTime.value = time;
+  if (mode === "playback" && ramPreviewEnabled && await renderCachedPreview(time, previewFps)) {
+    return { previewSource: "cache" as const };
+  }
   if (sceneSettings.keyframes?.length) graphics?.applySettings(evaluateSceneSettingsAtTime(sceneSettings, time));
-  const frameMs = await renderRealtime(time, false, clips);
+  const { frameMs, videoFramesReady } = await renderRealtime(time, false, clips);
   // Populate the RAM cache from the frame already on screen. The old prefetcher
   // rendered a future frame and then rendered the current frame again, doubling
   // GPU work and video seeks precisely while the user was interacting.
   if (ramPreviewEnabled && shouldCache && !playbackActive && canvas) encodePreviewFrame(canvas, time, previewFps);
   const statsTime = performance.now();
+  let rendererStats;
   if (graphics && statsTime - lastRendererStatsAt >= 500) {
     lastRendererStatsAt = statsTime;
-    send({ type: "renderer-stats", stats: { ...graphics.rendererInfo, frameMs } });
+    rendererStats = { ...graphics.rendererInfo, frameMs };
   }
-  send({ type: "preview-source", source: "realtime", frame: Number(previewFrameKey(time, previewFps)) });
+  return {
+    previewSource: "realtime" as const,
+    ...(rendererStats ? { rendererStats } : {}),
+    ...(videoFramesReady ? { videoFramesReady } : {}),
+  };
 }
 
 async function inspectMedia(message: Extract<EngineRequest, { type: "inspect-media" }>) {
@@ -1465,6 +1516,7 @@ async function exportVideo(message: Extract<EngineRequest, { type: "export" }>) 
     for (let frame = 0; frame < totalFrames; frame++) {
       const time = frame * frameDuration;
       const timelineTime = message.settings.startTime + time;
+      postProcessTime.value = timelineTime;
       const frameSettings = evaluateSceneSettingsAtTime(message.sceneSettings, timelineTime);
       graphics.applySettings(frameSettings);
       applyExportFrameSettings(exportRenderer, exportCamera, frameSettings, exportWidth, exportHeight);
@@ -1533,6 +1585,7 @@ async function exportStill(message: Extract<EngineRequest, { type: "export-still
   let pipeline: ReturnType<typeof createRenderPipeline> | null = null;
   try {
     await renderer.init();
+    postProcessTime.value = message.time;
     const clips = evaluateClipsAtTime(message.clips, message.time);
     updateTimelineSceneObjects(message.time, clips);
     updateImageSurfaces(message.time, clips);
@@ -1556,14 +1609,51 @@ async function exportStill(message: Extract<EngineRequest, { type: "export-still
   }
 }
 
+function applyTimelinePatch(patch: NonNullable<Extract<EngineRequest, { type: "render" }>["timelinePatch"]>) {
+  const invalidatedRanges: Array<{ start: number; end: number }> = [];
+  for (const id of patch.removes) {
+    const previous = renderTimeline.get(id);
+    if (previous) invalidatedRanges.push({ start: previous.start, end: previous.start + previous.duration });
+    renderTimeline.delete(id);
+  }
+  for (const clip of patch.upserts) {
+    const previous = renderTimeline.get(clip.id);
+    if (previous) invalidatedRanges.push({ start: previous.start, end: previous.start + previous.duration });
+    invalidatedRanges.push({ start: clip.start, end: clip.start + clip.duration });
+    renderTimeline.set(clip.id, clip);
+  }
+  if (invalidatedRanges.length) {
+    cache.deleteWhere((key) => {
+      const time = Number(key) / previewFps;
+      return invalidatedRanges.some((range) => time >= range.start && time <= range.end);
+    });
+    cacheStatus();
+  }
+}
+
+function applySceneSettingsPatch(patch: NonNullable<Extract<EngineRequest, { type: "render" }>["sceneSettingsPatch"]>) {
+  sceneSettings = {
+    ...sceneSettings,
+    background: { ...sceneSettings.background, ...patch.background },
+    camera: { ...sceneSettings.camera, ...patch.camera },
+    renderer: { ...sceneSettings.renderer, ...patch.renderer },
+    lights: patch.lights ?? sceneSettings.lights,
+    keyframes: patch.keyframes === null ? undefined : patch.keyframes ?? sceneSettings.keyframes,
+  };
+  graphics?.applySettings(sceneSettings);
+  cache.clear();
+  cacheStatus();
+}
+
 async function handleMessage(message: EngineRequest) {
+  let renderCompletion: Omit<Extract<EngineResponse, { type: "render-complete" }>, "type" | "sequence"> | undefined;
   try {
     if (message.type === "init") await initialize(message);
     if (message.type === "attach-canvas") {
       await replaceCanvas(message.canvas, message.width, message.height, message.dpr);
       if (!graphics) throw new Error("Three.js scene is not initialized");
       send({ type: "ready", backend: graphics.backend, mediaBunnyReady: true, cameraProjection: sceneSettings.camera.projection });
-      cacheStatus();
+      cacheStatus(true);
       await render(lastTimelineTime, true, "realtime", previewFps);
     }
     if (message.type === "resize" && graphics) {
@@ -1574,26 +1664,13 @@ async function handleMessage(message: EngineRequest) {
       encoder?.close();
       setupEncoder();
       cache.clear();
-      cacheStatus();
+      cacheStatus(true);
       await render(lastTimelineTime, false, "realtime", previewFps);
     }
-    if (message.type === "timeline-patch") {
-      for (const id of message.patch.removes) renderTimeline.delete(id);
-      for (const clip of message.patch.upserts) renderTimeline.set(clip.id, clip);
-      cache.deleteWhere((key) => {
-        const time = Number(key) / previewFps;
-        return message.patch.invalidatedRanges.some((range) => time >= range.start && time <= range.end);
-      });
-      cacheStatus();
-    }
     if (message.type === "render") {
-      if (message.sceneSettings) {
-        sceneSettings = structuredClone(message.sceneSettings);
-        graphics?.applySettings(sceneSettings);
-        cache.clear();
-        cacheStatus();
-      }
-      await render(message.time, message.cache, message.mode, message.fps);
+      if (message.timelinePatch) applyTimelinePatch(message.timelinePatch);
+      if (message.sceneSettingsPatch) applySceneSettingsPatch(message.sceneSettingsPatch);
+      renderCompletion = await render(message.time, message.cache, message.mode, message.fps);
     }
     if (message.type === "inspect-media") await inspectMedia(message);
     if (message.type === "release-media") releaseMedia(message.assetId);
@@ -1613,7 +1690,7 @@ async function handleMessage(message: EngineRequest) {
         cache.clear();
         if (cachedPreviewSurface) cachedPreviewSurface.mesh.visible = false;
       } else if (!encoder) setupEncoder();
-      cacheStatus();
+      cacheStatus(true);
       await render(lastTimelineTime, false, "realtime", previewFps);
     }
     if (message.type === "geometry-upsert") {
@@ -1633,16 +1710,17 @@ async function handleMessage(message: EngineRequest) {
       send({ type: "font-ready", fontId: message.fontId });
     }
     if (message.type === "pick") send({ type: "pick-result", requestId: message.requestId, clipId: pickSceneObject(message.ndcX, message.ndcY) });
+    if (message.type === "compile-glsl") send({ type: "glsl-compiled", requestId: message.requestId, wgsl: await compileGlslWithNaga(message.source) });
     if (message.type === "clear-cache") {
       resetPreviewDecoder();
       cache.clear();
       if (cachedPreviewSurface) cachedPreviewSurface.mesh.visible = false;
-      cacheStatus();
+      cacheStatus(true);
     }
   } catch (error) {
-    send({ type: "error", requestId: "requestId" in message ? message.requestId : undefined, message: error instanceof Error ? error.message : "Worker処理に失敗しました" });
+    send({ type: "error", requestId: "requestId" in message ? message.requestId : undefined, message: error instanceof Error ? error.message : String(error || "Worker処理に失敗しました") });
   } finally {
-    if (message.type === "render") send({ type: "render-complete", sequence: message.sequence });
+    if (message.type === "render") send({ type: "render-complete", sequence: message.sequence, ...renderCompletion });
   }
 }
 
@@ -1669,6 +1747,13 @@ function enqueueMessage(message: EngineRequest) {
     }
     if (message.mode === "playback") messageQueue.unshift(message);
     else messageQueue.push(message);
+  } else if (message.type === "resize" || message.type === "preview-cache-settings") {
+    // Drag-resizing and number inputs can outpace GPU reconfiguration. Only the
+    // newest pending value is observable, so stale queued values have no value.
+    for (let index = messageQueue.length - 1; index >= 0; index--) {
+      if (messageQueue[index].type === message.type) messageQueue.splice(index, 1);
+    }
+    messageQueue.push(message);
   } else {
     messageQueue.push(message);
   }

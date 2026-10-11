@@ -115,6 +115,16 @@ export interface ClipEffect {
   params: Record<string, number>;
 }
 
+export interface ClipPostProcess {
+  id: string;
+  name: string;
+  enabled: boolean;
+  glsl: string;
+  wgsl?: string;
+  compileStatus: "draft" | "compiling" | "ready" | "error";
+  compileError?: string;
+}
+
 export interface ClipMask {
   id: string;
   name: string;
@@ -235,6 +245,16 @@ export interface SceneSettings {
   keyframes?: SceneKeyframe[];
 }
 
+/** Value-level delta used for the high-frequency UI -> renderer path. */
+export interface SceneSettingsPatch {
+  background?: Partial<BackgroundSettings>;
+  camera?: Partial<CameraSettings>;
+  renderer?: Partial<RendererSettings>;
+  lights?: LightSpec[];
+  /** null removes all scene keyframes; omission leaves them unchanged. */
+  keyframes?: SceneKeyframe[] | null;
+}
+
 export interface RendererStats {
   calls: number;
   triangles: number;
@@ -272,13 +292,13 @@ export interface RenderClip {
   cropTop: number;
   cropBottom: number;
   effects: ClipEffect[];
+  postProcess?: ClipPostProcess;
   masks: ClipMask[];
   keyframes: ClipKeyframe[];
   particleSystem?: ParticleSystemSpec;
   instanceCount: number;
   instanceSpacing: number;
   sceneObject?: SceneObjectSpec;
-  timelineY: number;
   renderOrder: number;
 }
 
@@ -286,7 +306,6 @@ export interface TimelinePatch {
   revision: number;
   upserts: RenderClip[];
   removes: string[];
-  invalidatedRanges: Array<{ start: number; end: number }>;
 }
 
 export interface MediaFileSource {
@@ -306,11 +325,10 @@ export interface SourceIoProfile {
 }
 
 export type EngineRequest =
-  | { type: "init"; canvas: OffscreenCanvas; port: MessagePort; width: number; height: number; dpr: number }
+  | { type: "init"; canvas: OffscreenCanvas; port: MessagePort; width: number; height: number; dpr: number; previewCache?: { enabled: boolean; maxBytes: number } }
   | { type: "attach-canvas"; canvas: OffscreenCanvas; width: number; height: number; dpr: number }
   | { type: "resize"; width: number; height: number; dpr: number }
-  | { type: "timeline-patch"; patch: TimelinePatch }
-  | { type: "render"; sequence: number; time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; sceneSettings?: SceneSettings }
+  | { type: "render"; sequence: number; time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; timelinePatch?: TimelinePatch; sceneSettingsPatch?: SceneSettingsPatch }
   | { type: "inspect-media"; requestId: string; assetId: string; source: MediaFileSource }
   | { type: "inspect-image"; requestId: string; assetId: string; source: MediaFileSource }
   | { type: "inspect-model"; requestId: string; assetId: string; source: MediaFileSource }
@@ -321,6 +339,7 @@ export type EngineRequest =
   | { type: "geometry-remove"; id: string }
   | { type: "font-register"; fontId: string; buffer: ArrayBuffer }
   | { type: "pick"; requestId: string; ndcX: number; ndcY: number }
+  | { type: "compile-glsl"; requestId: string; source: string }
   | { type: "export"; requestId: string; settings: ExportSettings; duration: number; clips: RenderClip[]; sceneSettings: SceneSettings; audioChannels: "stereo" | "mono" }
   | { type: "export-still"; requestId: string; width: number; height: number; time: number; clips: RenderClip[]; sceneSettings: SceneSettings }
   | { type: "preview-cache-settings"; enabled: boolean; maxBytes: number }
@@ -348,8 +367,13 @@ export type EngineResponse =
   | { type: "font-ready"; fontId: string }
   | { type: "video-frame-ready"; clipId: string; timestamp: number }
   | { type: "pick-result"; requestId: string; clipId?: string }
-  | { type: "renderer-stats"; stats: RendererStats }
+  | { type: "glsl-compiled"; requestId: string; wgsl: string }
   | { type: "cache"; usedBytes: number; maxBytes: number; entries: number }
-  | { type: "preview-source"; source: "realtime" | "cache"; frame: number }
-  | { type: "render-complete"; sequence: number }
+  | {
+      type: "render-complete";
+      sequence: number;
+      previewSource?: "realtime" | "cache";
+      rendererStats?: RendererStats;
+      videoFramesReady?: number;
+    }
   | { type: "error"; message: string; requestId?: string };

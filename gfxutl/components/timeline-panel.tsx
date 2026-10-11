@@ -1,6 +1,6 @@
 import { ChevronsLeft, ChevronsRight, Expand, ExternalLink, Pause, Play, Repeat2, SkipBack, SkipForward } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { MIN_GROUP_HEIGHT, timelineClipHeight, timelineGroupDescendants, useEditor } from "../core/interface";
+import { clampTimelineZoom, MIN_GROUP_HEIGHT, timelineClipHeight, timelineGroupDescendants, useEditor } from "../core/interface";
 import type { TimelineClip } from "../core/interface";
 
 const MIN_WORKSPACE_HEIGHT = 720;
@@ -48,7 +48,7 @@ export function TimelinePanel() {
       const pointerX = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
       const timeAtPointer = (scroll.scrollLeft + pointerX) / (BASE_PX_PER_SECOND * state.zoom);
       const delta = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY * 16 : event.deltaY;
-      const nextZoom = Math.max(0.6, Math.min(2.4, state.zoom * Math.exp(-delta * 0.0025)));
+      const nextZoom = clampTimelineZoom(state.zoom * Math.exp(-delta * 0.0025));
       if (nextZoom === state.zoom) return;
       controller.setZoom(nextZoom);
       requestAnimationFrame(() => {
@@ -173,7 +173,7 @@ export function TimelinePanel() {
             style={{ left: alignmentSuggestion.x, top: alignmentSuggestion.top, height: alignmentSuggestion.height }}
           ><span>端を揃える</span></div>}
           {selectionBox && <div className="timeline-selection-box" style={selectionBox} />}
-          {state.markers.map((marker) => <button key={marker.id} className="timeline-marker" title={`${marker.label} · クリックで移動 / ダブルクリックで改名 / Shift+クリックで削除`} style={{ left: marker.time * pxPerSecond, "--marker-color": marker.color } as React.CSSProperties} onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => { event.stopPropagation(); const label = window.prompt("マーカー名", marker.label); if (label?.trim()) controller.updateMarker(marker.id, { label: label.trim() }); }} onClick={(event) => { event.stopPropagation(); if (event.shiftKey) controller.removeMarker(marker.id); else controller.setTime(marker.time); }}><i /><span>{marker.label}</span></button>)}
+          {state.markers.map((marker) => <button key={marker.id} className="timeline-marker" title={`${marker.label} · クリックで移動 / ダブルクリックで改名 / Shift+クリックで削除`} style={{ left: marker.time * pxPerSecond, "--marker-color": marker.color } as React.CSSProperties} onPointerDown={(event) => event.stopPropagation()} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const point = positionFromPointer(event.clientX, event.clientY); controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "timeline", time: marker.time, timelineY: point.y, positionX: 0, positionY: 0, markerId: marker.id }); }} onDoubleClick={(event) => { event.stopPropagation(); const label = window.prompt("マーカー名", marker.label); if (label?.trim()) controller.updateMarker(marker.id, { label: label.trim() }); }} onClick={(event) => { event.stopPropagation(); if (event.shiftKey) controller.removeMarker(marker.id); else controller.setTime(marker.time); }}><i /><span>{marker.label}</span></button>)}
           {orderedClips.map((clip) => <Clip key={clip.id} clip={clip} waveformPeaks={clip.assetId ? state.assets.find((asset) => asset.id === clip.assetId)?.waveformPeaks : undefined} pxPerSecond={pxPerSecond} selected={state.selectedClipIds.includes(clip.id)} durationResizable={clip.kind === "group" || clip.kind === "title" || clip.kind === "object" || Boolean(clip.assetId && resizableAssetIds.has(clip.assetId))} childCount={state.clips.filter((item) => item.groupId === clip.id).length} nestingDepth={nestingDepths.get(clip.id) ?? 0} fps={state.fps} snapEnabled={state.snapEnabled} onAlignmentSuggestion={setAlignmentSuggestion} controller={controller} />)}
           <div className="playhead free-playhead" style={{ left: state.currentTime * pxPerSecond }}><div className="playhead-cap" /><i /></div>
         </div>

@@ -89,11 +89,11 @@ export function PreviewPanel() {
     .sort((a, b) => (b.clip.positionZ ?? 0) - (a.clip.positionZ ?? 0) || a.clip.y - b.clip.y), [state.clips, state.assets, state.currentTime]);
   const hoveredObject = previewObjects.find((object) => object.clip.id === hoveredClipId);
 
-  const pickPoint = async (element: HTMLElement, clientX: number, clientY: number) => {
+  const pickPoint = async (element: HTMLElement, clientX: number, clientY: number, coalesce = false) => {
     const rect = element.getBoundingClientRect();
     const ndcX = (clientX - rect.left) / rect.width * 2 - 1;
     const ndcY = 1 - (clientY - rect.top) / rect.height * 2;
-    return controller.pickPreview(ndcX, ndcY);
+    return controller.pickPreview(ndcX, ndcY, coalesce);
   };
 
   const hoverObject = (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -107,7 +107,7 @@ export function PreviewPanel() {
       const point = pendingPickRef.current;
       if (!point) return;
       const sequence = ++pickSequenceRef.current;
-      const clipId = await pickPoint(element, point.x, point.y);
+      const clipId = await pickPoint(element, point.x, point.y, true);
       if (sequence === pickSequenceRef.current) setHoveredClipId(clipId ?? null);
     });
   };
