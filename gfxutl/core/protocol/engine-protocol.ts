@@ -264,7 +264,8 @@ export type EngineRequest =
   | { type: "geometry-remove"; id: string }
   | { type: "font-register"; fontId: string; buffer: ArrayBuffer }
   | { type: "pick"; requestId: string; ndcX: number; ndcY: number }
-  | { type: "export"; requestId: string; settings: ExportSettings; duration: number; clips: RenderClip[]; sceneSettings: SceneSettings }
+  | { type: "export"; requestId: string; settings: ExportSettings; duration: number; clips: RenderClip[]; sceneSettings: SceneSettings; audioChannels: "stereo" | "mono" }
+  | { type: "preview-cache-settings"; enabled: boolean; maxBytes: number }
   | { type: "clear-cache" };
 
 export type EngineResponse =

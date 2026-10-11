@@ -3,6 +3,7 @@ import type { MediaAsset, TimelineClip } from "../interface/types";
 
 const INDEX_KEY = "gfxutl:file-handles:index:v1";
 const RECORD_PREFIX = "gfxutl:file-handle:v1:";
+const DIRECTORY_KEY = "gfxutl:media-directory:v1";
 
 export interface HandleProjectRecord {
   version: 1;
@@ -40,4 +41,16 @@ export async function removeHandleProject(assetId: string) {
   await del(`${RECORD_PREFIX}${assetId}`);
   const ids = await get<string[]>(INDEX_KEY) ?? [];
   await set(INDEX_KEY, ids.filter((id) => id !== assetId));
+}
+
+export async function saveMediaDirectory(handle: FileSystemDirectoryHandle) {
+  await set(DIRECTORY_KEY, handle);
+}
+
+export async function loadMediaDirectory() {
+  return await get<FileSystemDirectoryHandle>(DIRECTORY_KEY);
+}
+
+export async function clearMediaDirectory() {
+  await del(DIRECTORY_KEY);
 }

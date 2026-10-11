@@ -86,7 +86,15 @@ export function InspectorPanel() {
             {(light.kind === "directional" || light.kind === "point" || light.kind === "spot") && <label className="checkbox-field"><input type="checkbox" checked={light.castShadow ?? false} onChange={(event) => controller.updateSceneSettings({ lights: background.scene.lights.map((item) => item.id === light.id ? { ...item, castShadow: event.target.checked } : item) })} /> 影を落とす</label>}
           </div>)}
         </div>
-      </div> : !selected ? <div className="metadata-empty">編集するタイムラインクリップを選択してください</div> : <>
+      </div> : !selected ? <div className="metadata-empty">編集するタイムラインクリップを選択してください</div> : selected.kind === "group" ? <div className="inspector-section group-inspector">
+        <div className="section-title"><span>タイムライングループ</span><small>{state.clips.filter((clip) => clip.groupId === selected.id).length} ITEMS</small></div>
+        <div className="section-body">
+          <label className="text-editor-field"><span>名前</span><input aria-label="グループ名" value={selected.name} onChange={(event) => controller.updateClip(selected.id, { name: event.target.value || "グループ" })} /></label>
+          <div className="field-grid"><NumberField label="開始" value={selected.start} suffix="s" onChange={(start) => controller.resizeTimelineGroup(selected.id, start, selected.y, selected.duration, selected.groupHeight ?? 156)} /><NumberField label="長さ" value={selected.duration} suffix="s" onChange={(duration) => controller.resizeTimelineGroup(selected.id, selected.start, selected.y, duration, selected.groupHeight ?? 156)} /></div>
+          <div className="field-grid"><NumberField label="上端" value={selected.y} suffix="px" onChange={(y) => controller.resizeTimelineGroup(selected.id, selected.start, y, selected.duration, selected.groupHeight ?? 156)} /><NumberField label="高さ" value={selected.groupHeight ?? 156} suffix="px" onChange={(height) => controller.resizeTimelineGroup(selected.id, selected.start, selected.y, selected.duration, height)} /></div>
+          <small>境界をまたぐ配置は禁止されます。オブジェクトは完全に内側へ入ると自動的にこのグループへ所属し、外側へ出ると所属が解除されます。</small>
+        </div>
+      </div> : <>
       {selected.kind === "title" && <div className="inspector-section text-inspector">
         <div className="section-title"><span>テキストメッシュ</span><small>THREE.TEXT</small></div>
         <div className="section-body">

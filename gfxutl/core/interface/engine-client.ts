@@ -16,6 +16,7 @@ export class EngineClient {
   private renderSequence = 0;
   private renderInFlight = false;
   private pendingRender: { time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; sceneSettings: SceneSettings } | null = null;
+  private pendingTimelinePatch: TimelinePatch | null = null;
   private lastSceneSettings: SceneSettings | null = null;
 
   constructor(private worker: Worker, private onMessage: (message: EngineResponse) => void) {
@@ -79,7 +80,7 @@ export class EngineClient {
   }
 
   resize(width: number, height: number, dpr: number) { this.post({ type: "resize", width, height, dpr }); }
-  patchTimeline(patch: TimelinePatch) { this.post({ type: "timeline-patch", patch }); }
+  patchTimeline(patch: TimelinePatch) { this.pendingTimelinePatch = mergeTimelinePatches(this.pendingTimelinePatch, patch); }
   render(time: number, cache: boolean, mode: "realtime" | "playback", fps: number, sceneSettings: SceneSettings) {
     // Keep at most one GPU/decode operation in flight. During a slow frame the
     // newest playhead position supersedes every intermediate request.
@@ -94,6 +95,9 @@ export class EngineClient {
     const sequence = ++this.renderSequence;
     const settingsChanged = next.sceneSettings !== this.lastSceneSettings;
     if (settingsChanged) this.lastSceneSettings = next.sceneSettings;
+    const patch = this.pendingTimelinePatch;
+    this.pendingTimelinePatch = null;
+    if (patch) this.post({ type: "timeline-patch", patch });
     this.renderInFlight = true;
     this.post({
       type: "render", sequence, time: next.time, cache: next.cache,
@@ -150,16 +154,42 @@ export class EngineClient {
     });
   }
 
-  exportVideo(settings: ExportSettings, duration: number, clips: RenderClip[], sceneSettings: SceneSettings) {
+  exportVideo(settings: ExportSettings, duration: number, clips: RenderClip[], sceneSettings: SceneSettings, audioChannels: "stereo" | "mono") {
     const requestId = crypto.randomUUID();
     return new Promise<ExportResult>((resolve, reject) => {
       this.pendingExports.set(requestId, { resolve, reject });
-      this.post({ type: "export", requestId, settings, duration, clips, sceneSettings });
+      this.post({ type: "export", requestId, settings, duration, clips, sceneSettings, audioChannels });
     });
   }
 
+  configurePreviewCache(enabled: boolean, maxBytes: number) { this.post({ type: "preview-cache-settings", enabled, maxBytes }); }
   clearCache() { this.post({ type: "clear-cache" }); }
   upsertGeometry(object: SceneObjectSpec) { this.post({ type: "geometry-upsert", object }); }
   removeGeometry(id: string) { this.post({ type: "geometry-remove", id }); }
   registerFont(fontId: string, buffer: ArrayBuffer) { this.post({ type: "font-register", fontId, buffer }, [buffer]); }
+}
+
+function mergeTimelinePatches(previous: TimelinePatch | null, next: TimelinePatch): TimelinePatch {
+  if (!previous) return next;
+  const upserts = new Map(previous.upserts.map((clip) => [clip.id, clip]));
+  const removes = new Set(previous.removes);
+  for (const id of next.removes) { upserts.delete(id); removes.add(id); }
+  for (const clip of next.upserts) { removes.delete(clip.id); upserts.set(clip.id, clip); }
+  return {
+    revision: next.revision,
+    upserts: [...upserts.values()],
+    removes: [...removes],
+    invalidatedRanges: mergeInvalidatedRanges([...previous.invalidatedRanges, ...next.invalidatedRanges]),
+  };
+}
+
+function mergeInvalidatedRanges(ranges: Array<{ start: number; end: number }>) {
+  const sorted = ranges.slice().sort((a, b) => a.start - b.start);
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const range of sorted) {
+    const tail = merged.at(-1);
+    if (tail && range.start <= tail.end) tail.end = Math.max(tail.end, range.end);
+    else merged.push({ ...range });
+  }
+  return merged;
 }

@@ -24,6 +24,7 @@ interface PreviewAccessUnit {
 }
 
 const cache = new RamPreviewCache<PreviewAccessUnit>(128 * 1024 * 1024);
+let ramPreviewEnabled = true;
 
 let canvas: OffscreenCanvas | null = null;
 let graphics: ThreeRendererCore | null = null;
@@ -213,7 +214,7 @@ async function recoverRenderer() {
 }
 
 function setupEncoder() {
-  if (!("VideoEncoder" in worker) || !canvas) return;
+  if (!ramPreviewEnabled || !("VideoEncoder" in worker) || !canvas) return;
   const codedWidth = Math.max(2, Math.floor(canvas.width / 2) * 2);
   const codedHeight = Math.max(2, Math.floor(canvas.height / 2) * 2);
   try {
@@ -333,7 +334,7 @@ function resetPreviewDecoder() {
 }
 
 async function renderCachedPreview(time: number, fps: number) {
-  if (!graphics) return false;
+  if (!graphics || !ramPreviewEnabled) return false;
   const unit = cache.get(previewFrameKey(time, fps));
   if (!unit) return false;
   const frame = await decodeCachedFrame(unit);
@@ -938,12 +939,12 @@ async function render(time: number, shouldCache: boolean, mode: "realtime" | "pl
   lastTimelineTime = time;
   previewFps = Math.max(1, Math.min(120, fps));
   playbackActive = mode === "playback";
-  if (mode === "playback" && await renderCachedPreview(time, previewFps)) return;
+  if (mode === "playback" && ramPreviewEnabled && await renderCachedPreview(time, previewFps)) return;
   const frameMs = await renderRealtime(time, false, clips);
   // Populate the RAM cache from the frame already on screen. The old prefetcher
   // rendered a future frame and then rendered the current frame again, doubling
   // GPU work and video seeks precisely while the user was interacting.
-  if (shouldCache && !playbackActive && canvas) encodePreviewFrame(canvas, time, previewFps);
+  if (ramPreviewEnabled && shouldCache && !playbackActive && canvas) encodePreviewFrame(canvas, time, previewFps);
   const statsTime = performance.now();
   if (graphics && statsTime - lastRendererStatsAt >= 500) {
     lastRendererStatsAt = statsTime;
@@ -1163,11 +1164,12 @@ function exportHasAudio(message: Extract<EngineRequest, { type: "export" }>, dur
 async function encodeExportAudio(source: AudioSampleSource, message: Extract<EngineRequest, { type: "export" }>, duration: number) {
   const sampleRate = 48_000;
   const blockSize = 1024;
+  const channelCount = message.audioChannels === "mono" ? 1 : 2;
   const cursors = await createExportAudioCursors(message, duration);
   try {
     for (let blockStartFrame = 0; blockStartFrame < Math.ceil(duration * sampleRate); blockStartFrame += blockSize) {
       const frames = Math.min(blockSize, Math.ceil(duration * sampleRate) - blockStartFrame);
-      const mixed = new Float32Array(frames * 2);
+      const mixed = new Float32Array(frames * channelCount);
       for (let frame = 0; frame < frames; frame++) {
         const outputTime = (blockStartFrame + frame) / sampleRate;
         for (const cursor of cursors) {
@@ -1182,16 +1184,22 @@ async function encodeExportAudio(source: AudioSampleSource, message: Extract<Eng
           const monoOrLeft = cursor.planes[0]?.[sampleFrame] ?? 0;
           const right = cursor.planes[Math.min(1, cursor.planes.length - 1)]?.[sampleFrame] ?? monoOrLeft;
           const volume = Math.max(0, cursor.clip.volume / 100);
-          const pan = Math.max(-1, Math.min(1, cursor.clip.pan / 100));
-          const leftGain = Math.cos((pan + 1) * Math.PI / 4) * Math.SQRT2 * volume;
-          const rightGain = Math.sin((pan + 1) * Math.PI / 4) * Math.SQRT2 * volume;
-          mixed[frame * 2] += monoOrLeft * leftGain;
-          mixed[frame * 2 + 1] += right * rightGain;
+          if (channelCount === 1) {
+            mixed[frame] += (monoOrLeft + right) * 0.5 * volume;
+          } else {
+            const pan = Math.max(-1, Math.min(1, cursor.clip.pan / 100));
+            const leftGain = Math.cos((pan + 1) * Math.PI / 4) * Math.SQRT2 * volume;
+            const rightGain = Math.sin((pan + 1) * Math.PI / 4) * Math.SQRT2 * volume;
+            mixed[frame * 2] += monoOrLeft * leftGain;
+            mixed[frame * 2 + 1] += right * rightGain;
+          }
         }
-        mixed[frame * 2] = Math.max(-1, Math.min(1, mixed[frame * 2]));
-        mixed[frame * 2 + 1] = Math.max(-1, Math.min(1, mixed[frame * 2 + 1]));
+        for (let channel = 0; channel < channelCount; channel++) {
+          const index = frame * channelCount + channel;
+          mixed[index] = Math.max(-1, Math.min(1, mixed[index]));
+        }
       }
-      const sample = new AudioSample({ data: mixed, format: "f32", numberOfChannels: 2, sampleRate, timestamp: blockStartFrame / sampleRate });
+      const sample = new AudioSample({ data: mixed, format: "f32", numberOfChannels: channelCount, sampleRate, timestamp: blockStartFrame / sampleRate });
       try { await source.add(sample); } finally { sample.close(); }
     }
   } finally {
@@ -1249,7 +1257,7 @@ async function exportVideo(message: Extract<EngineRequest, { type: "export" }>) 
   const audioSource = message.settings.audioCodec === "none" || !exportHasAudio(message, duration) ? null : new AudioSampleSource({
     codec: message.settings.audioCodec,
     bitrate: Math.max(32_000, Math.min(512_000, message.settings.audioBitrate)),
-    transform: { numberOfChannels: 2, sampleRate: 48_000 },
+    transform: { numberOfChannels: message.audioChannels === "mono" ? 1 : 2, sampleRate: 48_000 },
   });
   if (audioSource) output.addAudioTrack(audioSource);
 
@@ -1342,6 +1350,19 @@ async function handleMessage(message: EngineRequest) {
     if (message.type === "decode-audio-preview") await decodeAudioPreview(message);
     if (message.type === "media-thumbnail") await createMediaThumbnail(message);
     if (message.type === "export") await exportVideo(message);
+    if (message.type === "preview-cache-settings") {
+      ramPreviewEnabled = message.enabled;
+      cache.setMaxBytes(Math.max(1, message.maxBytes));
+      if (!ramPreviewEnabled) {
+        try { encoder?.close(); } catch { /* Encoder may already be closed. */ }
+        encoder = null;
+        resetPreviewDecoder();
+        cache.clear();
+        if (cachedPreviewSurface) cachedPreviewSurface.mesh.visible = false;
+      } else if (!encoder) setupEncoder();
+      cacheStatus();
+      await render(lastTimelineTime, false, "realtime", previewFps);
+    }
     if (message.type === "geometry-upsert") {
       if (!sceneCore) throw new Error("Three.js scene is not initialized");
       standaloneObjects.set(message.object.id, message.object);

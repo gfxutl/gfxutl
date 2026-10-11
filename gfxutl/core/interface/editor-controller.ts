@@ -1,6 +1,7 @@
-import type { ClipEffect, ClipEffectKind, ClipKeyframe, ContextMenuState, EditorLayout, EditorState, EngineResponse, ExportSettings, FontFaceInfo, GeometryKind, KeyframeProperty, MediaAsset, RenderClip, SceneObjectSpec, SceneSettings, TimelineClip } from "./types";
+import type { ClipEffect, ClipEffectKind, ClipKeyframe, ContextMenuState, EditorLayout, EditorSettings, EditorState, EngineResponse, ExportSettings, FontFaceInfo, GeometryKind, KeyframeProperty, MediaAsset, RenderClip, SceneObjectSpec, SceneSettings, TimelineClip } from "./types";
 import { EngineClient } from "./engine-client";
 import { VirtualTimeline } from "./virtual-timeline";
+import { assignTimelineGroups, expandGroupToValidBoundary, hasGroupBoundaryCrossing, MIN_GROUP_HEIGHT, placeTimelineClip, timelineGroupDescendants } from "./timeline-groups";
 import { loadHandleProjects, saveHandleProject } from "../persistence/handle-project-store";
 
 type Listener = () => void;
@@ -8,6 +9,7 @@ type Listener = () => void;
 const MiB = 1024 * 1024;
 
 const defaultLayout: EditorLayout = { leftPanelWidth: 286, rightPanelWidth: 294, timelineHeight: 309 };
+const defaultSettings: EditorSettings = { ramPreviewEnabled: true, ramPreviewMaxBytes: 128 * MiB, audioChannels: "stereo" };
 
 const defaultSceneSettings: SceneSettings = {
   background: { color: 0xffffff, alpha: 1, fogEnabled: false, fogColor: 0xffffff, fogNear: 5, fogFar: 30, environmentIntensity: 1, environmentRotation: 0, backgroundBlurriness: 0 },
@@ -28,6 +30,23 @@ function loadLayout(): EditorLayout {
   }
 }
 
+function loadSettings(): EditorSettings {
+  try {
+    const stored = JSON.parse(localStorage.getItem("gfxutl:settings") ?? "null") as Partial<EditorSettings> | null;
+    if (!stored) return defaultSettings;
+    const maxBytes = Math.max(32 * MiB, Math.min(2_048 * MiB, Number(stored.ramPreviewMaxBytes) || defaultSettings.ramPreviewMaxBytes));
+    return {
+      ramPreviewEnabled: stored.ramPreviewEnabled !== false,
+      ramPreviewMaxBytes: maxBytes,
+      audioChannels: stored.audioChannels === "mono" ? "mono" : "stereo",
+    };
+  } catch {
+    return defaultSettings;
+  }
+}
+
+const loadedSettings = loadSettings();
+
 const initialState: EditorState = {
   fps: 30,
   duration: 32,
@@ -43,14 +62,15 @@ const initialState: EditorState = {
   assets: [],
   clips: [],
   fonts: [],
-  cache: { usedBytes: 0, maxBytes: 128 * MiB, entries: 0, codec: "H.264" },
+  cache: { usedBytes: 0, maxBytes: loadedSettings.ramPreviewMaxBytes, entries: 0, codec: "H.264" },
   engine: "initializing",
   cameraProjection: "orthographic",
   mediaBunnyReady: false,
-  fileSystemAccess: "showOpenFilePicker" in window,
+  fileSystemAccess: "showDirectoryPicker" in window || "showOpenFilePicker" in window,
   localFontAccess: "queryLocalFonts" in window,
   notice: null,
   layout: loadLayout(),
+  settings: loadedSettings,
   leftPanelTab: "media",
   exportSettings: { format: "mp4", videoCodec: "avc", audioCodec: "aac", width: 1920, height: 1080, fps: 30, bitrate: 8_000_000, audioBitrate: 192_000, filename: "Untitled Project", startTime: 0, endTime: 32 },
   exportStatus: "idle",
@@ -85,7 +105,7 @@ interface PreviewAudioVoice {
   token: number;
   sources: Set<AudioBufferSourceNode>;
   gain: GainNode;
-  panner: StereoPannerNode;
+  panner?: StereoPannerNode;
 }
 
 export class EditorController {
@@ -116,9 +136,11 @@ export class EditorController {
   private audioVoices = new Map<string, PreviewAudioVoice>();
   private audioPreviewToken = 0;
   private activeAudioSignature = "";
+  private explorerFiles = new Map<string, { file?: File; handle?: FileSystemFileHandle }>();
 
   constructor(worker: Worker) {
     this.engine = new EngineClient(worker, (message) => this.onEngineMessage(message));
+    this.engine.configurePreviewCache(this.state.settings.ramPreviewEnabled, this.state.settings.ramPreviewMaxBytes);
     void this.restoreHandleProjects();
   }
 
@@ -145,7 +167,7 @@ export class EditorController {
   private schedulePersistence() {
     window.clearTimeout(this.persistenceTimer);
     this.persistenceTimer = window.setTimeout(() => {
-      for (const asset of this.state.assets) void saveHandleProject(asset, this.state.clips);
+      for (const asset of this.state.assets) void saveHandleProject(asset, this.state.clips).catch(() => { /* Editing remains available if handle persistence is blocked. */ });
     }, 200);
   }
 
@@ -207,7 +229,7 @@ export class EditorController {
       for (const source of voice.sources) { try { source.stop(); } catch { /* Already stopped. */ } }
       voice.sources.clear();
       voice.gain.disconnect();
-      voice.panner.disconnect();
+      voice.panner?.disconnect();
     }
     this.audioVoices.clear();
     if (this.state.playingAudioObjects !== 0) this.update({ playingAudioObjects: 0 });
@@ -238,7 +260,7 @@ export class EditorController {
   private applyAudioMix(clip: TimelineClip, voice?: PreviewAudioVoice) {
     if (!voice || voice.token !== this.audioPreviewToken) return;
     voice.gain.gain.value = Math.max(0, Math.min(4, 10 ** ((clip.volume ?? 0) / 20)));
-    voice.panner.pan.value = Math.max(-1, Math.min(1, (clip.pan ?? 0) / 100));
+    if (voice.panner) voice.panner.pan.value = Math.max(-1, Math.min(1, (clip.pan ?? 0) / 100));
   }
 
   private async scheduleAudioPreview(clip: TimelineClip, token: number) {
@@ -251,8 +273,9 @@ export class EditorController {
     const mediaEnd = mediaStart + Math.max(0, clip.start + clip.duration - this.state.currentTime) * speed;
     const contextStart = context.currentTime + 0.04;
     const gain = context.createGain();
-    const panner = context.createStereoPanner();
-    gain.connect(panner).connect(context.destination);
+    const panner = this.state.settings.audioChannels === "stereo" ? context.createStereoPanner() : undefined;
+    if (panner) gain.connect(panner).connect(context.destination);
+    else gain.connect(context.destination);
     const voice: PreviewAudioVoice = { token, sources: new Set(), gain, panner };
     this.audioVoices.set(clip.id, voice);
     this.applyAudioMix(clip, voice);
@@ -270,8 +293,19 @@ export class EditorController {
           }
           if (token !== this.audioPreviewToken || !this.state.playing) break;
           const frameCount = sample.channels[0].byteLength / Float32Array.BYTES_PER_ELEMENT;
-          const buffer = context.createBuffer(sample.channels.length, frameCount, sample.sampleRate);
-          sample.channels.forEach((channel, index) => buffer.copyToChannel(new Float32Array(channel), index));
+          const mono = this.state.settings.audioChannels === "mono";
+          const outputChannels = mono ? 1 : Math.min(2, sample.channels.length);
+          const buffer = context.createBuffer(outputChannels, frameCount, sample.sampleRate);
+          if (mono) {
+            const mixed = new Float32Array(frameCount);
+            for (const channel of sample.channels) {
+              const values = new Float32Array(channel);
+              for (let frame = 0; frame < frameCount; frame++) mixed[frame] += values[frame] / sample.channels.length;
+            }
+            buffer.copyToChannel(mixed, 0);
+          } else {
+            for (let channel = 0; channel < outputChannels; channel++) buffer.copyToChannel(new Float32Array(sample.channels[channel]), channel);
+          }
           const source = context.createBufferSource();
           source.buffer = buffer;
           source.playbackRate.value = speed;
@@ -368,16 +402,17 @@ export class EditorController {
     const renderClips = this.getRenderClips();
     const patch = this.virtualTimeline.reconcile(renderClips);
     if (patch) this.engine.patchTimeline(patch);
-    this.engine.render(this.state.currentTime, cache, this.state.playing ? "playback" : "realtime", this.state.fps, this.state.background.scene);
+    this.engine.render(this.state.currentTime, cache && this.state.settings.ramPreviewEnabled, this.state.playing ? "playback" : "realtime", this.state.fps, this.state.background.scene);
   }
 
   private getRenderClips(): RenderClip[] {
     if (this.renderClipSource === this.state.clips) return this.renderClipCache;
-    const depth = new Map([...this.state.clips]
+    const visualClips = this.state.clips.filter((clip) => clip.kind !== "group");
+    const depth = new Map([...visualClips]
       .sort((a, b) => (a.positionZ ?? 0) - (b.positionZ ?? 0) || b.y - a.y)
       .map((clip, index) => [clip.id, 1_000 + index]));
     this.renderClipSource = this.state.clips;
-    this.renderClipCache = this.state.clips.map((clip) => ({
+    this.renderClipCache = visualClips.map((clip) => ({
       id: clip.id,
       assetId: clip.assetId,
       start: clip.start,
@@ -549,6 +584,27 @@ export class EditorController {
   openContextMenu = (menu: ContextMenuState) => this.update({ contextMenu: menu });
   closeContextMenu = () => this.update({ contextMenu: null });
   setLeftPanelTab = (tab: EditorState["leftPanelTab"]) => this.update({ leftPanelTab: tab });
+  updateSettings = (patch: Partial<EditorSettings>) => {
+    const previous = this.state.settings;
+    const next: EditorSettings = {
+      ...previous,
+      ...patch,
+      ramPreviewMaxBytes: Math.max(32 * MiB, Math.min(2_048 * MiB, Math.round((patch.ramPreviewMaxBytes ?? previous.ramPreviewMaxBytes) / MiB) * MiB)),
+      audioChannels: patch.audioChannels === "mono" ? "mono" : patch.audioChannels === "stereo" ? "stereo" : previous.audioChannels,
+    };
+    const previewChanged = next.ramPreviewEnabled !== previous.ramPreviewEnabled || next.ramPreviewMaxBytes !== previous.ramPreviewMaxBytes;
+    this.update({
+      settings: next,
+      cache: previewChanged ? { ...this.state.cache, maxBytes: next.ramPreviewMaxBytes, ...(next.ramPreviewEnabled ? {} : { usedBytes: 0, entries: 0 }) } : this.state.cache,
+      ...(next.ramPreviewEnabled ? {} : { previewSource: "realtime" as const }),
+    });
+    try { localStorage.setItem("gfxutl:settings", JSON.stringify(next)); } catch { /* Storage may be blocked. */ }
+    if (previewChanged) {
+      this.engine.configurePreviewCache(next.ramPreviewEnabled, next.ramPreviewMaxBytes);
+      this.renderPreview(false);
+    }
+    if (next.audioChannels !== previous.audioChannels && this.state.playing) this.syncAudioPlayback(true, true);
+  };
   updateExportSettings = (patch: Partial<ExportSettings>) => {
     const next = { ...this.state.exportSettings, ...patch };
     if (patch.format === "mp4") {
@@ -582,20 +638,23 @@ export class EditorController {
     const anchor = this.state.clips.find((clip) => clip.id === id);
     if (!anchor) return;
     const selectedIds = this.state.selectedClipIds.includes(id) ? this.state.selectedClipIds : [id];
+    const movingIds = timelineGroupDescendants(this.state.clips, selectedIds);
     const deltaStart = Math.max(0, start) - anchor.start;
     const deltaY = Math.max(0, y) - anchor.y;
-    const minimumStart = Math.min(...this.state.clips.filter((clip) => selectedIds.includes(clip.id)).map((clip) => clip.start));
-    const minimumY = Math.min(...this.state.clips.filter((clip) => selectedIds.includes(clip.id)).map((clip) => clip.y));
+    const minimumStart = Math.min(...this.state.clips.filter((clip) => movingIds.has(clip.id)).map((clip) => clip.start));
+    const minimumY = Math.min(...this.state.clips.filter((clip) => movingIds.has(clip.id)).map((clip) => clip.y));
     const safeDeltaStart = Math.max(deltaStart, -minimumStart);
     const safeDeltaY = Math.max(deltaY, -minimumY);
     let end = this.state.duration;
-    const clips = this.state.clips.map((clip) => {
-      if (!selectedIds.includes(clip.id)) return clip;
+    const proposed = this.state.clips.map((clip) => {
+      if (!movingIds.has(clip.id)) return clip;
       const nextStart = clip.start + safeDeltaStart;
       const nextY = clip.y + safeDeltaY;
       end = Math.max(end, nextStart + clip.duration + 2);
       return { ...clip, start: nextStart, y: nextY };
     });
+    if (hasGroupBoundaryCrossing(proposed)) return;
+    const clips = assignTimelineGroups(proposed);
     this.update({ clips, duration: end, selectedClipId: id, selectedClipIds: selectedIds });
     this.invalidatePreviewCache();
     this.schedulePersistence();
@@ -603,8 +662,100 @@ export class EditorController {
     if (this.state.playing) this.syncAudioPlayback(true, true);
   };
 
+  nudgeSelectedClips = (frames: number) => {
+    const selectedIds = this.state.selectedClipIds.length
+      ? this.state.selectedClipIds
+      : this.state.selectedClipId ? [this.state.selectedClipId] : [];
+    if (!selectedIds.length || !frames) return;
+    const movingIds = timelineGroupDescendants(this.state.clips, selectedIds);
+    const selected = this.state.clips.filter((clip) => movingIds.has(clip.id));
+    if (!selected.length) return;
+    const requestedDelta = frames / this.state.fps;
+    const safeDelta = Math.max(requestedDelta, -Math.min(...selected.map((clip) => clip.start)));
+    if (!safeDelta) return;
+    let end = this.state.duration;
+    const proposed = this.state.clips.map((clip) => {
+      if (!movingIds.has(clip.id)) return clip;
+      const start = Math.max(0, clip.start + safeDelta);
+      end = Math.max(end, start + clip.duration + 2);
+      return { ...clip, start };
+    });
+    if (hasGroupBoundaryCrossing(proposed)) return;
+    const clips = assignTimelineGroups(proposed);
+    this.update({ clips, duration: end });
+    this.invalidatePreviewCache();
+    this.schedulePersistence();
+    this.renderPreview(false);
+    if (this.state.playing) this.syncAudioPlayback(true, true);
+  };
+
+  resizeStaticClip = (id: string, start: number, duration: number) => {
+    const clip = this.state.clips.find((item) => item.id === id);
+    if (!clip) return;
+    const asset = clip.assetId ? this.state.assets.find((item) => item.id === clip.assetId) : undefined;
+    if (clip.kind !== "title" && clip.kind !== "object" && clip.kind !== "group" && asset?.kind !== "image") return;
+    const minimumDuration = 1 / this.state.fps;
+    const nextStart = Math.max(0, start);
+    const nextDuration = Math.max(minimumDuration, duration);
+    const proposed = this.state.clips.map((item) => item.id === id ? { ...item, start: nextStart, duration: nextDuration } : item);
+    if (hasGroupBoundaryCrossing(proposed)) return;
+    this.update({
+      clips: assignTimelineGroups(proposed),
+      duration: Math.max(this.state.duration, nextStart + nextDuration + 2),
+    });
+    this.invalidatePreviewCache();
+    this.schedulePersistence();
+    this.renderPreview(false);
+  };
+
+  resizeTimelineGroup = (id: string, start: number, y: number, duration: number, height: number) => {
+    const group = this.state.clips.find((clip) => clip.id === id && clip.kind === "group");
+    if (!group) return;
+    const nextStart = Math.max(0, start);
+    const nextY = Math.max(0, y);
+    const nextDuration = Math.max(1 / this.state.fps, duration);
+    const nextHeight = Math.max(MIN_GROUP_HEIGHT, height);
+    const proposed = this.state.clips.map((clip) => clip.id === id
+      ? { ...clip, start: nextStart, y: nextY, duration: nextDuration, groupHeight: nextHeight }
+      : clip);
+    if (hasGroupBoundaryCrossing(proposed)) return;
+    this.update({
+      clips: assignTimelineGroups(proposed),
+      duration: Math.max(this.state.duration, nextStart + nextDuration + 2),
+    });
+    this.schedulePersistence();
+  };
+
+  translatePreviewClip = (id: string, deltaX: number, deltaY: number, transient = false) => {
+    if (!deltaX && !deltaY) return;
+    const clip = this.state.clips.find((item) => item.id === id);
+    if (!clip || clip.kind === "audio") return;
+    const clips = this.state.clips.map((item) => item.id === id ? {
+      ...item,
+      positionX: (item.positionX ?? 0) + deltaX,
+      positionY: (item.positionY ?? 0) + deltaY,
+      keyframes: item.keyframes?.map((keyframe) => keyframe.property === "positionX"
+        ? { ...keyframe, value: keyframe.value + deltaX }
+        : keyframe.property === "positionY" ? { ...keyframe, value: keyframe.value + deltaY } : keyframe),
+    } : item);
+    this.update({ clips, selectedClipId: id, selectedClipIds: [id], backgroundSelected: false });
+    if (!transient) {
+      this.invalidatePreviewCache();
+      this.schedulePersistence();
+    }
+    this.renderPreview(false);
+  };
+
+  finishPreviewInteraction = () => {
+    this.invalidatePreviewCache();
+    this.schedulePersistence();
+    this.renderPreview(false);
+  };
+
   updateClip = (id: string, patch: Partial<import("./types").TimelineClip>) => {
-    this.update({ clips: this.state.clips.map((clip) => clip.id === id ? { ...clip, ...patch } : clip) });
+    const proposed = this.state.clips.map((clip) => clip.id === id ? { ...clip, ...patch } : clip);
+    if (hasGroupBoundaryCrossing(proposed)) return;
+    this.update({ clips: assignTimelineGroups(proposed) });
     this.invalidatePreviewCache();
     this.schedulePersistence();
     this.renderPreview(false);
@@ -613,7 +764,8 @@ export class EditorController {
 
   removeClip = (id: string) => {
     const selectedClipIds = this.state.selectedClipIds.filter((item) => item !== id);
-    this.update({ clips: this.state.clips.filter((clip) => clip.id !== id), selectedClipId: this.state.selectedClipId === id ? selectedClipIds.at(-1) ?? null : this.state.selectedClipId, selectedClipIds });
+    const clips = assignTimelineGroups(this.state.clips.filter((clip) => clip.id !== id));
+    this.update({ clips, selectedClipId: this.state.selectedClipId === id ? selectedClipIds.at(-1) ?? null : this.state.selectedClipId, selectedClipIds });
     this.invalidatePreviewCache();
     this.schedulePersistence();
     this.renderPreview(false);
@@ -633,6 +785,34 @@ export class EditorController {
       textColor: 0x202020, textOutlineColor: 0xffffff, textOutlineWidth: 0.02, fontFamily: "Helvetiker",
     };
     this.insertObjectClip(clip);
+  };
+
+  addGroupObject = (placement?: Partial<Pick<ContextMenuState, "time" | "timelineY">>) => {
+    const id = crypto.randomUUID();
+    const start = this.snapTime(placement?.time ?? this.state.currentTime);
+    const source: TimelineClip = {
+      id,
+      name: "グループ",
+      kind: "group",
+      color: "#4f6880",
+      start,
+      y: Math.max(0, placement?.timelineY ?? 40),
+      duration: 8,
+      offset: 0,
+      groupHeight: 156,
+    };
+    const group = expandGroupToValidBoundary(this.state.clips, source);
+    const clips = assignTimelineGroups([...this.state.clips, group]);
+    this.update({
+      clips,
+      selectedClipId: id,
+      selectedClipIds: [id],
+      selectedAssetId: null,
+      currentTime: start,
+      duration: Math.max(this.state.duration, group.start + group.duration + 2),
+      contextMenu: null,
+    });
+    this.schedulePersistence();
   };
 
   addParticleObject = (placement?: Partial<Pick<ContextMenuState, "time" | "timelineY" | "positionX" | "positionY">>) => {
@@ -678,8 +858,9 @@ export class EditorController {
   }
 
   private insertObjectClip(clip: TimelineClip) {
+    clip = placeTimelineClip(this.state.clips, clip);
     this.update({
-      clips: [...this.state.clips, clip], selectedClipId: clip.id, selectedClipIds: [clip.id], selectedAssetId: null,
+      clips: assignTimelineGroups([...this.state.clips, clip]), selectedClipId: clip.id, selectedClipIds: [clip.id], selectedAssetId: null,
       currentTime: clip.start, duration: Math.max(this.state.duration, clip.start + clip.duration + 2), contextMenu: null,
     });
     this.invalidatePreviewCache();
@@ -703,7 +884,8 @@ export class EditorController {
   };
 
   copySelection = async () => {
-    const clips = this.state.clips.filter((item) => this.state.selectedClipIds.includes(item.id));
+    const copiedIds = timelineGroupDescendants(this.state.clips, this.state.selectedClipIds);
+    const clips = this.state.clips.filter((item) => copiedIds.has(item.id));
     if (!clips.length) return false;
     const payload: ClipboardPayload = { type: "gfxutl/timeline-object", version: 2, clips };
     this.memoryClipboard = payload;
@@ -713,9 +895,9 @@ export class EditorController {
   };
 
   cutSelection = async () => {
-    const ids = [...this.state.selectedClipIds];
+    const ids = [...timelineGroupDescendants(this.state.clips, this.state.selectedClipIds)];
     if (!ids.length || !(await this.copySelection())) return;
-    this.update({ clips: this.state.clips.filter((clip) => !ids.includes(clip.id)), selectedClipId: null, selectedClipIds: [] });
+    this.update({ clips: assignTimelineGroups(this.state.clips.filter((clip) => !ids.includes(clip.id))), selectedClipId: null, selectedClipIds: [] });
     this.invalidatePreviewCache();
     this.schedulePersistence();
     this.renderPreview(false);
@@ -736,19 +918,32 @@ export class EditorController {
     const minY = Math.min(...payload.clips.map((clip) => clip.y));
     const targetStart = this.snapTime(menu?.time ?? this.state.currentTime);
     const targetY = Math.max(0, menu?.timelineY ?? minY + 24);
-    const pasted = payload.clips.map((source) => {
-      const id = crypto.randomUUID();
+    const idMap = new Map(payload.clips.map((source) => [source.id, crypto.randomUUID()]));
+    let pasted = payload.clips.map((source) => {
+      const id = idMap.get(source.id)!;
       return {
         ...structuredClone(source), id,
         geometry: source.geometry ? { ...structuredClone(source.geometry), id: `${id}:geometry` } : undefined,
+        groupId: source.groupId ? idMap.get(source.groupId) : undefined,
         start: targetStart + source.start - minStart,
         y: targetY + source.y - minY,
         positionX: menu?.scope === "preview" ? menu.positionX : source.positionX,
         positionY: menu?.scope === "preview" ? menu.positionY : source.positionY,
       } satisfies TimelineClip;
     });
+    // Keep a pasted block intact, moving it down until it no longer straddles
+    // any existing container boundary.
+    for (let attempt = 0; attempt < 100 && hasGroupBoundaryCrossing([...this.state.clips, ...pasted]); attempt += 1) {
+      pasted = pasted.map((clip) => ({ ...clip, y: clip.y + 40 }));
+    }
+    if (hasGroupBoundaryCrossing([...this.state.clips, ...pasted])) {
+      const existingBottom = Math.max(0, ...this.state.clips.filter((clip) => clip.kind === "group").map((clip) => clip.y + (clip.groupHeight ?? 156)));
+      const pastedTop = Math.min(...pasted.map((clip) => clip.y));
+      pasted = pasted.map((clip) => ({ ...clip, y: clip.y + existingBottom + 40 - pastedTop }));
+    }
+    const clips = assignTimelineGroups([...this.state.clips, ...pasted]);
     this.update({
-      clips: [...this.state.clips, ...pasted], selectedClipId: pasted.at(-1)?.id ?? null, selectedClipIds: pasted.map((clip) => clip.id), contextMenu: null,
+      clips, selectedClipId: pasted.at(-1)?.id ?? null, selectedClipIds: pasted.map((clip) => clip.id), contextMenu: null,
       duration: Math.max(this.state.duration, ...pasted.map((clip) => clip.start + clip.duration + 2)),
     });
     this.invalidatePreviewCache();
@@ -762,7 +957,7 @@ export class EditorController {
     const selected = new Set(this.state.selectedClipIds);
     const created: TimelineClip[] = [];
     const clips = this.state.clips.flatMap((clip) => {
-      if (!selected.has(clip.id) || time <= clip.start + frame / 2 || time >= clip.start + clip.duration - frame / 2) return [clip];
+      if (clip.kind === "group" || !selected.has(clip.id) || time <= clip.start + frame / 2 || time >= clip.start + clip.duration - frame / 2) return [clip];
       const leftDuration = time - clip.start;
       const id = crypto.randomUUID();
       const right: TimelineClip = {
@@ -847,12 +1042,13 @@ export class EditorController {
     const duration = asset.kind === "image" || asset.kind === "model" ? Math.max(5, asset.duration || 0) : Math.max(0.1, asset.duration || 5);
     const nextStart = this.state.snapEnabled ? Math.round(Math.max(0, start) * this.state.fps) / this.state.fps : Math.max(0, start);
     const id = crypto.randomUUID();
+    const clip = placeTimelineClip(this.state.clips, { id, assetId, y: Math.max(0, y), name: asset.name, start: nextStart, duration, offset: 0, color: asset.color, kind: asset.kind === "audio" ? "audio" : asset.kind === "model" ? "object" : "video", positionX: 0, positionY: 0, positionZ: 0, scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: 0, rotationY: 0, opacity: 100, castShadow: true, receiveShadow: true });
     this.update({
-      clips: [...this.state.clips, { id, assetId, y: Math.max(0, y), name: asset.name, start: nextStart, duration, offset: 0, color: asset.color, kind: asset.kind === "audio" ? "audio" : asset.kind === "model" ? "object" : "video", positionX: 0, positionY: 0, positionZ: 0, scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: 0, rotationY: 0, opacity: 100, castShadow: true, receiveShadow: true }],
+      clips: assignTimelineGroups([...this.state.clips, clip]),
       selectedClipId: id,
       selectedClipIds: [id],
-      currentTime: nextStart,
-      duration: Math.max(this.state.duration, nextStart + duration + 2),
+      currentTime: clip.start,
+      duration: Math.max(this.state.duration, clip.start + duration + 2),
     });
     this.invalidatePreviewCache();
     this.schedulePersistence();
@@ -873,7 +1069,7 @@ export class EditorController {
         });
       }
       this.update({ exportStatus: "exporting", exportProgress: 0 });
-      const result = await this.engine.exportVideo(settings, Math.max(1 / settings.fps, settings.endTime - settings.startTime), this.getRenderClips(), this.state.background.scene);
+      const result = await this.engine.exportVideo(settings, Math.max(1 / settings.fps, settings.endTime - settings.startTime), this.getRenderClips(), this.state.background.scene, this.state.settings.audioChannels);
       const blob = new Blob([result.buffer], { type: result.mimeType });
       if (handle) {
         const writable = await handle.createWritable();
@@ -913,13 +1109,7 @@ export class EditorController {
       } else {
         file = await this.openWithInput(".glb,model/gltf-binary");
       }
-      const id = crypto.randomUUID();
-      const asset: MediaAsset = { id, name: file.name, kind: "model", duration: 5, size: file.size, lastModified: file.lastModified, color: "#557f9d", handle, fileStatus: "loading" };
-      this.update({ assets: [...this.state.assets, asset], selectedAssetId: id, selectedClipId: null, selectedClipIds: [] });
-      const info = await this.registerRuntimeFile(asset, file);
-      this.update({ assets: this.state.assets.map((item) => item.id === id ? { ...item, ...info, fileStatus: "ready" } : item) });
-      if (handle) await saveHandleProject(this.state.assets.find((item) => item.id === id)!, this.state.clips);
-      this.toast(`${file.name} を3Dモデルとして読み込みました`);
+      await this.importMediaFile(file, handle);
     } catch (error) {
       if ((error as DOMException).name !== "AbortError") this.toast(error instanceof Error ? `3Dモデルを開けませんでした: ${error.message}` : "3Dモデルを開けませんでした");
     }
@@ -939,19 +1129,62 @@ export class EditorController {
         file = await this.openWithInput("video/*,audio/*,image/*,.hdr,.exr");
       }
 
-      const extension = file.name.split(".").pop()?.toLowerCase();
-      const kind: MediaAsset["kind"] = file.type.startsWith("audio") ? "audio" : file.type.startsWith("image") || extension === "hdr" || extension === "exr" ? "image" : "video";
-      const id = crypto.randomUUID();
-      const asset: MediaAsset = { id, name: file.name, kind, duration: kind === "image" ? 0 : 10, size: file.size, lastModified: file.lastModified, color: kind === "audio" ? "#50766c" : "#7e8072", handle, fileStatus: "loading" };
-      this.update({ assets: [...this.state.assets, asset], selectedAssetId: id, selectedClipId: null, selectedClipIds: [] });
-      const info = await this.registerRuntimeFile(asset, file);
-      this.update({ assets: this.state.assets.map((item) => item.id === id ? { ...item, ...info, fileStatus: "ready" } : item) });
-      this.renderPreview(true);
-      if (handle) await saveHandleProject(this.state.assets.find((item) => item.id === id)!, this.state.clips);
-      this.toast(`${file.name} を読み込みました${extension ? ` · ${extension.toUpperCase()}` : ""}`);
+      await this.importMediaFile(file, handle);
     } catch (error) {
       if ((error as DOMException).name !== "AbortError") this.toast("メディアを開けませんでした");
     }
+  };
+
+  importMediaFile = async (file: File, handle?: FileSystemFileHandle, sourcePath?: string) => {
+    const kind = mediaKindForFile(file);
+    if (!kind) {
+      this.toast(`${file.name} は対応していないファイルです`);
+      return null;
+    }
+    const existing = this.state.assets.find((asset) => sourcePath
+      ? asset.sourcePath === sourcePath
+      : asset.name === file.name && asset.size === file.size && asset.lastModified === file.lastModified);
+    const id = existing?.id ?? crypto.randomUUID();
+    const extension = file.name.split(".").pop()?.toLowerCase();
+    const asset: MediaAsset = existing
+      ? { ...existing, handle: handle ?? existing.handle, sourcePath: sourcePath ?? existing.sourcePath, fileStatus: "loading" }
+      : {
+          id, name: file.name, kind, duration: kind === "image" ? 0 : kind === "model" ? 5 : 10,
+          size: file.size, lastModified: file.lastModified, sourcePath, color: mediaColor(kind), handle, fileStatus: "loading",
+        };
+    this.update({
+      assets: existing ? this.state.assets.map((item) => item.id === id ? asset : item) : [...this.state.assets, asset],
+      selectedAssetId: id, selectedClipId: null, selectedClipIds: [],
+    });
+    try {
+      const info = await this.registerRuntimeFile(asset, file);
+      const readyAsset = { ...asset, ...info, fileStatus: "ready" as const };
+      this.update({ assets: this.state.assets.map((item) => item.id === id ? readyAsset : item) });
+      this.renderPreview(true);
+      if (handle) await saveHandleProject(readyAsset, this.state.clips).catch(() => { /* Persistence failure must not invalidate a decoded asset. */ });
+      this.toast(`${file.name} を読み込みました${extension ? ` · ${extension.toUpperCase()}` : ""}`);
+      return id;
+    } catch (error) {
+      this.update({ assets: this.state.assets.map((item) => item.id === id ? { ...item, fileStatus: "missing" } : item) });
+      this.toast(error instanceof Error ? `${file.name}: ${error.message}` : `${file.name} を読み込めませんでした`);
+      return null;
+    }
+  };
+
+  stageExplorerFile = (sourcePath: string, file?: File, handle?: FileSystemFileHandle) => {
+    this.explorerFiles.set(sourcePath, { file, handle });
+  };
+
+  addExplorerFileToTimeline = async (sourcePath: string, start: number, y: number) => {
+    const existing = this.state.assets.find((asset) => asset.sourcePath === sourcePath);
+    let assetId = existing?.fileStatus === "ready" ? existing.id : null;
+    if (!assetId) {
+      const source = this.explorerFiles.get(sourcePath);
+      const file = source?.file ?? await source?.handle?.getFile();
+      if (!file) return;
+      assetId = await this.importMediaFile(file, source?.handle, sourcePath);
+    }
+    if (assetId) this.addAssetToTimeline(assetId, start, y);
   };
 
   private openWithInput(accept: string) {
@@ -987,6 +1220,24 @@ export class EditorController {
   clearCache = () => this.engine.clearCache();
   upsertGeometry = (object: SceneObjectSpec) => this.engine.upsertGeometry(object);
   removeGeometry = (id: string) => this.engine.removeGeometry(id);
+}
+
+const MEDIA_EXTENSIONS = new Set(["mp4", "mov", "webm", "mkv", "wav", "mp3", "aac", "flac", "png", "jpg", "jpeg", "webp", "hdr", "exr", "glb"]);
+
+function mediaKindForFile(file: File): MediaAsset["kind"] | null {
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  if (!MEDIA_EXTENSIONS.has(extension) && !file.type.startsWith("video/") && !file.type.startsWith("audio/") && !file.type.startsWith("image/")) return null;
+  if (extension === "glb" || file.type === "model/gltf-binary") return "model";
+  if (file.type.startsWith("audio/") || ["wav", "mp3", "aac", "flac"].includes(extension)) return "audio";
+  if (file.type.startsWith("image/") || ["png", "jpg", "jpeg", "webp", "hdr", "exr"].includes(extension)) return "image";
+  return "video";
+}
+
+function mediaColor(kind: MediaAsset["kind"]) {
+  if (kind === "audio") return "#50766c";
+  if (kind === "model") return "#557f9d";
+  if (kind === "image") return "#817869";
+  return "#7e8072";
 }
 
 function createEffect(kind: ClipEffectKind): ClipEffect {

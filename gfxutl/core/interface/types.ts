@@ -1,4 +1,4 @@
-export type TrackKind = "video" | "audio" | "title" | "object";
+export type TrackKind = "video" | "audio" | "title" | "object" | "group";
 
 import type { ClipEffect, ClipKeyframe, ExportSettings, GeometrySpec, SceneMaterialSpec, SceneSettings } from "../protocol/engine-protocol";
 export type { BackgroundSettings, BlendMode, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, EngineRequest, EngineResponse, ExportSettings, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, RendererSettings, RendererStats, RenderClip, SceneMaterialSpec, SceneObjectSpec, SceneSettings, TimelinePatch, ToneMappingKind } from "../protocol/engine-protocol";
@@ -14,6 +14,8 @@ export interface MediaAsset {
   codec?: string;
   hasAudio?: boolean;
   lastModified?: number;
+  /** Path relative to the media explorer root. Used to reconnect tree entries. */
+  sourcePath?: string;
   color: string;
   handle?: FileSystemFileHandle;
   fileStatus?: "ready" | "loading" | "permission-required" | "missing";
@@ -68,6 +70,10 @@ export interface TimelineClip {
   textColor?: number;
   textOutlineColor?: number;
   textOutlineWidth?: number;
+  /** Timeline-only container height in pixels. */
+  groupHeight?: number;
+  /** Direct timeline container. This is separate from the Three.js scene parentId. */
+  groupId?: string;
 }
 
 export interface ContextMenuState {
@@ -107,6 +113,12 @@ export interface EditorLayout {
   timelineHeight: number;
 }
 
+export interface EditorSettings {
+  ramPreviewEnabled: boolean;
+  ramPreviewMaxBytes: number;
+  audioChannels: "stereo" | "mono";
+}
+
 export interface EditorState {
   fps: number;
   duration: number;
@@ -130,7 +142,8 @@ export interface EditorState {
   localFontAccess: boolean;
   notice: string | null;
   layout: EditorLayout;
-  leftPanelTab: "media" | "export";
+  settings: EditorSettings;
+  leftPanelTab: "media" | "export" | "settings";
   exportSettings: ExportSettings;
   exportStatus: "idle" | "exporting" | "done" | "error";
   exportProgress: number;
@@ -148,6 +161,7 @@ export interface EditorState {
 
 declare global {
   interface Window {
+    showDirectoryPicker?: (options?: { mode?: "read" | "readwrite" }) => Promise<FileSystemDirectoryHandle>;
     showOpenFilePicker?: (options?: {
       multiple?: boolean;
       types?: Array<{ description: string; accept: Record<string, string[]> }>;

@@ -1,15 +1,19 @@
 import { memo, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { useEditor } from "../core/interface";
+import { MIN_GROUP_HEIGHT, timelineClipHeight, timelineGroupDescendants, useEditor } from "../core/interface";
 import type { TimelineClip } from "../core/interface";
 
 const MIN_WORKSPACE_HEIGHT = 720;
 const BASE_PX_PER_SECOND = 26;
 const MIN_CLIP_WIDTH = 34;
-const TITLE_CLIP_HEIGHT = 24;
-const MEDIA_CLIP_HEIGHT = 32;
-
-function clipHeight(clip: TimelineClip) {
-  return clip.kind === "title" ? TITLE_CLIP_HEIGHT : MEDIA_CLIP_HEIGHT;
+type GroupResizeEdge = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+type TimelineEdge = "start" | "end";
+interface AlignmentSuggestion {
+  x: number;
+  top: number;
+  height: number;
+  targetId: string;
+  movingEdge: TimelineEdge;
+  targetEdge: TimelineEdge;
 }
 
 export function TimelinePanel() {
@@ -19,7 +23,14 @@ export function TimelinePanel() {
   const [dropPoint, setDropPoint] = useState<{ x: number; y: number } | null>(null);
   const [selectionBox, setSelectionBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const [cursorGuideX, setCursorGuideX] = useState<number | null>(null);
-  const workspaceHeight = useMemo(() => Math.max(MIN_WORKSPACE_HEIGHT, ...state.clips.map((clip) => clip.y + 80)), [state.clips]);
+  const [alignmentSuggestion, setAlignmentSuggestion] = useState<AlignmentSuggestion | null>(null);
+  const resizableAssetIds = useMemo(() => new Set(state.assets.filter((asset) => asset.kind === "image").map((asset) => asset.id)), [state.assets]);
+  const workspaceHeight = useMemo(() => Math.max(MIN_WORKSPACE_HEIGHT, ...state.clips.map((clip) => clip.y + timelineClipHeight(clip) + 48)), [state.clips]);
+  const nestingDepths = useMemo(() => timelineNestingDepths(state.clips), [state.clips]);
+  const orderedClips = useMemo(() => [...state.clips].sort((a, b) => {
+    if (a.kind !== b.kind && (a.kind === "group" || b.kind === "group")) return a.kind === "group" ? -1 : 1;
+    return (nestingDepths.get(a.id) ?? 0) - (nestingDepths.get(b.id) ?? 0);
+  }), [nestingDepths, state.clips]);
   const workspaceWidth = state.duration * pxPerSecond + 160;
 
   useEffect(() => {
@@ -73,7 +84,7 @@ export function TimelinePanel() {
       const ids = state.clips.filter((clip) => {
         const left = clip.start * pxPerSecond;
         const right = left + Math.max(MIN_CLIP_WIDTH, clip.duration * pxPerSecond);
-        const bottom = clip.y + clipHeight(clip);
+        const bottom = clip.y + timelineClipHeight(clip);
         return left <= box.left + box.width && right >= box.left && clip.y <= box.top + box.height && bottom >= box.top;
       }).map((clip) => clip.id);
       controller.selectClips([...new Set([...baseSelection, ...ids])]);
@@ -102,10 +113,14 @@ export function TimelinePanel() {
 
   const dropAsset = (event: ReactDragEvent<HTMLDivElement>) => {
     event.preventDefault();
-    const assetId = event.dataTransfer.getData("application/x-gfxutl-asset") || event.dataTransfer.getData("text/plain");
+    const assetId = event.dataTransfer.getData("application/x-gfxutl-asset");
+    const explorerPath = event.dataTransfer.getData("application/x-gfxutl-path");
+    const legacyAssetId = !assetId && !explorerPath ? event.dataTransfer.getData("text/plain") : "";
     const point = positionFromPointer(event.clientX, event.clientY);
     setDropPoint(null);
     if (assetId) controller.addAssetToTimeline(assetId, point.time, point.y);
+    else if (explorerPath) void controller.addExplorerFileToTimeline(explorerPath, point.time, point.y);
+    else if (legacyAssetId) controller.addAssetToTimeline(legacyAssetId, point.time, point.y);
   };
 
   return (
@@ -128,8 +143,15 @@ export function TimelinePanel() {
         >
           {dropPoint && <div className="asset-drop-ghost" style={{ left: dropPoint.x, top: dropPoint.y }}><span>ここに配置</span></div>}
           {cursorGuideX !== null && <div className="timeline-cursor-guide" style={{ left: cursorGuideX }} />}
+          {alignmentSuggestion && <div
+            className="timeline-alignment-guide"
+            data-target-clip-id={alignmentSuggestion.targetId}
+            data-moving-edge={alignmentSuggestion.movingEdge}
+            data-target-edge={alignmentSuggestion.targetEdge}
+            style={{ left: alignmentSuggestion.x, top: alignmentSuggestion.top, height: alignmentSuggestion.height }}
+          ><span>端を揃える</span></div>}
           {selectionBox && <div className="timeline-selection-box" style={selectionBox} />}
-          {state.clips.map((clip) => <Clip key={clip.id} clip={clip} pxPerSecond={pxPerSecond} selected={state.selectedClipIds.includes(clip.id)} fps={state.fps} snapEnabled={state.snapEnabled} controller={controller} />)}
+          {orderedClips.map((clip) => <Clip key={clip.id} clip={clip} pxPerSecond={pxPerSecond} selected={state.selectedClipIds.includes(clip.id)} durationResizable={clip.kind === "group" || clip.kind === "title" || clip.kind === "object" || Boolean(clip.assetId && resizableAssetIds.has(clip.assetId))} childCount={state.clips.filter((item) => item.groupId === clip.id).length} nestingDepth={nestingDepths.get(clip.id) ?? 0} fps={state.fps} snapEnabled={state.snapEnabled} onAlignmentSuggestion={setAlignmentSuggestion} controller={controller} />)}
           <div className="playhead free-playhead" style={{ left: state.currentTime * pxPerSecond }}><div className="playhead-cap" /><i /></div>
         </div>
       </div>
@@ -137,8 +159,9 @@ export function TimelinePanel() {
   );
 }
 
-const Clip = memo(function Clip({ clip, pxPerSecond, selected, fps, snapEnabled, controller }: { clip: TimelineClip; pxPerSecond: number; selected: boolean; fps: number; snapEnabled: boolean; controller: typeof import("../core/interface").editorController }) {
+const Clip = memo(function Clip({ clip, pxPerSecond, selected, durationResizable, childCount, nestingDepth, fps, snapEnabled, onAlignmentSuggestion, controller }: { clip: TimelineClip; pxPerSecond: number; selected: boolean; durationResizable: boolean; childCount: number; nestingDepth: number; fps: number; snapEnabled: boolean; onAlignmentSuggestion: (suggestion: AlignmentSuggestion | null) => void; controller: typeof import("../core/interface").editorController }) {
   const [dragging, setDragging] = useState(false);
+  const [resizing, setResizing] = useState(false);
   const drag = useRef<{ pointerId: number; startX: number; startY: number; originalStart: number; originalY: number; lastStart: number; lastY: number } | null>(null);
 
   const beginDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -156,8 +179,13 @@ const Clip = memo(function Clip({ clip, pxPerSecond, selected, fps, snapEnabled,
     const active = drag.current;
     if (!active || active.pointerId !== event.pointerId) return;
     const rawStart = active.originalStart + (event.clientX - active.startX) / pxPerSecond;
-    active.lastStart = Math.max(0, !snapEnabled || event.shiftKey ? rawStart : Math.round(rawStart * fps) / fps);
     active.lastY = Math.max(0, active.originalY + event.clientY - active.startY);
+    const snapshot = controller.getSnapshot();
+    const excludedIds = timelineGroupDescendants(snapshot.clips, snapshot.selectedClipIds.includes(clip.id) ? snapshot.selectedClipIds : [clip.id]);
+    const alignment = findTimelineAlignment({ start: Math.max(0, rawStart), duration: clip.duration, y: active.lastY, height: timelineClipHeight(clip) }, snapshot.clips, excludedIds, pxPerSecond);
+    onAlignmentSuggestion(alignment?.suggestion ?? null);
+    const suggestedStart = alignment?.start ?? rawStart;
+    active.lastStart = Math.max(0, !snapEnabled || event.shiftKey ? rawStart : alignment ? suggestedStart : Math.round(rawStart * fps) / fps);
     controller.moveClip(clip.id, active.lastStart, active.lastY);
   };
 
@@ -165,13 +193,113 @@ const Clip = memo(function Clip({ clip, pxPerSecond, selected, fps, snapEnabled,
     const active = drag.current;
     if (!active || active.pointerId !== event.pointerId) return;
     controller.moveClip(clip.id, active.lastStart, active.lastY);
+    onAlignmentSuggestion(null);
     drag.current = null;
     setDragging(false);
   };
 
+  const beginResize = (edge: "start" | "end", event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0 || !durationResizable) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!selected) controller.selectClip(clip.id);
+    const originX = event.clientX;
+    const originalStart = clip.start;
+    const originalDuration = clip.duration;
+    const originalEnd = originalStart + originalDuration;
+    const minimumDuration = 1 / fps;
+    setResizing(true);
+    const move = (pointer: PointerEvent) => {
+      const delta = (pointer.clientX - originX) / pxPerSecond;
+      if (edge === "start") {
+        const rawStart = originalStart + delta;
+        const candidateStart = Math.max(0, Math.min(originalEnd - minimumDuration, rawStart));
+        const snapshot = controller.getSnapshot();
+        const alignment = findTimelineAlignment({ start: candidateStart, duration: originalEnd - candidateStart, y: clip.y, height: timelineClipHeight(clip) }, snapshot.clips, new Set([clip.id]), pxPerSecond, ["start"]);
+        onAlignmentSuggestion(alignment?.suggestion ?? null);
+        const snappedStart = !snapEnabled || pointer.shiftKey ? rawStart : alignment ? alignment.start : Math.round(rawStart * fps) / fps;
+        const start = Math.max(0, Math.min(originalEnd - minimumDuration, snappedStart));
+        controller.resizeStaticClip(clip.id, start, originalEnd - start);
+      } else {
+        const rawDuration = originalDuration + delta;
+        const candidateDuration = Math.max(minimumDuration, rawDuration);
+        const snapshot = controller.getSnapshot();
+        const alignment = findTimelineAlignment({ start: originalStart, duration: candidateDuration, y: clip.y, height: timelineClipHeight(clip) }, snapshot.clips, new Set([clip.id]), pxPerSecond, ["end"]);
+        onAlignmentSuggestion(alignment?.suggestion ?? null);
+        const duration = Math.max(minimumDuration, !snapEnabled || pointer.shiftKey ? rawDuration : alignment ? alignment.time - originalStart : Math.round(rawDuration * fps) / fps);
+        controller.resizeStaticClip(clip.id, originalStart, duration);
+      }
+    };
+    const end = () => {
+      setResizing(false);
+      onAlignmentSuggestion(null);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end, { once: true });
+    window.addEventListener("pointercancel", end, { once: true });
+  };
+
+  const beginGroupResize = (edge: GroupResizeEdge, event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0 || clip.kind !== "group") return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!selected) controller.selectClip(clip.id);
+    const originX = event.clientX;
+    const originY = event.clientY;
+    const originalStart = clip.start;
+    const originalEnd = clip.start + clip.duration;
+    const originalTop = clip.y;
+    const originalBottom = clip.y + timelineClipHeight(clip);
+    const minimumDuration = 1 / fps;
+    setResizing(true);
+    const move = (pointer: PointerEvent) => {
+      const rawDeltaTime = (pointer.clientX - originX) / pxPerSecond;
+      const deltaTime = !snapEnabled || pointer.shiftKey ? rawDeltaTime : Math.round(rawDeltaTime * fps) / fps;
+      const deltaY = pointer.clientY - originY;
+      let left = originalStart;
+      let right = originalEnd;
+      let top = originalTop;
+      let bottom = originalBottom;
+      if (edge.includes("w")) left = Math.max(0, Math.min(originalEnd - minimumDuration, originalStart + deltaTime));
+      if (edge.includes("e")) right = Math.max(originalStart + minimumDuration, originalEnd + deltaTime);
+      if (edge.includes("n")) top = Math.max(0, Math.min(originalBottom - MIN_GROUP_HEIGHT, originalTop + deltaY));
+      if (edge.includes("s")) bottom = Math.max(originalTop + MIN_GROUP_HEIGHT, originalBottom + deltaY);
+      if (edge.includes("w") || edge.includes("e")) {
+        const snapshot = controller.getSnapshot();
+        const alignment = findTimelineAlignment({ start: left, duration: right - left, y: top, height: bottom - top }, snapshot.clips, timelineGroupDescendants(snapshot.clips, [clip.id]), pxPerSecond, edge.includes("w") ? ["start"] : ["end"]);
+        onAlignmentSuggestion(alignment?.suggestion ?? null);
+        if (alignment && snapEnabled && !pointer.shiftKey) {
+          if (edge.includes("w")) left = Math.min(right - minimumDuration, alignment.start);
+          else right = Math.max(left + minimumDuration, alignment.time);
+        }
+      } else onAlignmentSuggestion(null);
+      controller.resizeTimelineGroup(clip.id, left, top, right - left, bottom - top);
+    };
+    const end = () => {
+      setResizing(false);
+      onAlignmentSuggestion(null);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end, { once: true });
+    window.addEventListener("pointercancel", end, { once: true });
+  };
+
   return (
     <button
-      className={`timeline-clip free-clip clip-${clip.kind} ${selected ? "selected" : ""} ${dragging ? "dragging" : ""}`}
+      className={`timeline-clip free-clip clip-${clip.kind} ${selected ? "selected" : ""} ${dragging ? "dragging" : ""} ${resizing ? "resizing" : ""} ${clip.groupId ? "nested" : ""}`}
+      data-clip-id={clip.id}
+      data-group-id={clip.groupId ?? ""}
+      data-start={clip.start}
+      data-y={clip.y}
+      data-duration={clip.duration}
+      data-height={timelineClipHeight(clip)}
+      data-nesting-depth={nestingDepth}
       onPointerDown={beginDrag}
       onPointerMove={dragClip}
       onPointerUp={endDrag}
@@ -184,17 +312,75 @@ const Clip = memo(function Clip({ clip, pxPerSecond, selected, fps, snapEnabled,
         const time = clip.start + Math.min(clip.duration, Math.max(0, (event.clientX - rect.left) / pxPerSecond));
         controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "clip", time, timelineY: clip.y, positionX: clip.positionX ?? 0, positionY: clip.positionY ?? 0 });
       }}
-      style={{ left: clip.start * pxPerSecond, top: clip.y, width: Math.max(MIN_CLIP_WIDTH, clip.duration * pxPerSecond), height: clipHeight(clip), zIndex: dragging ? 30_000 : Math.max(1, 10_000 - Math.round(clip.y)), "--clip-color": clip.color } as React.CSSProperties}
+      style={{ left: clip.start * pxPerSecond, top: clip.y, width: Math.max(MIN_CLIP_WIDTH, clip.duration * pxPerSecond), height: timelineClipHeight(clip), zIndex: dragging ? 30_000 : clip.kind === "group" ? 100 + nestingDepth * 100 + (selected ? 1 : 0) : Math.max(1_000, 10_000 + nestingDepth * 100 - Math.round(clip.y)), "--clip-color": clip.color } as React.CSSProperties}
     >
-      {dragging && <output className="clip-drag-readout">{clip.start.toFixed(2)}s · y {Math.round(clip.y)}</output>}
-      <span>{clip.kind === "title" ? "T" : clip.kind === "audio" ? "♫" : clip.kind === "object" ? "◆" : "◈"}</span><strong>{clip.name}</strong>
+      {(dragging || resizing) && <output className="clip-drag-readout">{resizing ? `${clip.duration.toFixed(2)}s` : `${clip.start.toFixed(2)}s · y ${Math.round(clip.y)}`}</output>}
+      <span>{clip.kind === "group" ? "▣" : clip.kind === "title" ? "T" : clip.kind === "audio" ? "♫" : clip.kind === "object" ? "◆" : "◈"}</span><strong>{clip.name}{clip.kind === "group" ? ` · ${childCount}` : ""}</strong>
       {(clip.keyframes ?? []).map((keyframe) => <i className="timeline-keyframe" key={keyframe.id} title={`${keyframe.property}: ${keyframe.value}`} style={{ left: `${Math.max(0, Math.min(100, keyframe.time / Math.max(0.001, clip.duration) * 100))}%` }} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); controller.setTime(clip.start + keyframe.time); controller.selectClip(clip.id); }} />)}
       {clip.kind === "audio" && <div className="waveform">{Array.from({ length: Math.max(10, Math.floor(clip.duration * 3)) }, (_, i) => <i key={i} style={{ height: `${16 + ((i * 17 + 9) % 70)}%` }} />)}</div>}
       {clip.kind === "video" && <div className="frame-strip">{Array.from({ length: Math.max(3, Math.floor(clip.duration / 3)) }, (_, i) => <i key={i} />)}</div>}
+      {selected && durationResizable && clip.kind !== "group" && <><i className="clip-trim-handle trim-start" title="左端をドラッグして長さを変更" onPointerDown={(event) => beginResize("start", event)} /><i className="clip-trim-handle trim-end" title="右端をドラッグして長さを変更" onPointerDown={(event) => beginResize("end", event)} /></>}
+      {selected && clip.kind === "group" && (["n", "s", "e", "w", "ne", "nw", "se", "sw"] as GroupResizeEdge[]).map((edge) => <i key={edge} className={`group-resize-handle group-resize-${edge}`} data-resize-edge={edge} title="グループ境界を伸縮" onPointerDown={(event) => beginGroupResize(edge, event)} />)}
     </button>
   );
 }, (previous, next) => previous.clip === next.clip
   && previous.pxPerSecond === next.pxPerSecond
   && previous.selected === next.selected
+  && previous.durationResizable === next.durationResizable
+  && previous.childCount === next.childCount
+  && previous.nestingDepth === next.nestingDepth
   && previous.fps === next.fps
-  && previous.snapEnabled === next.snapEnabled);
+  && previous.snapEnabled === next.snapEnabled
+  && previous.onAlignmentSuggestion === next.onAlignmentSuggestion);
+
+function findTimelineAlignment(candidate: { start: number; duration: number; y: number; height: number }, clips: readonly TimelineClip[], excludedIds: ReadonlySet<string>, pxPerSecond: number, movingEdges: readonly TimelineEdge[] = ["start", "end"]) {
+  const movingWidth = Math.max(MIN_CLIP_WIDTH, candidate.duration * pxPerSecond);
+  const movingBottom = candidate.y + candidate.height;
+  const threshold = 9;
+  let best: { distance: number; start: number; duration: number; time: number; suggestion: AlignmentSuggestion } | null = null;
+  for (const target of clips) {
+    if (excludedIds.has(target.id)) continue;
+    const targetHeight = timelineClipHeight(target);
+    const verticalGap = Math.max(0, target.y - movingBottom, candidate.y - (target.y + targetHeight));
+    if (verticalGap > movingWidth) continue;
+    const targetEdges: Array<[TimelineEdge, number]> = [["start", target.start], ["end", target.start + target.duration]];
+    for (const movingEdge of movingEdges) {
+      const movingTime = movingEdge === "start" ? candidate.start : candidate.start + candidate.duration;
+      for (const [targetEdge, targetTime] of targetEdges) {
+        const distance = Math.abs(targetTime - movingTime) * pxPerSecond;
+        if (distance > threshold || (best && distance >= best.distance)) continue;
+        const start = movingEdge === "start" ? targetTime : targetTime - candidate.duration;
+        if (start < 0) continue;
+        const top = Math.min(candidate.y, target.y);
+        const bottom = Math.max(movingBottom, target.y + targetHeight);
+        best = {
+          distance,
+          start,
+          duration: candidate.duration,
+          time: targetTime,
+          suggestion: { x: targetTime * pxPerSecond, top, height: Math.max(1, bottom - top), targetId: target.id, movingEdge, targetEdge },
+        };
+      }
+    }
+  }
+  return best;
+}
+
+function timelineNestingDepths(clips: readonly TimelineClip[]) {
+  const clipsById = new Map(clips.map((clip) => [clip.id, clip]));
+  const depths = new Map<string, number>();
+  const depthOf = (clip: TimelineClip, visiting = new Set<string>()): number => {
+    const cached = depths.get(clip.id);
+    if (cached !== undefined) return cached;
+    if (!clip.groupId || visiting.has(clip.id)) return 0;
+    const parent = clipsById.get(clip.groupId);
+    if (!parent || parent.kind !== "group") return 0;
+    visiting.add(clip.id);
+    const depth = depthOf(parent, visiting) + 1;
+    visiting.delete(clip.id);
+    depths.set(clip.id, depth);
+    return depth;
+  };
+  for (const clip of clips) depths.set(clip.id, depthOf(clip));
+  return depths;
+}

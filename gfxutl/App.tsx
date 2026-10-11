@@ -18,14 +18,23 @@ export function App() {
     root.style.setProperty("--timeline-h", `${state.layout.timelineHeight}px`);
   }, [state.layout]);
   useEffect(() => {
-    const controlPlayback = (event: KeyboardEvent) => {
-      if (event.code !== "Space") return;
+    const controlKeyboard = (event: KeyboardEvent) => {
+      if (event.code === "Space") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) controller.togglePlayback();
+        return;
+      }
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("input, textarea, select, [contenteditable='true']")) return;
+      if (!controller.getSnapshot().selectedClipIds.length && !controller.getSnapshot().selectedClipId) return;
       event.preventDefault();
       event.stopPropagation();
-      if (!event.repeat) controller.togglePlayback();
+      controller.nudgeSelectedClips(event.key === "ArrowLeft" ? -1 : 1);
     };
-    window.addEventListener("keydown", controlPlayback, { capture: true });
-    return () => window.removeEventListener("keydown", controlPlayback, { capture: true });
+    window.addEventListener("keydown", controlKeyboard, { capture: true });
+    return () => window.removeEventListener("keydown", controlKeyboard, { capture: true });
   }, [controller]);
   return (
     <>

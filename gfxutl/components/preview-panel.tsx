@@ -17,6 +17,7 @@ export function PreviewPanel() {
   const pickSequenceRef = useRef(0);
   const pendingPickRef = useRef<{ x: number; y: number } | null>(null);
   const [hoveredClipId, setHoveredClipId] = useState<string | null>(null);
+  const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
   const [poppedOut, setPoppedOut] = useState(false);
   const [surfaceKey, setSurfaceKey] = useState(0);
 
@@ -139,6 +140,49 @@ export function PreviewPanel() {
     window.addEventListener("pointercancel", end, { once: true });
   };
 
+  const beginMove = (event: ReactPointerEvent<HTMLElement>, object: PreviewObjectBounds) => {
+    if (event.button !== 0 || state.playing) return;
+    event.preventDefault();
+    event.stopPropagation();
+    controller.selectClip(object.clip.id);
+    const stage = stageRef.current;
+    if (!stage) return;
+    const pointerId = event.pointerId;
+    let previous = previewWorldPoint(stage, event.clientX, event.clientY);
+    let deltaX = 0;
+    let deltaY = 0;
+    let moveFrame = 0;
+    setDraggingClipId(object.clip.id);
+    const flushMove = () => {
+      moveFrame = 0;
+      if (!deltaX && !deltaY) return;
+      controller.translatePreviewClip(object.clip.id, deltaX, deltaY, true);
+      deltaX = 0;
+      deltaY = 0;
+    };
+    const move = (pointer: PointerEvent) => {
+      if (pointer.pointerId !== pointerId) return;
+      const point = previewWorldPoint(stage, pointer.clientX, pointer.clientY);
+      deltaX += (point.x - previous.x) * 100;
+      deltaY -= (point.y - previous.y) * 100;
+      previous = point;
+      if (!moveFrame) moveFrame = requestAnimationFrame(flushMove);
+    };
+    const end = (pointer: PointerEvent) => {
+      if (pointer.pointerId !== pointerId) return;
+      if (moveFrame) cancelAnimationFrame(moveFrame);
+      flushMove();
+      controller.finishPreviewInteraction();
+      setDraggingClipId(null);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  };
+
   const beginRotate = (event: ReactPointerEvent<HTMLElement>, object: PreviewObjectBounds) => {
     event.preventDefault();
     event.stopPropagation();
@@ -167,7 +211,7 @@ export function PreviewPanel() {
   const timecode = toTimecode(state.currentTime, state.fps);
   return (
     <section className="preview-panel panel" ref={panelRef}>
-      <div className={`preview-stage ${poppedOut ? "preview-popped-out" : ""}`} ref={stageRef} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; setHoveredClipId(null); }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
+      <div className={`preview-stage ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""}`} ref={stageRef} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; if (!draggingClipId) setHoveredClipId(null); }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
         event.preventDefault();
         const rect = event.currentTarget.getBoundingClientRect();
         controller.openContextMenu({
@@ -178,7 +222,7 @@ export function PreviewPanel() {
       }}>
         {!poppedOut ? <canvas key={surfaceKey} ref={canvasRef} data-camera-projection={state.cameraProjection} data-video-frames={state.videoFramesRendered} data-geometry-objects={state.geometryObjectsReady} data-active-scene-objects={state.activeSceneObjects} data-active-image-objects={state.activeImageObjects} data-playing-audio-objects={state.playingAudioObjects} data-preview-source={state.previewSource} data-cache-frames={state.cachedFramesDisplayed} data-preview-frames={state.previewFramesRendered} /> : <div className="preview-popout-placeholder"><ExternalLink /><span>プレビューは別ウィンドウで表示中です</span><button type="button" onClick={(event) => { event.stopPropagation(); popoutRef.current?.close(); }}>この画面に戻す</button></div>}
         <div className="safe-area" />
-        {!state.playing && hoveredObject && <TransformHandles object={hoveredObject} onResize={beginResize} onRotate={beginRotate} />}
+        {!state.playing && hoveredObject && <TransformHandles object={hoveredObject} dragging={draggingClipId === hoveredObject.clip.id} onMove={beginMove} onResize={beginResize} onRotate={beginRotate} />}
       </div>
       <div className="transport">
         <div className="transport-left"><span className="timecode active">{timecode}</span><span className="slash">/</span><span className="timecode">{toTimecode(state.duration, state.fps)}</span></div>
@@ -261,12 +305,14 @@ function previewWorldPoint(stage: HTMLElement, clientX: number, clientY: number)
   return { x: ((clientX - rect.left) / rect.width - 0.5) * 16, y: (0.5 - (clientY - rect.top) / rect.height) * 9 };
 }
 
-function TransformHandles({ object, onResize, onRotate }: {
+function TransformHandles({ object, dragging, onMove, onResize, onRotate }: {
   object: PreviewObjectBounds;
+  dragging: boolean;
+  onMove: (event: ReactPointerEvent<HTMLElement>, object: PreviewObjectBounds) => void;
   onResize: (event: ReactPointerEvent<HTMLElement>, object: PreviewObjectBounds, handle: string) => void;
   onRotate: (event: ReactPointerEvent<HTMLElement>, object: PreviewObjectBounds) => void;
 }) {
-  return <div className="preview-transform-box" data-clip-id={object.clip.id} style={{
+  return <div className={`preview-transform-box ${dragging ? "dragging" : ""}`} data-clip-id={object.clip.id} onPointerDown={(event) => onMove(event, object)} style={{
     left: `${50 + object.x / 16 * 100}%`, top: `${50 - object.y / 9 * 100}%`,
     width: `${object.width / 16 * 100}%`, height: `${object.height / 9 * 100}%`,
     transform: `translate(-50%, -50%) rotate(${object.rotation}deg)`,

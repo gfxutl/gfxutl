@@ -1,4 +1,4 @@
-import { Box, Clipboard, ClipboardPaste, Copy, Magnet, Scissors, Sparkles, Type, Circle } from "lucide-react";
+import { Box, Clipboard, ClipboardPaste, Copy, FolderTree, Magnet, Scissors, Sparkles, Type, Circle } from "lucide-react";
 import { useEffect, type MouseEvent } from "react";
 import { useEditor } from "../core/interface";
 
@@ -53,6 +53,7 @@ export function EditorContextMenu() {
     </>}
     <div className="context-menu-separator" />
     <div className="context-menu-label">オブジェクトを追加</div>
+    <button role="menuitem" onClick={(event) => run(event, () => controller.addGroupObject(placement))}><FolderTree />グループ</button>
     <button role="menuitem" onClick={(event) => run(event, () => controller.addTextObject(placement))}><Type />テキスト</button>
     <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("box", placement))}><Box />立方体</button>
     <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("sphere", placement))}><Circle />球体</button>

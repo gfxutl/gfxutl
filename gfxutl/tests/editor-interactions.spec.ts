@@ -79,11 +79,240 @@ test("clips move freely in time and vertical space", async ({ page }) => {
   expect(afterTop).toBeGreaterThan(beforeTop + 80);
 });
 
+test("selected timeline objects move exactly one frame with arrow keys", async ({ page }) => {
+  await seedTimeline(page);
+  const clipStart = async () => page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    return editorController.getSnapshot().clips[0].start;
+  });
+  expect(await clipStart()).toBe(2);
+  await page.keyboard.press("ArrowRight");
+  await expect.poll(clipStart).toBeCloseTo(2 + 1 / 30, 8);
+  await page.keyboard.press("ArrowLeft");
+  await expect.poll(clipStart).toBeCloseTo(2, 8);
+
+  const search = page.getByPlaceholder("フォルダ内を検索");
+  await search.focus();
+  await page.keyboard.press("ArrowRight");
+  expect(await clipStart()).toBeCloseTo(2, 8);
+});
+
+test("text, objects, and images resize from both timeline edges", async ({ page }) => {
+  await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    const controller = editorController as unknown as { update(patch: unknown): void };
+    controller.update({
+      assets: [
+        { id: "still", name: "Still.png", kind: "image", duration: 0, size: 100, color: "#777" },
+        { id: "movie", name: "Movie.mp4", kind: "video", duration: 10, size: 100, color: "#777" },
+      ],
+      clips: [
+        { id: "title", name: "Text Static", text: "Text", kind: "title", y: 40, start: 1, duration: 5, offset: 0, color: "#9169b6" },
+        { id: "object", name: "Static Object", kind: "object", y: 80, start: 2, duration: 4, offset: 0, color: "#6ca6d9" },
+        { id: "image", assetId: "still", name: "Still.png", kind: "video", y: 120, start: 3, duration: 5, offset: 0, color: "#777" },
+        { id: "video", assetId: "movie", name: "Movie.mp4", kind: "video", y: 160, start: 4, duration: 5, offset: 0, color: "#777" },
+      ],
+      selectedClipId: "title",
+      selectedClipIds: ["title"],
+    });
+  });
+  const title = page.locator(".timeline-clip", { hasText: "Text Static" });
+  await expect(title.locator(".clip-trim-handle")).toHaveCount(2);
+  await dragBy(page, ".timeline-clip:has-text('Text Static') .trim-end", 52, 0);
+  await expect.poll(() => page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    return editorController.getSnapshot().clips.find((clip: { id: string; duration: number }) => clip.id === "title")?.duration;
+  })).toBeCloseTo(7, 1);
+  await dragBy(page, ".timeline-clip:has-text('Text Static') .trim-start", 26, 0);
+  const titleTiming = await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    const clip = editorController.getSnapshot().clips.find((item: { id: string; start: number; duration: number }) => item.id === "title")!;
+    return { start: clip.start, duration: clip.duration };
+  });
+  expect(titleTiming.start).toBeCloseTo(2, 1);
+  expect(titleTiming.duration).toBeCloseTo(6, 1);
+
+  await page.locator(".timeline-clip", { hasText: "Static Object" }).click();
+  await expect(page.locator(".timeline-clip", { hasText: "Static Object" }).locator(".clip-trim-handle")).toHaveCount(2);
+  await page.locator(".timeline-clip", { hasText: "Still.png" }).click();
+  await expect(page.locator(".timeline-clip", { hasText: "Still.png" }).locator(".clip-trim-handle")).toHaveCount(2);
+  await page.locator(".timeline-clip", { hasText: "Movie.mp4" }).click();
+  await expect(page.locator(".timeline-clip", { hasText: "Movie.mp4" }).locator(".clip-trim-handle")).toHaveCount(0);
+});
+
+test("timeline groups resize in every direction and enforce all-in or all-out nesting", async ({ page }) => {
+  await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    editorController.addGroupObject({ time: 2, timelineY: 80 });
+    editorController.addTextObject({ time: 3, timelineY: 110, positionX: 0, positionY: 0 });
+  });
+
+  const group = page.locator(".timeline-clip.clip-group");
+  const text = page.locator(".timeline-clip.clip-title");
+  await expect(group).toBeVisible();
+  await group.click({ position: { x: 10, y: 10 } });
+  await expect(group.locator(".group-resize-handle")).toHaveCount(8);
+  await expect(text).toHaveAttribute("data-group-id", /.+/);
+
+  const movedTogether = await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    const before = editorController.getSnapshot().clips;
+    const beforeGroup = before.find((clip: { kind: string }) => clip.kind === "group")!;
+    const beforeChild = before.find((clip: { kind: string }) => clip.kind === "title")!;
+    editorController.selectClip(beforeGroup.id);
+    editorController.moveClip(beforeGroup.id, 4, 120);
+    const after = editorController.getSnapshot().clips;
+    const afterGroup = after.find((clip: { id: string }) => clip.id === beforeGroup.id)!;
+    const afterChild = after.find((clip: { id: string }) => clip.id === beforeChild.id)!;
+    return {
+      groupId: afterChild.groupId,
+      group: { start: afterGroup.start, y: afterGroup.y },
+      child: { start: afterChild.start, y: afterChild.y },
+    };
+  });
+  expect(movedTogether.group).toEqual({ start: 4, y: 120 });
+  expect(movedTogether.child).toEqual({ start: 5, y: 150 });
+  expect(movedTogether.groupId).toBeTruthy();
+
+  const boundaryRule = await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    const clips = editorController.getSnapshot().clips;
+    const group = clips.find((clip: { kind: string }) => clip.kind === "group")!;
+    const child = clips.find((clip: { kind: string }) => clip.kind === "title")!;
+    editorController.selectClip(child.id);
+    editorController.moveClip(child.id, 3, child.y); // Partially crosses the left edge: rejected.
+    const rejected = editorController.getSnapshot().clips.find((clip: { id: string }) => clip.id === child.id)!;
+    editorController.moveClip(child.id, group.start + group.duration + 1, child.y); // Fully outside.
+    const outside = editorController.getSnapshot().clips.find((clip: { id: string }) => clip.id === child.id)!;
+    editorController.moveClip(child.id, group.start + 1, group.y + 30); // Fully inside again.
+    const inside = editorController.getSnapshot().clips.find((clip: { id: string }) => clip.id === child.id)!;
+    return { rejectedStart: rejected.start, outsideGroupId: outside.groupId ?? null, insideGroupId: inside.groupId ?? null, groupId: group.id };
+  });
+  expect(boundaryRule.rejectedStart).toBe(5);
+  expect(boundaryRule.outsideGroupId).toBeNull();
+  expect(boundaryRule.insideGroupId).toBe(boundaryRule.groupId);
+
+  await group.click();
+  const beforeSize = await group.boundingBox();
+  await dragBy(page, ".timeline-clip.clip-group .group-resize-se", 52, 40);
+  const afterSize = await group.boundingBox();
+  expect(afterSize!.width).toBeGreaterThan(beforeSize!.width + 35);
+  expect(afterSize!.height).toBeGreaterThan(beforeSize!.height + 25);
+
+  await page.locator(".timeline-workspace").click({ button: "right", position: { x: 500, y: 400 } });
+  await expect(page.getByRole("menuitem", { name: "グループ" })).toBeVisible();
+});
+
+test("nested groups receive click focus and their contents stay in front", async ({ page }) => {
+  await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    const controller = editorController as unknown as { update(patch: unknown): void };
+    controller.update({
+      clips: [
+        { id: "outer-group", name: "外側グループ", kind: "group", color: "#4f6880", start: 1, y: 40, duration: 20, offset: 0, groupHeight: 320 },
+        { id: "inner-group", name: "内側グループ", kind: "group", color: "#617f91", start: 3, y: 90, duration: 12, offset: 0, groupHeight: 190, groupId: "outer-group" },
+        { id: "nested-title", name: "内側テキスト", text: "Nested", kind: "title", color: "#9169b6", start: 4, y: 130, duration: 5, offset: 0, groupId: "inner-group" },
+      ],
+      selectedClipId: "outer-group",
+      selectedClipIds: ["outer-group"],
+    });
+  });
+
+  const outer = page.locator('[data-clip-id="outer-group"]');
+  const inner = page.locator('[data-clip-id="inner-group"]');
+  const title = page.locator('[data-clip-id="nested-title"]');
+  const layers = await Promise.all([outer, inner, title].map(async (locator) => Number.parseInt((await locator.evaluate((element) => getComputedStyle(element).zIndex)), 10)));
+  expect(layers[1]).toBeGreaterThan(layers[0]);
+  expect(layers[2]).toBeGreaterThan(layers[1]);
+  await expect(inner).toHaveAttribute("data-nesting-depth", "1");
+  await expect(title).toHaveAttribute("data-nesting-depth", "2");
+
+  await inner.click({ position: { x: 12, y: 12 } });
+  await expect(inner).toHaveClass(/selected/);
+  await expect(outer).not.toHaveClass(/selected/);
+  await expect(page.locator(".selected-clip")).toContainText("内側グループ");
+
+  await title.click();
+  await expect(title).toHaveClass(/selected/);
+  await expect(page.locator(".selected-clip")).toContainText("内側テキスト");
+});
+
+test("nearby timeline edges show an alignment suggestion and snap while dragging or resizing", async ({ page }) => {
+  await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    const controller = editorController as unknown as { update(patch: unknown): void };
+    controller.update({
+      clips: [
+        { id: "align-moving", name: "揃える側", text: "A", kind: "title", color: "#9169b6", start: 1, y: 80, duration: 3, offset: 0 },
+        { id: "align-target", name: "基準側", text: "B", kind: "title", color: "#66809a", start: 6, y: 160, duration: 2, offset: 0 },
+      ],
+      selectedClipId: "align-moving",
+      selectedClipIds: ["align-moving"],
+    });
+  });
+
+  const moving = page.locator('[data-clip-id="align-moving"]');
+  const box = await moving.boundingBox();
+  if (!box) throw new Error("moving clip is not visible");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 52, box.y + box.height / 2, { steps: 5 });
+  const guide = page.locator(".timeline-alignment-guide");
+  await expect(guide).toBeVisible();
+  await expect(guide).toHaveAttribute("data-target-clip-id", "align-target");
+  await expect(guide).toHaveAttribute("data-moving-edge", "end");
+  await expect(moving).toHaveAttribute("data-start", "3");
+  await page.mouse.up();
+  await expect(guide).toHaveCount(0);
+
+  await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    editorController.moveClip("align-moving", 1, 80);
+  });
+  const endHandle = moving.locator(".trim-end");
+  const handleBox = await endHandle.boundingBox();
+  if (!handleBox) throw new Error("resize handle is not visible");
+  await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handleBox.x + handleBox.width / 2 + 52, handleBox.y + handleBox.height / 2, { steps: 5 });
+  await expect(guide).toBeVisible();
+  await expect(guide).toHaveAttribute("data-moving-edge", "end");
+  await expect(moving).toHaveAttribute("data-duration", "5");
+  await page.mouse.up();
+  await expect(guide).toHaveCount(0);
+
+  await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    const controller = editorController as unknown as { update(patch: unknown): void };
+    const clips = editorController.getSnapshot().clips.map((clip: { id: string; y: number; start: number; duration: number }) => clip.id === "align-target" ? { ...clip, y: 400 } : clip.id === "align-moving" ? { ...clip, start: 1, duration: 3, y: 80 } : clip);
+    controller.update({ clips });
+  });
+  const farBox = await moving.boundingBox();
+  if (!farBox) throw new Error("moving clip is not visible");
+  await page.mouse.move(farBox.x + farBox.width / 2, farBox.y + farBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(farBox.x + farBox.width / 2 + 52, farBox.y + farBox.height / 2, { steps: 5 });
+  await expect(guide).toHaveCount(0);
+  await page.mouse.up();
+});
+
 test("requested panels expose export and metadata without the tool rail", async ({ page }) => {
   await expect(page.locator("#main > aside")).toHaveCount(0);
   const mediaTabs = page.locator("#main > section").nth(0).locator(":scope > div").nth(0).locator(":scope > button");
-  await expect(mediaTabs).toHaveCount(2);
+  await expect(mediaTabs).toHaveCount(3);
   await expect(mediaTabs.nth(1)).toHaveText("出力");
+  await expect(mediaTabs.nth(2)).toHaveText("設定");
   await mediaTabs.nth(1).click();
   await expect(page.locator(".export-panel")).toBeVisible();
   await expect(page.locator(".export-field", { hasText: "ビットレート" })).toBeVisible();
@@ -129,6 +358,63 @@ test("media items drag into the free timeline canvas", async ({ page }) => {
   await expect(clips).toHaveCount(2);
   const copies = page.locator(".timeline-clip", { hasText: "Seed.png" });
   await expect(copies).toHaveCount(2);
+});
+
+test("media panel opens a directory and expands it like a file explorer", async ({ page }) => {
+  await page.evaluate(() => {
+    const shot = { kind: "file", name: "shot-01.png", getFile: async () => {
+      const canvas = document.createElement("canvas"); canvas.width = 8; canvas.height = 8;
+      const context = canvas.getContext("2d")!; context.fillStyle = "#4179a3"; context.fillRect(0, 0, 8, 8);
+      const blob = await new Promise<Blob>((resolve) => canvas.toBlob((value) => resolve(value!), "image/png"));
+      return new File([blob], "shot-01.png", { type: "image/png" });
+    } };
+    const notes = { kind: "file", name: "notes.txt", getFile: async () => new File([], "notes.txt", { type: "text/plain" }) };
+    const poster = { kind: "file", name: "poster.png", getFile: async () => {
+      const canvas = document.createElement("canvas"); canvas.width = 12; canvas.height = 8;
+      const context = canvas.getContext("2d")!; context.fillStyle = "#8a4f72"; context.fillRect(0, 0, 12, 8);
+      const blob = await new Promise<Blob>((resolve) => canvas.toBlob((value) => resolve(value!), "image/png"));
+      return new File([blob], "poster.png", { type: "image/png" });
+    } };
+    const footage = { kind: "directory", name: "Footage", async *values() { yield shot; yield poster; yield notes; } };
+    const audio = { kind: "file", name: "theme.wav", getFile: async () => new File([], "theme.wav", { type: "audio/wav" }) };
+    const root = { kind: "directory", name: "Project Media", async *values() { yield audio; yield footage; } };
+    Object.defineProperty(window, "showDirectoryPicker", { configurable: true, value: async () => root });
+  });
+  await page.getByRole("button", { name: "フォルダを開く" }).click();
+  await expect(page.getByRole("tree", { name: "メディアエクスプローラー" })).toBeVisible();
+  await expect(page.getByRole("treeitem", { name: "Project Media フォルダ" })).toBeVisible();
+  await expect(page.getByRole("treeitem", { name: "Footage フォルダ" })).toBeVisible();
+  await expect(page.getByRole("treeitem", { name: "theme.wav", exact: true })).toBeVisible();
+  await page.getByRole("treeitem", { name: "Footage フォルダ" }).click();
+  await expect(page.getByRole("treeitem", { name: "shot-01.png", exact: true })).toBeVisible();
+  await expect(page.getByRole("treeitem", { name: "notes.txt", exact: true })).toHaveClass(/unsupported/);
+  await page.getByPlaceholder("フォルダ内を検索").fill("shot-01");
+  const shot = page.getByRole("treeitem", { name: "shot-01.png", exact: true });
+  await expect(shot).toBeVisible();
+  await expect(page.getByRole("treeitem", { name: "theme.wav", exact: true })).toBeHidden();
+  await shot.dragTo(page.locator(".timeline-workspace"), { targetPosition: { x: 120, y: 120 } });
+  await expect(page.locator(".timeline-clip", { hasText: "shot-01.png" })).toBeVisible({ timeout: 15_000 });
+
+  await page.getByPlaceholder("フォルダ内を検索").fill("");
+  await page.getByRole("button", { name: "グリッド表示" }).click();
+  await expect(page.getByRole("list", { name: "メディアグリッド" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Footage フォルダを開く" })).toBeVisible();
+  await page.getByRole("button", { name: "Footage フォルダを開く" }).click();
+  const gridShot = page.getByRole("button", { name: "shot-01.png", exact: true });
+  await expect(gridShot).toBeVisible();
+  const posterCard = page.getByRole("button", { name: "poster.png", exact: true });
+  const posterThumbnail = posterCard.locator("img.explorer-image-thumbnail");
+  await expect(posterThumbnail).toBeVisible();
+  await expect.poll(() => posterThumbnail.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
+  await posterCard.dragTo(page.locator(".timeline-workspace"), { targetPosition: { x: 300, y: 180 } });
+  await expect(page.locator(".timeline-clip", { hasText: "poster.png" })).toBeVisible({ timeout: 15_000 });
+  await gridShot.dragTo(page.locator(".timeline-workspace"), { targetPosition: { x: 220, y: 140 } });
+  await expect(page.locator(".timeline-clip", { hasText: "shot-01.png" })).toHaveCount(2);
+  await expect(page.locator(".explorer-breadcrumbs .current")).toHaveText("Footage");
+  await page.getByRole("button", { name: "上のフォルダへ" }).click();
+  await expect(page.getByRole("button", { name: "theme.wav", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "階層表示" }).click();
+  await expect(page.getByRole("tree", { name: "メディアエクスプローラー" })).toBeVisible();
 });
 
 test("timeline ruler element is removed", async ({ page }) => {
@@ -203,6 +489,39 @@ test("128 MB H.264 RAM preview is live when stopped and cached during playback",
   await expect(canvas).not.toHaveAttribute("data-cache-frames", "0", { timeout: 20_000 });
   await page.locator(".play-button").click();
   await expect(canvas).toHaveAttribute("data-preview-source", "realtime", { timeout: 20_000 });
+});
+
+test("settings control RAM preview capacity and audio channels persistently", async ({ page }) => {
+  await expect(page.locator(".engine-light")).toHaveClass(/(webgpu|webgl2)/, { timeout: 20_000 });
+  await page.getByRole("button", { name: "設定", exact: true }).click();
+  await expect(page.getByText("エディター設定")).toBeVisible();
+
+  const enabled = page.getByRole("checkbox", { name: "RAMプレビューを有効化" });
+  const capacity = page.getByRole("spinbutton", { name: "RAMプレビュー容量" });
+  await expect(enabled).toBeChecked();
+  await expect(capacity).toHaveValue("128");
+  await capacity.fill("256");
+  await capacity.blur();
+  await expect(page.locator(".cache-meter")).toContainText("256 MB");
+
+  await enabled.uncheck();
+  await expect(page.locator(".cache-meter")).toHaveAttribute("data-cache-enabled", "false");
+  await expect(page.locator(".cache-meter")).toContainText("無効");
+  await expect(page.locator(".cache-meter")).toHaveAttribute("data-cache-entries", "0");
+
+  await page.getByRole("radio", { name: /モノラル/ }).check();
+  await expect(page.getByRole("radio", { name: /モノラル/ })).toBeChecked();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("gfxutl:settings") ?? "null"))).toEqual({
+    ramPreviewEnabled: false,
+    ramPreviewMaxBytes: 256 * 1024 * 1024,
+    audioChannels: "mono",
+  });
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "設定", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "RAMプレビューを有効化" })).not.toBeChecked();
+  await expect(page.getByRole("spinbutton", { name: "RAMプレビュー容量" })).toHaveValue("256");
+  await expect(page.getByRole("radio", { name: /モノラル/ })).toBeChecked();
 });
 
 test("inspector effects can be stacked, reordered, toggled, and removed", async ({ page }) => {
@@ -536,6 +855,46 @@ test("paused preview hover shows eight dimension handles and one rotation handle
   await expect(transformBox).toHaveCount(0);
 });
 
+test("preview objects drag directly and carry their position keyframes", async ({ page }) => {
+  await expect(page.locator(".engine-light")).toHaveClass(/(webgpu|webgl2)/, { timeout: 20_000 });
+  await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    editorController.addGeometryObject("box", { time: 0, timelineY: 40, positionX: 0, positionY: 0 });
+    const id = editorController.getSnapshot().clips[0].id;
+    editorController.updateClip(id, { keyframes: [
+      { id: "move-x", property: "positionX", time: 0, value: 0, interpolation: "linear" },
+      { id: "move-y", property: "positionY", time: 0, value: 0, interpolation: "linear" },
+    ] });
+  });
+  const stage = page.locator(".preview-stage");
+  const stageBox = await stage.boundingBox();
+  if (!stageBox) throw new Error("preview stage is not visible");
+  await page.mouse.move(stageBox.x + stageBox.width / 2, stageBox.y + stageBox.height / 2);
+  const transformBox = page.locator(".preview-transform-box");
+  await expect(transformBox).toBeVisible();
+  const bounds = await transformBox.boundingBox();
+  if (!bounds) throw new Error("preview transform box is not visible");
+  const canvas = page.locator(".preview-stage canvas");
+  const renderedBeforeDrag = Number(await canvas.getAttribute("data-preview-frames"));
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + bounds.width / 2 + 62, bounds.y + bounds.height / 2 + 35, { steps: 6 });
+  await page.mouse.up();
+
+  const moved = await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    const clip = editorController.getSnapshot().clips[0];
+    return { positionX: clip.positionX, positionY: clip.positionY, keyframes: clip.keyframes };
+  });
+  expect(moved.positionX).toBeGreaterThan(100);
+  expect(moved.positionY).toBeGreaterThan(50);
+  expect(moved.keyframes?.find((keyframe: { property: string }) => keyframe.property === "positionX")?.value).toBeCloseTo(moved.positionX!, 4);
+  expect(moved.keyframes?.find((keyframe: { property: string }) => keyframe.property === "positionY")?.value).toBeCloseTo(moved.positionY!, 4);
+  await expect.poll(async () => Number(await canvas.getAttribute("data-preview-frames")), { timeout: 1_500 }).toBeGreaterThan(renderedBeforeDrag);
+});
+
 test("images render through Three and media clips share resize handles", async ({ page }) => {
   await expect(page.locator(".engine-light")).toHaveClass(/(webgpu|webgl2)/, { timeout: 20_000 });
   await page.evaluate(() => Object.defineProperty(window, "showOpenFilePicker", { configurable: true, value: undefined }));
@@ -588,16 +947,25 @@ test("audio imports and follows timeline transport", async ({ page }) => {
   await page.evaluate(() => {
     const prototype = AudioContext.prototype;
     const original = prototype.createBufferSource;
+    const originalCreateBuffer = prototype.createBuffer;
     Object.defineProperty(window, "__gfxutlAudioSources", { configurable: true, writable: true, value: 0 });
+    Object.defineProperty(window, "__gfxutlAudioChannels", { configurable: true, writable: true, value: 0 });
     prototype.createBufferSource = function (...args) {
       (window as typeof window & { __gfxutlAudioSources: number }).__gfxutlAudioSources++;
       return original.apply(this, args);
     };
+    prototype.createBuffer = function (numberOfChannels, ...args) {
+      (window as typeof window & { __gfxutlAudioChannels: number }).__gfxutlAudioChannels = numberOfChannels;
+      return originalCreateBuffer.call(this, numberOfChannels, ...args);
+    };
   });
+  await page.getByRole("button", { name: "設定", exact: true }).click();
+  await page.getByRole("radio", { name: /モノラル/ }).check();
   const canvas = page.locator(".preview-stage canvas");
   await page.locator(".play-button").click();
   await expect(canvas).toHaveAttribute("data-playing-audio-objects", "1");
   await expect.poll(() => page.evaluate(() => (window as typeof window & { __gfxutlAudioSources?: number }).__gfxutlAudioSources ?? 0), { timeout: 10_000 }).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __gfxutlAudioChannels?: number }).__gfxutlAudioChannels ?? 0), { timeout: 10_000 }).toBe(1);
   await page.locator(".play-button").click();
   await expect(canvas).toHaveAttribute("data-playing-audio-objects", "0");
 });
