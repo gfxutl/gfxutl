@@ -1,3 +1,4 @@
+import { ChevronsLeft, ChevronsRight, Expand, ExternalLink, Pause, Play, Repeat2, SkipBack, SkipForward } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { MIN_GROUP_HEIGHT, timelineClipHeight, timelineGroupDescendants, useEditor } from "../core/interface";
 import type { TimelineClip } from "../core/interface";
@@ -19,6 +20,7 @@ interface AlignmentSuggestion {
 export function TimelinePanel() {
   const { state, controller } = useEditor();
   const pxPerSecond = BASE_PX_PER_SECOND * state.zoom;
+  const panelRef = useRef<HTMLElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [dropPoint, setDropPoint] = useState<{ x: number; y: number } | null>(null);
   const [selectionBox, setSelectionBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
@@ -34,15 +36,16 @@ export function TimelinePanel() {
   const workspaceWidth = state.duration * pxPerSecond + 160;
 
   useEffect(() => {
+    const panel = panelRef.current;
     const scroll = scrollRef.current;
-    if (!scroll) return;
+    if (!panel || !scroll) return;
     const zoomAtPointer = (event: WheelEvent) => {
       // Browsers expose a trackpad pinch as a ctrlKey WheelEvent. A physical
       // mouse reaches the same path only while the user is holding Ctrl.
       if (!event.ctrlKey) return;
       event.preventDefault();
       const rect = scroll.getBoundingClientRect();
-      const pointerX = event.clientX - rect.left;
+      const pointerX = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
       const timeAtPointer = (scroll.scrollLeft + pointerX) / (BASE_PX_PER_SECOND * state.zoom);
       const delta = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY * 16 : event.deltaY;
       const nextZoom = Math.max(0.6, Math.min(2.4, state.zoom * Math.exp(-delta * 0.0025)));
@@ -52,8 +55,10 @@ export function TimelinePanel() {
         scroll.scrollLeft = Math.max(0, timeAtPointer * BASE_PX_PER_SECOND * nextZoom - pointerX);
       });
     };
-    scroll.addEventListener("wheel", zoomAtPointer, { passive: false });
-    return () => scroll.removeEventListener("wheel", zoomAtPointer);
+    // Capture on the whole panel so pinch gestures that begin over an overlay
+    // (including the transport pill) still control the timeline zoom.
+    panel.addEventListener("wheel", zoomAtPointer, { passive: false, capture: true });
+    return () => panel.removeEventListener("wheel", zoomAtPointer, { capture: true });
   }, [controller, state.zoom]);
 
   const positionFromPointer = (clientX: number, clientY: number) => {
@@ -124,7 +129,24 @@ export function TimelinePanel() {
   };
 
   return (
-    <section className="timeline-panel panel">
+    <section className="timeline-panel panel" ref={panelRef}>
+      <div className="timeline-transport-pill" role="toolbar" aria-label="タイムライン再生コントロール">
+        <time className="timeline-pill-clock timeline-pill-clock-compact" dateTime={`PT${Math.max(0, state.currentTime)}S`}>{formatClock(state.currentTime)}</time>
+        <time className="timeline-pill-clock timeline-pill-clock-precise" dateTime={`PT${Math.max(0, state.currentTime)}S`}>{formatPreciseClock(state.currentTime)}</time>
+        <div className="timeline-pill-expanded" onPointerUpCapture={(event) => (event.target as HTMLElement).closest<HTMLButtonElement>("button")?.blur()}>
+          <span className="timeline-pill-duration">/ {formatClock(state.duration)}</span>
+          <i className="timeline-pill-divider" />
+          <button type="button" title="先頭へ" aria-label="先頭へ" onClick={() => controller.setTime(0)}><SkipBack /></button>
+          <button type="button" title="1フレーム戻る" aria-label="1フレーム戻る" onClick={() => controller.nudge(-1)}><ChevronsLeft /></button>
+          <button type="button" className="play-button" title={state.playing ? "一時停止" : "再生"} aria-label={state.playing ? "一時停止" : "再生"} onClick={controller.togglePlayback}>{state.playing ? <Pause /> : <Play />}</button>
+          <button type="button" title="1フレーム進む" aria-label="1フレーム進む" onClick={() => controller.nudge(1)}><ChevronsRight /></button>
+          <button type="button" title="末尾へ" aria-label="末尾へ" onClick={() => controller.setTime(state.duration)}><SkipForward /></button>
+          <i className="timeline-pill-divider" />
+          <button type="button" className={state.loopPlayback ? "active" : ""} title={`出力範囲をループ ${state.loopPlayback ? "ON" : "OFF"}`} aria-label="出力範囲をループ" aria-pressed={state.loopPlayback} onClick={controller.toggleLoopPlayback}><Repeat2 /></button>
+          <button type="button" title="別ウィンドウで表示" aria-label="プレビューを別ウィンドウで表示" onClick={() => requestPreviewAction("popout")}><ExternalLink /></button>
+          <button type="button" title="フルスクリーン" aria-label="プレビューをフルスクリーン表示" onClick={() => requestPreviewAction("fullscreen")}><Expand /></button>
+        </div>
+      </div>
       <div className="timeline-scroll free-timeline-scroll" ref={scrollRef}>
         <div
           className={`timeline-workspace ${dropPoint ? "drop-active" : ""}`}
@@ -158,6 +180,24 @@ export function TimelinePanel() {
       </div>
     </section>
   );
+}
+
+function formatClock(seconds: number) {
+  const totalSeconds = Math.max(0, Math.floor(seconds));
+  const second = totalSeconds % 60;
+  const minute = Math.floor(totalSeconds / 60) % 60;
+  const hour = Math.floor(totalSeconds / 3600);
+  return [hour, minute, second].map((value) => String(value).padStart(2, "0")).join(":");
+}
+
+function formatPreciseClock(seconds: number) {
+  const safe = Math.max(0, seconds);
+  const centiseconds = Math.floor(safe * 100 + 0.000001) % 100;
+  return `${formatClock(safe)}.${String(centiseconds).padStart(2, "0")}`;
+}
+
+function requestPreviewAction(action: "popout" | "fullscreen") {
+  window.dispatchEvent(new CustomEvent("gfxutl:preview-action", { detail: action }));
 }
 
 const Clip = memo(function Clip({ clip, waveformPeaks, pxPerSecond, selected, durationResizable, childCount, nestingDepth, fps, snapEnabled, onAlignmentSuggestion, controller }: { clip: TimelineClip; waveformPeaks?: number[]; pxPerSecond: number; selected: boolean; durationResizable: boolean; childCount: number; nestingDepth: number; fps: number; snapEnabled: boolean; onAlignmentSuggestion: (suggestion: AlignmentSuggestion | null) => void; controller: typeof import("../core/interface").editorController }) {

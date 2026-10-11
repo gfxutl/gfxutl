@@ -13,6 +13,11 @@ async function dragBy(page: Page, selector: string, dx: number, dy: number) {
   await page.mouse.up();
 }
 
+async function clickPlay(page: Page) {
+  await page.locator(".timeline-transport-pill").hover();
+  await page.locator(".play-button").click();
+}
+
 async function seedTimeline(page: Page) {
   await page.evaluate(async () => {
     // @ts-expect-error Vite resolves this browser-only module URL during the test.
@@ -444,6 +449,11 @@ test("timeline zoom uses Ctrl-wheel and trackpad pinch wheel events", async ({ p
 
   await timeline.dispatchEvent("wheel", { ctrlKey: true, deltaY: 90, deltaMode: 0, clientX: 300, clientY: 120 });
   await expect.poll(zoom).toBeLessThan(afterMouseZoom);
+  const beforeOverlayPinch = await zoom();
+  const pill = page.locator(".timeline-transport-pill");
+  const pillBox = await pill.boundingBox();
+  await pill.dispatchEvent("wheel", { ctrlKey: true, deltaY: -90, deltaMode: 0, clientX: pillBox!.x + pillBox!.width / 2, clientY: pillBox!.y + pillBox!.height / 2 });
+  await expect.poll(zoom).toBeGreaterThan(beforeOverlayPinch);
 });
 
 test("media and graphics worker becomes ready", async ({ page }) => {
@@ -485,9 +495,9 @@ test("128 MB H.264 RAM preview is live when stopped and cached during playback",
   await expect(meter).not.toHaveAttribute("data-cache-entries", "0", { timeout: 20_000 });
   const canvas = page.locator(".preview-stage canvas");
   await expect(canvas).toHaveAttribute("data-preview-source", "realtime");
-  await page.locator(".play-button").click();
+  await clickPlay(page);
   await expect(canvas).not.toHaveAttribute("data-cache-frames", "0", { timeout: 20_000 });
-  await page.locator(".play-button").click();
+  await clickPlay(page);
   await expect(canvas).toHaveAttribute("data-preview-source", "realtime", { timeout: 20_000 });
 });
 
@@ -851,7 +861,7 @@ test("paused preview hover shows eight dimension handles and one rotation handle
     return editorController.getSnapshot().clips[0].rotation;
   });
   expect(Math.abs(angle)).toBeGreaterThan(5);
-  await page.locator(".play-button").click();
+  await clickPlay(page);
   await expect(transformBox).toHaveCount(0);
 });
 
@@ -962,11 +972,11 @@ test("audio imports and follows timeline transport", async ({ page }) => {
   await page.getByRole("button", { name: "設定", exact: true }).click();
   await page.getByRole("radio", { name: /モノラル/ }).check();
   const canvas = page.locator(".preview-stage canvas");
-  await page.locator(".play-button").click();
+  await clickPlay(page);
   await expect(canvas).toHaveAttribute("data-playing-audio-objects", "1");
   await expect.poll(() => page.evaluate(() => (window as typeof window & { __gfxutlAudioSources?: number }).__gfxutlAudioSources ?? 0), { timeout: 10_000 }).toBeGreaterThan(0);
   await expect.poll(() => page.evaluate(() => (window as typeof window & { __gfxutlAudioChannels?: number }).__gfxutlAudioChannels ?? 0), { timeout: 10_000 }).toBe(1);
-  await page.locator(".play-button").click();
+  await clickPlay(page);
   await expect(canvas).toHaveAttribute("data-playing-audio-objects", "0");
 });
 
@@ -1028,10 +1038,10 @@ test("video audio is decoded by MediaBunny and played through Web Audio", async 
     };
   });
   const canvas = page.locator(".preview-stage canvas");
-  await page.locator(".play-button").click();
+  await clickPlay(page);
   await expect(canvas).toHaveAttribute("data-playing-audio-objects", "1");
   await expect.poll(() => page.evaluate(() => (window as typeof window & { __gfxutlVideoAudioSources?: number }).__gfxutlVideoAudioSources ?? 0), { timeout: 10_000 }).toBeGreaterThan(0);
-  await page.locator(".play-button").click();
+  await clickPlay(page);
 });
 
 test("timeline uses a crosshair and a vertical cursor guide", async ({ page }) => {

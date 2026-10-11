@@ -102,3 +102,26 @@ test("custom context menu is available in both upper side panes", async ({ page 
   });
   expect(scope).toBe("inspector");
 });
+
+test("preview transport is replaced by a hover-expanding timeline time pill", async ({ page }) => {
+  await expect(page.locator(".preview-panel > .transport")).toHaveCount(0);
+  const removedXPathExists = await page.evaluate(() => Boolean(document.evaluate('//*[@id="main"]/section[2]/div[2]', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE).singleNodeValue));
+  expect(removedXPathExists).toBe(false);
+
+  const pill = page.locator(".timeline-transport-pill");
+  await expect(page.locator(".timeline-pill-clock-compact")).toHaveText("00:00:00");
+  await expect(page.locator(".timeline-pill-clock-precise")).toBeHidden();
+  const collapsedWidth = (await pill.boundingBox())?.width ?? 0;
+  await pill.hover();
+  await expect(page.locator(".timeline-pill-expanded")).toHaveCSS("opacity", "1");
+  await expect(page.locator(".timeline-pill-clock-precise")).toHaveText("00:00:00.00");
+  await expect(page.locator(".timeline-pill-clock-precise")).toBeVisible();
+  await expect.poll(async () => (await pill.boundingBox())?.width ?? 0).toBeGreaterThan(collapsedWidth + 200);
+  await expect(page.getByRole("button", { name: "再生" })).toBeVisible();
+
+  await page.getByRole("button", { name: "1フレーム進む" }).click();
+  await page.locator(".preview-stage").hover();
+  await expect(page.locator(".timeline-pill-expanded")).toHaveCSS("opacity", "0");
+  await expect(page.locator(".timeline-pill-clock-precise")).toBeHidden();
+  await expect.poll(async () => (await pill.boundingBox())?.width ?? 0).toBeLessThan(collapsedWidth + 10);
+});

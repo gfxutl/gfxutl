@@ -1,10 +1,8 @@
-import { ChevronsLeft, ChevronsRight, Expand, ExternalLink, Pause, Play, Repeat2, SkipBack, SkipForward } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useEditor } from "../core/interface";
 import type { TimelineClip } from "../core/interface";
 import type { MediaAsset } from "../core/interface";
-import { Button } from "./ui/button";
-import { Tooltip } from "./ui/tooltip";
 
 export function PreviewPanel() {
   const { state, controller } = useEditor();
@@ -69,6 +67,19 @@ export function PreviewPanel() {
     returnButton.addEventListener("click", () => popup.close());
     popup.addEventListener("beforeunload", returnFromPopout, { once: true });
   };
+
+  useEffect(() => {
+    const handlePreviewAction = (event: Event) => {
+      const action = (event as CustomEvent<"popout" | "fullscreen">).detail;
+      if (action === "popout") {
+        if (!poppedOut) popOutPreview();
+      } else if (action === "fullscreen") {
+        void panelRef.current?.requestFullscreen();
+      }
+    };
+    window.addEventListener("gfxutl:preview-action", handlePreviewAction);
+    return () => window.removeEventListener("gfxutl:preview-action", handlePreviewAction);
+  }, [poppedOut]);
 
   useEffect(() => { if (state.playing) setHoveredClipId(null); }, [state.playing]);
 
@@ -208,7 +219,6 @@ export function PreviewPanel() {
     window.addEventListener("pointercancel", end, { once: true });
   };
 
-  const timecode = toTimecode(state.currentTime, state.fps);
   return (
     <section className="preview-panel panel" ref={panelRef}>
       <div className={`preview-stage ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""}`} ref={stageRef} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; if (!draggingClipId) setHoveredClipId(null); }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
@@ -224,25 +234,9 @@ export function PreviewPanel() {
         <div className="safe-area" />
         {!state.playing && hoveredObject && <TransformHandles object={hoveredObject} dragging={draggingClipId === hoveredObject.clip.id} onMove={beginMove} onResize={beginResize} onRotate={beginRotate} />}
       </div>
-      <div className="transport">
-        <div className="transport-left"><span className="timecode active">{timecode}</span><span className="slash">/</span><span className="timecode">{toTimecode(state.duration, state.fps)}</span></div>
-        <div className="transport-center">
-          <Tooltip label="先頭へ"><Button variant="ghost" size="icon" onClick={() => controller.setTime(0)}><SkipBack /></Button></Tooltip>
-          <Tooltip label="1フレーム戻る"><Button variant="ghost" size="icon" onClick={() => controller.nudge(-1)}><ChevronsLeft /></Button></Tooltip>
-          <Button size="icon" className="play-button" onClick={controller.togglePlayback}>{state.playing ? <Pause /> : <Play />}</Button>
-          <Tooltip label="1フレーム進む"><Button variant="ghost" size="icon" onClick={() => controller.nudge(1)}><ChevronsRight /></Button></Tooltip>
-          <Tooltip label="末尾へ"><Button variant="ghost" size="icon" onClick={() => controller.setTime(state.duration)}><SkipForward /></Button></Tooltip>
-        </div>
-        <div className="transport-right">
-          <Tooltip label={`出力範囲をループ ${state.loopPlayback ? "ON" : "OFF"}`}><Button variant="ghost" size="icon" className={state.loopPlayback ? "active-soft" : ""} aria-pressed={state.loopPlayback} onClick={controller.toggleLoopPlayback}><Repeat2 /></Button></Tooltip>
-          <Tooltip label="別ウィンドウで表示"><Button variant="ghost" size="icon" aria-label="プレビューを別ウィンドウで表示" onClick={popOutPreview} disabled={poppedOut}><ExternalLink /></Button></Tooltip>
-          <Tooltip label="フルスクリーン"><Button variant="ghost" size="icon" onClick={() => panelRef.current?.requestFullscreen()}><Expand /></Button></Tooltip>
-        </div>
-      </div>
     </section>
   );
 }
-
 interface PreviewObjectBounds {
   clip: TimelineClip;
   x: number;
@@ -337,14 +331,4 @@ function TransformHandles({ object, dragging, onMove, onResize, onRotate }: {
     <span className="rotation-stem" />
     <i className="rotation-handle" data-handle="rotation" onPointerDown={(event) => onRotate(event, object)} />
   </div>;
-}
-
-function toTimecode(seconds: number, fps: number) {
-  const totalFrames = Math.max(0, Math.floor(seconds * fps));
-  const frame = totalFrames % fps;
-  const totalSeconds = Math.floor(totalFrames / fps);
-  const second = totalSeconds % 60;
-  const minute = Math.floor(totalSeconds / 60) % 60;
-  const hour = Math.floor(totalSeconds / 3600);
-  return [hour, minute, second, frame].map((value) => String(value).padStart(2, "0")).join(":");
 }
