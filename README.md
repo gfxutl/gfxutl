@@ -1,36 +1,145 @@
 # GfxUtl
 
-ブラウザで動作するノンリニア動画編集ソフトウェアの初期実装です。
+GfxUtlは、ブラウザ上で動作するノンリニア動画編集デッキです。自由配置型タイムライン、Three.jsによる2D／3D合成、Worker上のメディア処理、GLSLポストプロセス、映像・音声書き出しを単一の編集画面にまとめています。
 
 ## 起動
 
+アプリケーション本体は `gfxutl/` にあります。
+
 ```bash
+cd gfxutl
 npm install
 npm run dev
 ```
 
-本番ビルドは `npm run build` です。File System Access API、Local Font Access API、WebGPU、WebCodecsを利用するため、Chromium系ブラウザのHTTPSまたはlocalhost環境を推奨します。未対応機能は自動的にファイル入力、WebGL 2、通常フォントへフォールバックします。
+Viteが表示するlocalhostのURLをChromium系ブラウザで開いてください。
 
-## 構成
+```bash
+# 型検査と本番ビルド
+npm run build
 
-- `components/`: shadcnパターンの独立UIコンポーネント（メディア、プレビュー、インスペクタ、タイムライン等）
-- `core/interface/`: 全コンポーネントを接続する状態・コマンド・MessageChannelクライアント・仮想タイムライン
-- `core/protocol/`: UIとRendererの双方が参照できるstructured-clone可能な唯一の共有契約
-- `core/runtime.ts`: 専用Workerを生成しUI側へ注入する唯一の合成ルート
-- `core/engine/media.worker.ts`: FileSystemFileHandleの範囲読み取り、MediaBunny、Three.js WebGPURenderer、書き出しを担う単一専用Worker
-- `core/engine/ram-preview-cache.ts`: デフォルト有効・128 MiB固定上限のH.264 LRUキャッシュ
-- `core/persistence/handle-project-store.ts`: `idb-keyval`によるFileSystemFileHandle単位の編集状態保存
+# 本番ビルドのプレビュー
+npm run preview
 
-メディア、プレビュー、インスペクタ、タイムラインの境界はドラッグでリサイズできます。境界をダブルクリックすると既定サイズへ戻り、調整値はブラウザへ保存されます。タイムラインには固定トラックがなく、各クリップはScratchのブロックのように時間と任意のY座標を持つ自由配置です。重なりも許可されます。通常は時間だけをフレームへスナップし、ドラッグ中にShiftを押すと一時的にスナップを解除します。
+# Playwright E2Eテスト
+npm run test:e2e
+```
 
-メディアカードはタイムラインキャンバスの任意位置へドラッグ＆ドロップできます。「出力」では解像度、コンテナ、映像・音声コーデック、各ビットレート、フレームレート、ファイル名を設定し、専用Worker上のThree.jsレンダー結果と音声ミックスをMediaBunnyでエンコードします。インスペクタの「メタデータ」には選択項目の実ファイル情報とタイムライン情報が表示されます。
+File System Access API、Local Font Access API、WebGPU、WebCodecs、OffscreenCanvasを利用するため、Chromium系ブラウザのlocalhostまたはHTTPS環境を推奨します。利用できない機能は、可能な範囲でファイル入力、組み込みフォント、WebGL 2へフォールバックします。
 
-Three.jsコアはBox、Capsule、Circle、Cone、Cylinder、各Polyhedron、Plane、Ring、Sphere、Torus、TorusKnot、Lathe、Shape、Extrude、Tube、Edges、Wireframeと任意BufferGeometryをstructured-clone可能な仕様から生成できます。動画はWorker内のMediaBunnyでデコードし、`VideoSample.toVideoFrame()`が返す参照ハンドルを`THREE.VideoFrameTexture.setFrame()`へ直接設定します。フレームは次のGPU描画完了後に明示的にcloseされます。
+## 主な機能
 
-起動時にOffscreenCanvasとMessageChannelのポートをWorkerへ同時に移譲し、それ以降の要求・応答は専用ポートだけを通ります。`core/interface`と`core/engine`は相互にimportせず、`core/protocol`だけを共有します。タイムラインはメインスレッド上の保持型仮想ツリーで差分比較され、変更ノードと影響時間範囲だけがWorkerへ送られます。RAMプレビューもその範囲だけ破棄・先読み再エンコードされます。
+### 自由配置タイムライン
 
-停止中は現在位置をリアルタイム表示しつつ、その先をH.264 RAMプレビューへ低優先度で先読みします。再生中は同一フレームのキャッシュを優先的に復号表示します。各クリップは順序付きの効果スタックを持ち、変形、明るさ、色調、透明度を複数重ねられます。無地部分は常時存在する「背景オブジェクト」として選択・編集でき、プレビューCanvasは別ウィンドウへ移してから同じWorkerへ再接続し、編集画面へ戻せます。
+- 固定トラックを持たず、クリップを時間軸と任意のY座標へ配置
+- 動画、静止画、音声、テキスト、3Dオブジェクト、GPUパーティクル、グループを混在
+- 複数選択、範囲選択、移動、トリム、分割、グループ化、親子関係、Undo／Redo
+- フレーム単位スナップ、端揃えガイド、マグネット切り替え
+- Ctrl+ホイール／トラックパッドピンチによる `0.05`～`64` 倍のズーム
+- マーカーの追加、移動、改名、削除。マーカー上の右クリックから対象マーカーを直接削除
+- タイムライン上へメディアカードをドラッグ＆ドロップ
 
-メインスレッドで取得したFileSystemFileHandleはMessageChannelでWorkerへstructured cloneされます。Workerは`getFile()`でスナップショットを取得し、`Blob.slice(start, end)`と`FileReaderSync.readAsArrayBuffer()`をMediaBunnyの`CustomSource`へ接続します。OPFSへの複製やファイル全体の先読みは行わず、2 MiBキャッシュとfile-system向けプリフェッチにより要求範囲だけを同期読み取りします。UIは`body > div#main`を相対配置コンテナとし、各主要パネルを絶対配置しています。
+### プレビューとレンダリング
 
-起動時はテンプレートやデモ素材を読み込まず、空のタイムラインと白背景から開始します。独立したプロジェクトファイルは作らず、読み込んだFileSystemFileHandleごとに関連アセット、クリップ、効果スタックをIndexedDBへ保存・復元します。
+- Three.js `WebGPURenderer` を使用し、WebGPU非対応環境ではWebGL 2へフォールバック
+- 動画と静止画をNode Materialで描画し、クロップ、マスク、色調、透明度などをGPU上で合成
+- Box、Capsule、Circle、Cone、Cylinder、各Polyhedron、Plane、Ring、Sphere、Torus、TorusKnot、Lathe、Shape、Extrude、Tube、Edges、Wireframe、任意BufferGeometryに対応
+- glTF、HDR、EXR、ローカルフォント、3Dテキスト、PBRマテリアル、ライト、カメラ、環境設定に対応
+- プレビュー上でオブジェクトを直接選択・移動・リサイズ・回転
+- プレビューCanvasを別ウィンドウへ移動し、同じRenderer Workerへ再接続可能
+- 白背景の空プロジェクトから開始し、背景自体も編集可能な常設オブジェクトとして扱う
+
+### 作用スタック
+
+右ペインの「プロパティ」では、クリップの編集項目を順序付きの「作用」として扱います。作用は追加、削除、並べ替え、折りたたみが可能です。削除時は対象パラメータが中立値へ戻ります。
+
+クリップ種別に応じて、次の作用を利用できます。
+
+- 変形
+- シーングラフ
+- キーフレーム
+- クロップ
+- 効果
+- ポストプロセス
+- マスク
+- オーディオ
+- 速度
+
+「効果」作用の内部では、変形、明るさ、コントラスト、彩度、ガンマ、色相、色調、透明度、クロマキー、ビネット、ピクセル化を積み重ねられます。
+
+右ペインにはこのほか、再生ヘッド位置のリアルタイムなレイヤー情報を表示する「インスペクター」と、実ファイル・タイムライン情報を表示する「メタデータ」があります。
+
+### GLSLポストプロセス
+
+動画・静止画クリップへ「ポストプロセス」作用を追加すると、CodeMirror上でGLSLを編集できます。GLSLシンタックスハイライト、Tabインデント、Undo／Redo、括弧対応を備え、Ctrl／Cmd+Enterまたは「コンパイルして適用」で反映します。
+
+シェーダーは次の関数を定義します。
+
+```glsl
+vec4 gfxPostProcess(vec4 color, vec2 uv, float time) {
+  return color;
+}
+```
+
+- `color`: それ以前の作用を適用した色
+- `uv`: クリップ内のUV座標
+- `time`: タイムライン時刻（秒）
+
+GLSLはRenderer Worker内のNaga WASMで検証され、WebGPU用WGSLへ変換されます。WebGL 2バックエンドでは元のGLSLを使用します。NagaのGLSL入力仕様に合わせ、GLSL 450／Vulkan semanticsを前提としています。コンパイルエラーはCodeMirrorの下へ行番号付きで表示されます。
+
+生成済みのWASMバインディングはリポジトリに含まれるため、通常の開発や本番ビルドにRust環境は不要です。Nagaを更新・再生成する場合だけ、次を実行してください。
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.105 --locked
+npm run build:naga
+```
+
+### メディアと書き出し
+
+- MP4、MOV、WebM、MKV、WAV、MP3、AAC、FLAC、PNG、JPEG、WebP、HDR、EXR、GLBをメディアブラウザへ読み込み
+- File System Access API対応環境ではディレクトリをツリー／グリッド表示し、ハンドルを保持したまま再接続
+- 動画サムネイル、音声波形、実ファイルのコーデック・解像度・サイズ・読み取り統計を表示
+- MP4／WebM、映像・音声コーデック、解像度、FPS、ビットレート、出力範囲、ステレオ／モノラルを設定して書き出し
+- 静止画書き出しにもタイムライン上の作用、シーン設定、ポストプロセスを反映
+
+MediaBunnyがWorker内で動画・音声をデコードし、動画フレームは `VideoSample.toVideoFrame()` から `THREE.VideoFrameTexture.setFrame()` へ渡されます。GPU描画後に不要な `VideoFrame` を明示的にcloseします。
+
+## UIスレッドとRenderer Worker
+
+起動時にOffscreenCanvasとMessageChannelのポートを専用Workerへ移譲し、それ以降のレンダー、メディア解析、サムネイル、ピッキング、シェーダーコンパイル、書き出しは専用ポートを通します。
+
+高頻度通信を抑えるため、次の仕組みを採用しています。
+
+- UI側の保持型仮想タイムラインで差分を計算し、追加・更新・削除されたクリップだけを送信
+- シーン設定も値単位のパッチとして送信
+- Renderer処理は同時に1件だけ実行し、処理中に届いた中間フレームを捨てて最新要求へ合流
+- 連続するピッキング要求をまとめ、古い結果をUIへ返さない
+- CodeMirrorの編集中はGLSLをUI内に保持し、明示的に適用したときだけWorkerへ送信
+- 変更の影響時間範囲だけRAMプレビューキャッシュを無効化
+
+RAMプレビューは既定で有効、初期容量は128 MiBです。設定画面から32～2048 MiBの範囲で変更できます。停止中に実際に描画したフレームをH.264キャッシュへ格納し、再生中は同一フレームのキャッシュを優先して表示します。
+
+メインスレッドで取得した `FileSystemFileHandle` はstructured cloneでWorkerへ渡されます。Workerは `getFile()` でスナップショットを取得し、`Blob.slice(start, end)` と `FileReaderSync.readAsArrayBuffer()` をMediaBunnyの `CustomSource` へ接続します。ファイル全体やOPFSへの複製は行わず、2 MiBキャッシュとfile-system向けプリフェッチで必要範囲だけを読み取ります。
+
+## プロジェクト保存
+
+- 編集状態は `.gfxutl` プロジェクトとして保存・読み込み可能
+- File System Access APIが利用できる場合は同じプロジェクトファイルへ上書き保存
+- 関連アセット、クリップ、作用、キーフレーム、マーカー、背景、レンダー設定、出力設定を保存
+- `FileSystemFileHandle` 単位の作業状態とメディアディレクトリをIndexedDBへ保持
+- アセット本体はプロジェクトへ埋め込まず、切断時は再接続状態として表示
+
+## ディレクトリ構成
+
+- `gfxutl/components/`: メディア、出力、設定、プレビュー、プロパティ、タイムライン、コンテキストメニューなどのReact UI
+- `gfxutl/core/interface/`: エディター状態、コマンド、履歴、作用、仮想タイムライン、MessageChannelクライアント
+- `gfxutl/core/protocol/`: UIとRendererが共有するstructured-clone可能な通信契約
+- `gfxutl/core/runtime.ts`: Workerを生成しUIへ注入する合成ルート
+- `gfxutl/core/engine/media.worker.ts`: メディアI/O、Three.jsレンダー、Naga呼び出し、RAMプレビュー、書き出しを担う専用Worker
+- `gfxutl/core/engine/`: Three.jsシーン、ジオメトリ、Renderer、ファイルソース、RAMキャッシュ
+- `gfxutl/core/naga-wasm/`: Rust製Nagaブリッジと生成済みブラウザWASM
+- `gfxutl/core/persistence/`: プロジェクト文書とFileSystemHandle／IndexedDB永続化
+- `gfxutl/tests/`: Playwrightによる編集操作・描画・保存・書き出しのE2Eテスト
+
+`core/interface` と `core/engine` は互いをimportせず、`core/protocol` だけを共有します。これによりUI状態とRenderer実装の境界を保ちつつ、通信量を差分へ限定しています。
