@@ -1080,25 +1080,30 @@ test("text inspector exposes depth and rendered outline decoration", async ({ pa
   expect(state.textOutlineColor).toBe(0xff4400);
 });
 
-test("text outline keeps a fixed gap regardless of text length", async ({ page }) => {
-  const gaps = await page.evaluate(async () => {
+test("text outline uses fixed 3D normal extrusion and renders only back faces", async ({ page }) => {
+  const outline = await page.evaluate(async () => {
     // @ts-expect-error Vite resolves this browser-only module URL during the test.
-    const { createGeometry } = await import("/core/engine/three-geometry-factory.ts");
-    // @ts-expect-error Vite resolves this browser-only module URL during the test.
-    const { expandGeometry } = await import("/core/engine/three-scene-core.ts");
-    return ["I", "GfxUtl Professional Editor"].map((text) => {
-      const fill = createGeometry({ id: text, kind: "text", text, size: 1, depth: 0.1 });
-      const outline = expandGeometry(fill, 0.02);
-      fill.computeBoundingBox();
-      outline.computeBoundingBox();
-      const gap = ((outline.boundingBox!.max.x - outline.boundingBox!.min.x) - (fill.boundingBox!.max.x - fill.boundingBox!.min.x)) / 2;
-      fill.dispose();
-      outline.dispose();
-      return gap;
-    });
+    const { createNormalExtrudedOutlineMaterial } = await import("/core/engine/three-scene-core.ts");
+    const material = createNormalExtrudedOutlineMaterial({ outlineColor: 0xff4400, opacity: 0.75 }, 1.5);
+    const result = {
+      nodeMaterial: material.isMeshBasicNodeMaterial,
+      hasVertexDisplacement: Boolean(material.positionNode),
+      side: material.side,
+      transparent: material.transparent,
+      mode: material.userData.gfxOutlineMode,
+      width: material.userData.gfxOutlineWidth,
+    };
+    material.dispose();
+    return result;
   });
-  expect(gaps[0]).toBeCloseTo(0.02, 3);
-  expect(gaps[1]).toBeCloseTo(0.02, 3);
+  expect(outline).toEqual({
+    nodeMaterial: true,
+    hasVertexDisplacement: true,
+    side: 1, // THREE.BackSide
+    transparent: true,
+    mode: "normal-extrusion",
+    width: 1.5,
+  });
 });
 
 test("preview context menu positions a Three object at the pointer", async ({ page }) => {

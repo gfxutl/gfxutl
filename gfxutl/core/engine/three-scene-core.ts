@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { distance, float, hue, length, max, pow, saturation, smoothstep, texture as textureNode, uv, vec2, vec3, vec4 } from "three/tsl";
+import { distance, float, hue, length, max, normalLocal, positionLocal, pow, saturation, smoothstep, texture as textureNode, uv, vec2, vec3, vec4 } from "three/tsl";
 import type { SceneMaterialSpec, SceneObjectSpec } from "../protocol/engine-protocol";
 import { createGeometry } from "./three-geometry-factory";
 
@@ -10,7 +10,6 @@ interface SceneRecord {
   geometryKey: string;
   shapeSignature: string;
   materialKind: string;
-  ownedGeometries: THREE.BufferGeometry[];
 }
 
 interface CachedGeometry { geometry: THREE.BufferGeometry; refs: number }
@@ -46,26 +45,20 @@ export class ThreeSceneCore {
           : primitive === "sprite" ? new THREE.Sprite(material as THREE.SpriteMaterial)
             : spec.instances?.length ? new THREE.InstancedMesh(geometry, material, spec.instances.length)
               : new THREE.Mesh(geometry, material);
-      const ownedGeometries: THREE.BufferGeometry[] = [];
       let root: THREE.Object3D = fill;
       let outline: THREE.Mesh | undefined;
       if (outlineWidth > 0 && fill instanceof THREE.Mesh) {
         const group = new THREE.Group();
-        const outlineGeometry = expandGeometry(geometry, outlineWidth);
-        ownedGeometries.push(outlineGeometry);
-        outline = new THREE.Mesh(outlineGeometry, new THREE.MeshBasicMaterial({
-          color: spec.material?.outlineColor ?? 0x000000,
-          side: THREE.BackSide,
-          transparent: (spec.material?.opacity ?? 1) < 1,
-          opacity: spec.material?.opacity ?? 1,
-          depthTest: spec.material?.depthTest ?? true,
-          depthWrite: spec.material?.depthWrite ?? true,
-        }));
+        outline = new THREE.Mesh(geometry, createNormalExtrudedOutlineMaterial(spec.material, outlineWidth));
         outline.name = `${spec.id}:outline`;
+        // The displaced shell extends beyond the source geometry bounds.
+        outline.frustumCulled = false;
+        outline.userData.gfxOutlineMode = "normal-extrusion";
+        outline.userData.gfxOutlineWidth = outlineWidth;
         group.add(outline, fill);
         root = group;
       }
-      record = { root, fill, outline, geometryKey, shapeSignature, materialKind, ownedGeometries };
+      record = { root, fill, outline, geometryKey, shapeSignature, materialKind };
       this.objects.set(spec.id, record);
     }
 
@@ -73,6 +66,7 @@ export class ThreeSceneCore {
     if (record.fill instanceof THREE.InstancedMesh) updateInstances(record.fill, spec.instances ?? []);
     if (record.outline) updateOutlineMaterial(record.outline.material, spec.material);
     record.fill.renderOrder = spec.renderOrder ?? 0;
+    if (record.outline) record.outline.renderOrder = spec.renderOrder ?? 0;
     record.fill.castShadow = Boolean(spec.castShadow);
     record.fill.receiveShadow = Boolean(spec.receiveShadow);
     record.fill.traverse((child) => {
@@ -119,7 +113,6 @@ export class ThreeSceneCore {
       childMaterials.filter(Boolean).forEach((material) => materials.add(material));
     });
     materials.forEach((material) => material.dispose());
-    record.ownedGeometries.forEach((geometry) => geometry.dispose());
     this.releaseGeometry(record.geometryKey);
     this.objects.delete(id);
   }
@@ -129,6 +122,26 @@ export class ThreeSceneCore {
     for (const cached of this.geometries.values()) cached.geometry.dispose();
     this.geometries.clear();
   }
+}
+
+/**
+ * Inverted-hull text outline. The source TextGeometry is retained verbatim and
+ * its render position is displaced along the normalized local vertex normal.
+ */
+export function createNormalExtrudedOutlineMaterial(spec: SceneMaterialSpec = {}, distance = 0) {
+  const opacity = spec.opacity ?? 1;
+  const material = new THREE.MeshBasicNodeMaterial({
+    color: spec.outlineColor ?? 0x000000,
+    side: THREE.BackSide,
+    transparent: spec.transparent ?? opacity < 1,
+    opacity,
+    depthTest: spec.depthTest ?? true,
+    depthWrite: spec.depthWrite ?? opacity >= 1,
+  });
+  material.positionNode = positionLocal.add(normalLocal.normalize().mul(Math.max(0, distance)));
+  material.userData.gfxOutlineMode = "normal-extrusion";
+  material.userData.gfxOutlineWidth = Math.max(0, distance);
+  return material;
 }
 
 function canParent(object: THREE.Object3D, parent: THREE.Object3D) {
@@ -320,27 +333,6 @@ function applyMaterialEffects(material: THREE.Material, spec: SceneMaterialSpec)
   }
   nodeMaterial.colorNode = vec4(rgb, alpha);
   material.needsUpdate = true;
-}
-
-/** Builds an inverted hull by moving every vertex along its actual surface normal. */
-export function expandGeometry(source: THREE.BufferGeometry, distance: number) {
-  const geometry = source.clone();
-  if (!geometry.getAttribute("normal")) geometry.computeVertexNormals();
-  const positions = geometry.getAttribute("position");
-  const normals = geometry.getAttribute("normal");
-  if (!positions || !normals) return geometry;
-  for (let index = 0; index < positions.count; index++) {
-    positions.setXYZ(
-      index,
-      positions.getX(index) + normals.getX(index) * distance,
-      positions.getY(index) + normals.getY(index) * distance,
-      positions.getZ(index) + normals.getZ(index) * distance,
-    );
-  }
-  positions.needsUpdate = true;
-  geometry.computeBoundingBox();
-  geometry.computeBoundingSphere();
-  return geometry;
 }
 
 function updateOutlineMaterial(material: THREE.Material | THREE.Material[], spec: SceneMaterialSpec = {}) {
