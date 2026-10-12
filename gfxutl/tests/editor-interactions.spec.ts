@@ -1265,11 +1265,22 @@ test("audio imports and follows timeline transport", async ({ page }) => {
   const chooserPromise = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "読み込む" }).click();
   const chooser = await chooserPromise;
-  await chooser.setFiles({ name: "tone.wav", mimeType: "audio/wav", buffer: createWavBuffer(2) });
+  await chooser.setFiles({ name: "tone.wav", mimeType: "audio/wav", buffer: createWavBuffer(6) });
   const card = page.locator(".media-card", { hasText: "tone.wav" });
   await expect(card).toBeVisible();
   await card.dragTo(page.locator(".timeline-workspace"), { targetPosition: { x: 4, y: 90 } });
   await expect(page.locator(".timeline-clip.clip-audio")).toBeVisible();
+  const audioEditor = page.locator(".audio-waveform-editor");
+  await expect(audioEditor).toBeVisible();
+  await expect(audioEditor.locator(".audio-module")).toHaveCount(4);
+  await expect(audioEditor.getByRole("slider", { name: "Reverb", exact: true })).toBeVisible();
+  await audioEditor.getByRole("slider", { name: "Reverb", exact: true }).fill("36");
+  await audioEditor.getByRole("slider", { name: "Low", exact: true }).fill("4.5");
+  await expect.poll(() => page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    return editorController.getSnapshot().clips.find((clip: { kind: string }) => clip.kind === "audio")?.audioProcessing;
+  })).toMatchObject({ reverbMix: 36, lowShelfDb: 4.5 });
   await page.evaluate(() => {
     const prototype = AudioContext.prototype;
     const original = prototype.createBufferSource;
@@ -1287,13 +1298,16 @@ test("audio imports and follows timeline transport", async ({ page }) => {
   });
   await page.getByRole("button", { name: "設定", exact: true }).click();
   await page.getByRole("radio", { name: /モノラル/ }).check();
-  const canvas = page.locator(".preview-stage canvas");
-  await clickPlay(page);
-  await expect(canvas).toHaveAttribute("data-playing-audio-objects", "1");
+  await audioEditor.getByRole("button", { name: "音声を再生" }).click();
+  await expect(audioEditor).toHaveAttribute("data-playing-audio-objects", "1");
   await expect.poll(() => page.evaluate(() => (window as typeof window & { __gfxutlAudioSources?: number }).__gfxutlAudioSources ?? 0), { timeout: 10_000 }).toBeGreaterThan(0);
   await expect.poll(() => page.evaluate(() => (window as typeof window & { __gfxutlAudioChannels?: number }).__gfxutlAudioChannels ?? 0), { timeout: 10_000 }).toBe(1);
-  await clickPlay(page);
-  await expect(canvas).toHaveAttribute("data-playing-audio-objects", "0");
+  await audioEditor.getByRole("button", { name: "音声を停止" }).click();
+  await expect(audioEditor).toHaveAttribute("data-playing-audio-objects", "0");
+  await page.getByRole("tab", { name: "総合プレビュー" }).click();
+  await expect(page.locator(".preview-stage canvas")).toBeVisible();
+  await page.getByRole("tab", { name: "tone.wav" }).click();
+  await expect(audioEditor).toBeVisible();
 });
 
 test("video audio is decoded by MediaBunny and played through Web Audio", async ({ page }) => {
@@ -1344,6 +1358,12 @@ test("video audio is decoded by MediaBunny and played through Web Audio", async 
   }), { timeout: 15_000 }).toBe(true);
   await card.dragTo(page.locator(".timeline-workspace"), { targetPosition: { x: 8, y: 120 } });
   await expect(page.locator(".timeline-clip.clip-video")).toBeVisible();
+  await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    const clip = editorController.getSnapshot().clips.find((item: { name: string }) => item.name === "video-with-audio.webm");
+    editorController.updateClip(clip.id, { duration: 6 });
+  });
   await page.evaluate(() => {
     const prototype = AudioContext.prototype;
     const original = prototype.createBufferSource;

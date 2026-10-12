@@ -1,4 +1,4 @@
-import type { ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ClipPropertyActionKind, ContextMenuState, EditorLayout, EditorSettings, EditorState, EngineResponse, ExportSettings, FontFaceInfo, GeometryKind, KeyframeProperty, MediaAsset, RenderClip, SceneKeyframe, SceneObjectSpec, SceneSettings, TimelineClip } from "./types";
+import type { AudioProcessingSpec, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ClipPropertyActionKind, ContextMenuState, EditorLayout, EditorSettings, EditorState, EngineResponse, ExportSettings, FontFaceInfo, GeometryKind, KeyframeProperty, MediaAsset, RenderClip, SceneKeyframe, SceneObjectSpec, SceneSettings, TimelineClip } from "./types";
 import { applicableClipActionKinds, DEFAULT_POST_PROCESS_GLSL, resetPatchForClipAction, resolveClipPropertyActions } from "./clip-actions";
 import { EngineClient } from "./engine-client";
 import { VirtualTimeline } from "./virtual-timeline";
@@ -7,6 +7,7 @@ import { loadHandleProjects, saveHandleProject } from "../persistence/handle-pro
 import { createProjectDocument, parseProjectDocument, type ProjectDocument } from "../project/project-document";
 import { clampTimelineZoom } from "./timeline-zoom";
 import { MediaReadPlanner } from "./media-read-graph";
+import { resolveAudioProcessing } from "./audio-processing";
 
 type Listener = () => void;
 
@@ -116,8 +117,21 @@ interface ClipboardPayload {
 interface PreviewAudioVoice {
   token: number;
   sources: Set<AudioBufferSourceNode>;
+  input: GainNode;
   gain: GainNode;
   panner?: StereoPannerNode;
+  highPass: BiquadFilterNode;
+  lowPass: BiquadFilterNode;
+  lowShelf: BiquadFilterNode;
+  midPeak: BiquadFilterNode;
+  highShelf: BiquadFilterNode;
+  compressor: DynamicsCompressorNode;
+  dry: GainNode;
+  reverbWet: GainNode;
+  delay: DelayNode;
+  delayWet: GainNode;
+  delayFeedback: GainNode;
+  nodes: AudioNode[];
 }
 
 type HistorySnapshot = Pick<EditorState, "projectName" | "fps" | "duration" | "snapEnabled" | "background" | "assets" | "clips" | "markers" | "loopPlayback" | "settings" | "exportSettings">;
@@ -463,8 +477,7 @@ export class EditorController {
     for (const voice of this.audioVoices.values()) {
       for (const source of voice.sources) { try { source.stop(); } catch { /* Already stopped. */ } }
       voice.sources.clear();
-      voice.gain.disconnect();
-      voice.panner?.disconnect();
+      for (const node of voice.nodes) node.disconnect();
     }
     this.audioVoices.clear();
     if (this.state.playingAudioObjects !== 0) this.update({ playingAudioObjects: 0 });
@@ -497,9 +510,49 @@ export class EditorController {
     const volume = evaluateClipNumber(clip, "volume", this.state.currentTime, clip.volume ?? 0);
     const pan = evaluateClipNumber(clip, "pan", this.state.currentTime, clip.pan ?? 0);
     const speed = Math.max(0.25, Math.min(4, evaluateClipNumber(clip, "speed", this.state.currentTime, clip.speed ?? 100) / 100));
-    voice.gain.gain.value = volume <= -60 ? 0 : Math.max(0, Math.min(4, 10 ** (volume / 20)));
+    const processing = resolveAudioProcessing(clip.audioProcessing);
+    const enabled = processing.enabled;
+    const localTime = Math.max(0, this.state.currentTime - clip.start);
+    const remaining = Math.max(0, clip.duration - localTime);
+    const fadeIn = enabled && processing.fadeIn > 0 ? Math.min(1, localTime / processing.fadeIn) : 1;
+    const fadeOut = enabled && processing.fadeOut > 0 ? Math.min(1, remaining / processing.fadeOut) : 1;
+    voice.gain.gain.value = volume <= -60 ? 0 : Math.max(0, Math.min(4, 10 ** (volume / 20) * fadeIn * fadeOut));
     if (voice.panner) voice.panner.pan.value = Math.max(-1, Math.min(1, pan / 100));
+    voice.highPass.frequency.value = enabled ? Math.max(10, processing.lowCutHz) : 10;
+    voice.lowPass.frequency.value = enabled ? Math.max(20, processing.highCutHz) : 22_000;
+    voice.lowShelf.gain.value = enabled ? processing.lowShelfDb : 0;
+    voice.midPeak.frequency.value = Math.max(40, processing.midFrequencyHz);
+    voice.midPeak.gain.value = enabled ? processing.midPeakDb : 0;
+    voice.highShelf.gain.value = enabled ? processing.highShelfDb : 0;
+    voice.compressor.threshold.value = enabled ? processing.compressorThresholdDb : 0;
+    voice.compressor.ratio.value = enabled ? Math.max(1, processing.compressorRatio) : 1;
+    voice.compressor.attack.value = Math.max(0, processing.compressorAttack);
+    voice.compressor.release.value = Math.max(0.01, processing.compressorRelease);
+    const reverbMix = enabled ? Math.max(0, Math.min(1, processing.reverbMix / 100)) : 0;
+    const delayMix = enabled ? Math.max(0, Math.min(1, processing.delayMix / 100)) : 0;
+    voice.dry.gain.value = 1 - Math.max(reverbMix, delayMix) * 0.35;
+    voice.reverbWet.gain.value = reverbMix;
+    voice.delayWet.gain.value = delayMix;
+    voice.delay.delayTime.value = Math.max(0, Math.min(2, processing.delayTime));
+    voice.delayFeedback.gain.value = Math.max(0, Math.min(0.92, processing.delayFeedback));
     for (const source of voice.sources) source.playbackRate.value = speed;
+  }
+
+  private createReverbImpulse(context: AudioContext, decay: number) {
+    const seconds = Math.max(0.1, Math.min(8, decay));
+    const length = Math.max(1, Math.floor(context.sampleRate * seconds));
+    const impulse = context.createBuffer(2, length, context.sampleRate);
+    for (let channel = 0; channel < impulse.numberOfChannels; channel++) {
+      const data = impulse.getChannelData(channel);
+      let noise = 0x9e3779b9 ^ channel;
+      for (let index = 0; index < length; index++) {
+        noise = Math.imul(noise ^ noise >>> 16, 0x21f0aaad);
+        noise = Math.imul(noise ^ noise >>> 15, 0x735a2d97);
+        noise ^= noise >>> 15;
+        data[index] = ((noise >>> 0) / 0x80000000 - 1) * (1 - index / length) ** 2.4;
+      }
+    }
+    return impulse;
   }
 
   private async scheduleAudioPreview(clip: TimelineClip, token: number) {
@@ -511,11 +564,29 @@ export class EditorController {
     const mediaStart = Math.max(0, clip.offset + (this.state.currentTime - clip.start) * speed);
     const mediaEnd = mediaStart + Math.max(0, clip.start + clip.duration - this.state.currentTime) * speed;
     const contextStart = context.currentTime + 0.04;
+    const processing = resolveAudioProcessing(clip.audioProcessing);
+    const input = context.createGain();
+    const highPass = context.createBiquadFilter(); highPass.type = "highpass";
+    const lowPass = context.createBiquadFilter(); lowPass.type = "lowpass";
+    const lowShelf = context.createBiquadFilter(); lowShelf.type = "lowshelf"; lowShelf.frequency.value = 180;
+    const midPeak = context.createBiquadFilter(); midPeak.type = "peaking"; midPeak.Q.value = 0.8;
+    const highShelf = context.createBiquadFilter(); highShelf.type = "highshelf"; highShelf.frequency.value = 4_500;
+    const compressor = context.createDynamicsCompressor();
+    const dry = context.createGain();
+    const convolver = context.createConvolver(); convolver.buffer = this.createReverbImpulse(context, processing.reverbDecay);
+    const reverbWet = context.createGain();
+    const delay = context.createDelay(2); const delayWet = context.createGain(); const delayFeedback = context.createGain();
     const gain = context.createGain();
     const panner = this.state.settings.audioChannels === "stereo" ? context.createStereoPanner() : undefined;
+    input.connect(highPass).connect(lowPass).connect(lowShelf).connect(midPeak).connect(highShelf).connect(compressor);
+    compressor.connect(dry).connect(gain);
+    compressor.connect(convolver).connect(reverbWet).connect(gain);
+    compressor.connect(delay).connect(delayWet).connect(gain);
+    delay.connect(delayFeedback).connect(delay);
     if (panner) gain.connect(panner).connect(context.destination);
     else gain.connect(context.destination);
-    const voice: PreviewAudioVoice = { token, sources: new Set(), gain, panner };
+    const nodes: AudioNode[] = [input, highPass, lowPass, lowShelf, midPeak, highShelf, compressor, dry, convolver, reverbWet, delay, delayWet, delayFeedback, gain, ...(panner ? [panner] : [])];
+    const voice: PreviewAudioVoice = { token, sources: new Set(), input, gain, panner, highPass, lowPass, lowShelf, midPeak, highShelf, compressor, dry, reverbWet, delay, delayWet, delayFeedback, nodes };
     this.audioVoices.set(clip.id, voice);
     this.applyAudioMix(clip, voice);
     try {
@@ -548,7 +619,7 @@ export class EditorController {
           const source = context.createBufferSource();
           source.buffer = buffer;
           source.playbackRate.value = speed;
-          source.connect(gain);
+          source.connect(input);
           voice.sources.add(source);
           source.onended = () => { voice.sources.delete(source); source.disconnect(); };
           source.start(Math.max(context.currentTime, when), sourceOffset);
@@ -686,6 +757,7 @@ export class EditorController {
       volume: clip.volume ?? 0,
       pan: clip.pan ?? 0,
       speed: clip.speed ?? 100,
+      audioProcessing: clip.audioProcessing,
       cropLeft: clip.cropLeft ?? 0,
       cropRight: clip.cropRight ?? 0,
       cropTop: clip.cropTop ?? 0,
@@ -763,6 +835,10 @@ export class EditorController {
 
   togglePlayback = () => {
     const playing = !this.state.playing;
+    const focusedAudio = this.state.clips.find((clip) => clip.id === this.state.activePreviewClipId && clip.kind === "audio");
+    if (playing && focusedAudio && (this.state.currentTime < focusedAudio.start || this.state.currentTime >= focusedAudio.start + focusedAudio.duration)) {
+      this.state = { ...this.state, currentTime: focusedAudio.start };
+    }
     if (playing && this.state.loopPlayback && (this.state.currentTime < this.state.exportSettings.startTime || this.state.currentTime >= this.state.exportSettings.endTime)) {
       this.state = { ...this.state, currentTime: this.state.exportSettings.startTime };
     }
@@ -837,7 +913,7 @@ export class EditorController {
     const selectedClipIds = additive
       ? this.state.selectedClipIds.includes(id) ? this.state.selectedClipIds.filter((item) => item !== id) : [...this.state.selectedClipIds, id]
       : [id];
-    const previewable = clip && clip.kind !== "audio" && clip.kind !== "group";
+    const previewable = clip && clip.kind !== "group";
     this.update({
       selectedClipId: selectedClipIds.includes(id) ? id : selectedClipIds.at(-1) ?? null,
       selectedClipIds,
@@ -854,7 +930,7 @@ export class EditorController {
     const selectedClipIds = additive ? [...new Set([...this.state.selectedClipIds, ...ids])] : ids;
     const selectedClipId = selectedClipIds.at(-1) ?? null;
     const clip = this.state.clips.find((item) => item.id === selectedClipId);
-    const previewable = clip && clip.kind !== "audio" && clip.kind !== "group";
+    const previewable = clip && clip.kind !== "group";
     this.update({
       selectedClipIds, selectedClipId, selectedAssetId: clip?.assetId ?? null, backgroundSelected: false,
       ...(previewable ? {
@@ -1116,6 +1192,13 @@ export class EditorController {
     if (this.state.playing) this.syncAudioPlayback(true, "start" in patch || "duration" in patch || "offset" in patch || "speed" in patch);
   };
 
+  updateAudioProcessing = (id: string, patch: Partial<AudioProcessingSpec>) => {
+    const clip = this.state.clips.find((item) => item.id === id);
+    if (!clip) return;
+    this.updateClip(id, { audioProcessing: { ...resolveAudioProcessing(clip.audioProcessing), ...patch } });
+    if (this.state.playing && "reverbDecay" in patch) this.syncAudioPlayback(true, true);
+  };
+
   addClipPropertyAction = (id: string, kind: ClipPropertyActionKind) => {
     const clip = this.state.clips.find((item) => item.id === id);
     if (!clip || !applicableClipActionKinds(clip).includes(kind)) return;
@@ -1284,6 +1367,8 @@ export class EditorController {
     clip = placeTimelineClip(this.state.clips, clip);
     this.update({
       clips: assignTimelineGroups([...this.state.clips, clip]), selectedClipId: clip.id, selectedClipIds: [clip.id], selectedAssetId: null,
+      previewClipTabs: this.state.previewClipTabs.includes(clip.id) ? this.state.previewClipTabs : [...this.state.previewClipTabs, clip.id],
+      activePreviewClipId: clip.id,
       currentTime: clip.start, duration: Math.max(this.state.duration, clip.start + clip.duration + 2), contextMenu: null,
     });
     this.invalidatePreviewCache();
@@ -1515,6 +1600,8 @@ export class EditorController {
       clips: assignTimelineGroups([...this.state.clips, clip]),
       selectedClipId: id,
       selectedClipIds: [id],
+      previewClipTabs: this.state.previewClipTabs.includes(id) ? this.state.previewClipTabs : [...this.state.previewClipTabs, id],
+      activePreviewClipId: id,
       currentTime: clip.start,
       duration: Math.max(this.state.duration, clip.start + duration + 2),
     });

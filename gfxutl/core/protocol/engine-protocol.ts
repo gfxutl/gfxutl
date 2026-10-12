@@ -127,6 +127,27 @@ export interface ClipPostProcess {
   compileError?: string;
 }
 
+export interface AudioProcessingSpec {
+  enabled: boolean;
+  fadeIn: number;
+  fadeOut: number;
+  lowCutHz: number;
+  highCutHz: number;
+  lowShelfDb: number;
+  midPeakDb: number;
+  midFrequencyHz: number;
+  highShelfDb: number;
+  compressorThresholdDb: number;
+  compressorRatio: number;
+  compressorAttack: number;
+  compressorRelease: number;
+  reverbMix: number;
+  reverbDecay: number;
+  delayMix: number;
+  delayTime: number;
+  delayFeedback: number;
+}
+
 export interface ClipMask {
   id: string;
   name: string;
@@ -289,6 +310,7 @@ export interface RenderClip {
   volume: number;
   pan: number;
   speed: number;
+  audioProcessing?: AudioProcessingSpec;
   cropLeft: number;
   cropRight: number;
   cropTop: number;

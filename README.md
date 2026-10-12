@@ -105,10 +105,13 @@ npm run build:naga
 - MP4、MOV、WebM、MKV、WAV、MP3、AAC、FLAC、PNG、JPEG、WebP、HDR、EXR、GLBをメディアブラウザへ読み込み
 - File System Access API対応環境ではディレクトリをツリー／グリッド表示し、ハンドルを保持したまま再接続
 - 動画サムネイル、音声波形、実ファイルのコーデック・解像度・サイズ・読み取り統計を表示
+- 音声オブジェクト選択時は中央ペインを波形エディタへ切り替え、範囲選択、スクラブ、ゲイン、パン、フェード、ハイ／ローカット、3バンドEQ、コンプレッサー、リバーブ、フィードバックディレイを非破壊編集
 - MP4／WebM、映像・音声コーデック、解像度、FPS、ビットレート、上限を固定しない出力範囲、ステレオ／モノラルを設定して書き出し
 - 静止画書き出しにもタイムライン上の作用、シーン設定、ポストプロセスを反映
 
 MediaBunnyがWorker内で動画・音声をデコードし、動画フレームは `VideoSample.toVideoFrame()` から `THREE.VideoFrameTexture.setFrame()` へ渡されます。GPU描画後に不要な `VideoFrame` を明示的にcloseします。
+
+音声プレビューはWeb Audioの保持型ノードグラフを使い、EQ、DynamicsCompressor、畳み込みリバーブ、フィードバックディレイをクリップごとに構成します。同じ設定はWorker側の書き出しDSPにも渡されるため、波形エディタのゲイン、フェード、EQ、コンプレッション、空間系エフェクトが最終ファイルにも反映されます。
 
 ## UIスレッドとRenderer Worker
 

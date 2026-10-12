@@ -7,8 +7,8 @@ export interface ClipPropertyAction {
   kind: ClipPropertyActionKind;
 }
 
-import type { ClipEffect, ClipKeyframe, ClipMask, ClipPostProcess, ExportSettings, GeometrySpec, SceneMaterialSpec, SceneSettings, SourceIoProfile } from "../protocol/engine-protocol";
-export type { BackgroundSettings, BlendMode, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, EngineRequest, EngineResponse, ExportSettings, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, RendererSettings, RendererStats, RenderClip, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, SceneSettingsPatch, SourceIoProfile, TimelinePatch, ToneMappingKind } from "../protocol/engine-protocol";
+import type { AudioProcessingSpec, ClipEffect, ClipKeyframe, ClipMask, ClipPostProcess, ExportSettings, GeometrySpec, SceneMaterialSpec, SceneSettings, SourceIoProfile } from "../protocol/engine-protocol";
+export type { AudioProcessingSpec, BackgroundSettings, BlendMode, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, EngineRequest, EngineResponse, ExportSettings, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, RendererSettings, RendererStats, RenderClip, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, SceneSettingsPatch, SourceIoProfile, TimelinePatch, ToneMappingKind } from "../protocol/engine-protocol";
 
 export interface MediaAsset {
   id: string;
@@ -57,6 +57,7 @@ export interface TimelineClip {
   volume?: number;
   pan?: number;
   speed?: number;
+  audioProcessing?: AudioProcessingSpec;
   ripple?: boolean;
   effects?: ClipEffect[];
   postProcess?: ClipPostProcess;

@@ -55,7 +55,7 @@ export function resetPatchForClipAction(kind: ClipPropertyActionKind): Partial<T
     case "effects": return { effects: [] };
     case "postProcess": return { postProcess: undefined };
     case "masks": return { masks: [] };
-    case "audio": return { volume: 0, pan: 0 };
+    case "audio": return { volume: 0, pan: 0, audioProcessing: undefined };
     case "speed": return { speed: 100, ripple: true };
   }
 }

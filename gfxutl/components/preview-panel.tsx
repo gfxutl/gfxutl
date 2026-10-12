@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEven
 import { useEditor } from "../core/interface";
 import type { TimelineClip } from "../core/interface";
 import type { MediaAsset } from "../core/interface";
+import { AudioWaveformEditor } from "./audio-waveform-editor";
 
 export function PreviewPanel() {
   const { state, controller } = useEditor();
@@ -21,17 +22,19 @@ export function PreviewPanel() {
   const previewTabs = useMemo(() => state.previewClipTabs
     .map((id) => state.clips.find((clip) => clip.id === id))
     .filter((clip): clip is TimelineClip => Boolean(clip)), [state.clips, state.previewClipTabs]);
+  const activePreviewClip = state.clips.find((clip) => clip.id === state.activePreviewClipId);
+  const activeAudioClip = activePreviewClip?.kind === "audio" ? activePreviewClip : undefined;
 
   useEffect(() => {
     const canvas = canvasRef.current;
     const stage = stageRef.current;
-    if (!canvas || !stage || poppedOut) return;
+    if (!canvas || !stage || poppedOut || activeAudioClip) return;
     const rect = stage.getBoundingClientRect();
     controller.connectPreview(canvas, Math.floor(rect.width), Math.floor(rect.height));
     const observer = new ResizeObserver(([entry]) => controller.resizePreview(Math.floor(entry.contentRect.width), Math.floor(entry.contentRect.height)));
     observer.observe(stage);
     return () => observer.disconnect();
-  }, [controller, poppedOut, surfaceKey]);
+  }, [controller, poppedOut, surfaceKey, activeAudioClip?.id]);
 
   useEffect(() => () => {
     if (pickFrameRef.current !== null) cancelAnimationFrame(pickFrameRef.current);
@@ -229,7 +232,8 @@ export function PreviewPanel() {
         <button className={`preview-tab preview-tab-composite ${state.activePreviewClipId === null ? "active" : ""}`} role="tab" aria-selected={state.activePreviewClipId === null} aria-label="総合プレビュー" title="総合プレビュー" onClick={() => controller.setPreviewTab(null)}><Layers3 /></button>
         {previewTabs.map((clip) => <div key={clip.id} className={`preview-tab preview-tab-object ${state.activePreviewClipId === clip.id ? "active" : ""}`} role="tab" tabIndex={0} aria-selected={state.activePreviewClipId === clip.id} title={`${clip.name}のみをプレビュー`} onClick={() => controller.setPreviewTab(clip.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); controller.setPreviewTab(clip.id); } }}><span>{clip.name}</span><button type="button" aria-label={`${clip.name}のプレビューを閉じる`} onClick={(event) => { event.stopPropagation(); controller.closePreviewTab(clip.id); }}><X /></button></div>)}
       </div>
-      <div className={`preview-stage ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""}`} ref={stageRef} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; if (!draggingClipId) setHoveredClipId(null); }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
+      {activeAudioClip && <AudioWaveformEditor clip={activeAudioClip} asset={state.assets.find((asset) => asset.id === activeAudioClip.assetId)} />}
+      <div className={`preview-stage ${activeAudioClip ? "audio-preview-hidden" : ""} ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""}`} ref={stageRef} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; if (!draggingClipId) setHoveredClipId(null); }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
         event.preventDefault();
         const rect = event.currentTarget.getBoundingClientRect();
         controller.openContextMenu({

@@ -7,7 +7,7 @@ import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { clone as cloneSkinned } from "three/addons/utils/SkeletonUtils.js";
 import { ALL_FORMATS, AudioSample, AudioSampleSink, AudioSampleSource, BufferTarget, CanvasSource, Input, Mp4OutputFormat, Output, VideoSampleSink, WebMOutputFormat } from "mediabunny";
-import type { ClipKeyframe, EngineRequest, EngineResponse, MediaFileSource, RenderClip, SceneObjectSpec, SceneSettings } from "../protocol/engine-protocol";
+import type { AudioProcessingSpec, ClipKeyframe, EngineRequest, EngineResponse, MediaFileSource, RenderClip, SceneObjectSpec, SceneSettings } from "../protocol/engine-protocol";
 import { RamPreviewCache } from "./ram-preview-cache";
 import { createRenderPipeline, shadowTypeFrom, ThreeRendererCore, toneMappingFrom } from "./three-renderer-core";
 import { ThreeSceneCore } from "./three-scene-core";
@@ -1564,6 +1564,113 @@ interface ExportAudioCursor {
   outputStart: number;
   outputEnd: number;
   done: boolean;
+  dsp?: ExportAudioDspState;
+  processedLeft: number;
+  processedRight: number;
+}
+
+interface ExportAudioDspState {
+  spec: AudioProcessingSpec;
+  delayLeft: Float32Array;
+  delayRight: Float32Array;
+  delayIndex: number;
+  reverbLeft: Float32Array;
+  reverbRight: Float32Array;
+  reverbIndex: number;
+  lowLeft: number;
+  lowRight: number;
+  highLeft: number;
+  highRight: number;
+  highPassLeft: number;
+  highPassRight: number;
+  previousLeft: number;
+  previousRight: number;
+  highBandLeft: number;
+  highBandRight: number;
+  highPassAlpha: number;
+  lowPassAlpha: number;
+  lowAlpha: number;
+  highBandAlpha: number;
+  lowGain: number;
+  midGain: number;
+  highGain: number;
+  threshold: number;
+  delayFrames: number;
+  reverbFeedback: number;
+  reverbMix: number;
+  delayMix: number;
+  dry: number;
+}
+
+const DEFAULT_AUDIO_PROCESSING: AudioProcessingSpec = {
+  enabled: true, fadeIn: 0, fadeOut: 0, lowCutHz: 20, highCutHz: 20_000,
+  lowShelfDb: 0, midPeakDb: 0, midFrequencyHz: 1_000, highShelfDb: 0,
+  compressorThresholdDb: -24, compressorRatio: 1, compressorAttack: 0.003, compressorRelease: 0.25,
+  reverbMix: 0, reverbDecay: 1.8, delayMix: 0, delayTime: 0.25, delayFeedback: 0.25,
+};
+
+function processExportAudio(cursor: ExportAudioCursor, left: number, right: number, timelineTime: number, sampleRate: number) {
+  if (cursor.clip.audioProcessing?.enabled === false) { cursor.processedLeft = left; cursor.processedRight = right; return; }
+  if (!cursor.dsp) {
+    const spec = { ...DEFAULT_AUDIO_PROCESSING, ...cursor.clip.audioProcessing };
+    const dt = 1 / sampleRate;
+    const reverbMix = Math.max(0, Math.min(1, spec.reverbMix / 100));
+    const delayMix = Math.max(0, Math.min(1, spec.delayMix / 100));
+    cursor.dsp = {
+      spec,
+      delayLeft: new Float32Array(sampleRate * 2), delayRight: new Float32Array(sampleRate * 2), delayIndex: 0,
+      reverbLeft: new Float32Array(Math.max(1, Math.floor(sampleRate * 0.043))),
+      reverbRight: new Float32Array(Math.max(1, Math.floor(sampleRate * 0.047))), reverbIndex: 0,
+      lowLeft: 0, lowRight: 0, highLeft: 0, highRight: 0, highPassLeft: 0, highPassRight: 0, previousLeft: 0, previousRight: 0, highBandLeft: 0, highBandRight: 0,
+      highPassAlpha: 1 / (1 + 2 * Math.PI * Math.max(10, spec.lowCutHz) * dt),
+      lowPassAlpha: 1 - Math.exp(-2 * Math.PI * Math.min(22_000, Math.max(20, spec.highCutHz)) * dt),
+      lowAlpha: 1 - Math.exp(-2 * Math.PI * 250 * dt),
+      highBandAlpha: 1 - Math.exp(-2 * Math.PI * Math.max(500, spec.midFrequencyHz * 2) * dt),
+      lowGain: 10 ** (spec.lowShelfDb / 20), midGain: 10 ** (spec.midPeakDb / 20), highGain: 10 ** (spec.highShelfDb / 20),
+      threshold: 10 ** (spec.compressorThresholdDb / 20),
+      delayFrames: Math.max(1, Math.min(sampleRate * 2 - 1, Math.floor(spec.delayTime * sampleRate))),
+      reverbFeedback: Math.max(0.15, Math.min(0.92, 1 - 0.12 / Math.max(0.1, spec.reverbDecay))),
+      reverbMix, delayMix, dry: 1 - Math.max(reverbMix, delayMix) * 0.35,
+    };
+  }
+  const dsp = cursor.dsp;
+  const spec = dsp.spec;
+  dsp.highPassLeft = dsp.highPassAlpha * (dsp.highPassLeft + left - dsp.previousLeft);
+  dsp.highPassRight = dsp.highPassAlpha * (dsp.highPassRight + right - dsp.previousRight);
+  dsp.previousLeft = left; dsp.previousRight = right;
+  left = dsp.highPassLeft; right = dsp.highPassRight;
+  dsp.highLeft += (left - dsp.highLeft) * dsp.lowPassAlpha;
+  dsp.highRight += (right - dsp.highRight) * dsp.lowPassAlpha;
+  left = dsp.highLeft; right = dsp.highRight;
+  dsp.lowLeft += (left - dsp.lowLeft) * dsp.lowAlpha;
+  dsp.lowRight += (right - dsp.lowRight) * dsp.lowAlpha;
+  dsp.highBandLeft += (left - dsp.highBandLeft) * dsp.highBandAlpha;
+  dsp.highBandRight += (right - dsp.highBandRight) * dsp.highBandAlpha;
+  left = dsp.lowLeft * dsp.lowGain + (dsp.highBandLeft - dsp.lowLeft) * dsp.midGain + (left - dsp.highBandLeft) * dsp.highGain;
+  right = dsp.lowRight * dsp.lowGain + (dsp.highBandRight - dsp.lowRight) * dsp.midGain + (right - dsp.highBandRight) * dsp.highGain;
+  left = compressAudioSample(left, dsp.threshold, spec.compressorRatio);
+  right = compressAudioSample(right, dsp.threshold, spec.compressorRatio);
+  const delayRead = (dsp.delayIndex - dsp.delayFrames + dsp.delayLeft.length) % dsp.delayLeft.length;
+  const delayedLeft = dsp.delayLeft[delayRead]; const delayedRight = dsp.delayRight[delayRead];
+  dsp.delayLeft[dsp.delayIndex] = left + delayedLeft * Math.max(0, Math.min(0.92, spec.delayFeedback));
+  dsp.delayRight[dsp.delayIndex] = right + delayedRight * Math.max(0, Math.min(0.92, spec.delayFeedback));
+  dsp.delayIndex = (dsp.delayIndex + 1) % dsp.delayLeft.length;
+  const reverbLeft = dsp.reverbLeft[dsp.reverbIndex % dsp.reverbLeft.length];
+  const reverbRight = dsp.reverbRight[dsp.reverbIndex % dsp.reverbRight.length];
+  dsp.reverbLeft[dsp.reverbIndex % dsp.reverbLeft.length] = left + reverbRight * dsp.reverbFeedback;
+  dsp.reverbRight[dsp.reverbIndex % dsp.reverbRight.length] = right + reverbLeft * dsp.reverbFeedback;
+  dsp.reverbIndex++;
+  const localTime = Math.max(0, timelineTime - cursor.clip.start);
+  const remaining = Math.max(0, cursor.clip.duration - localTime);
+  const envelope = (spec.fadeIn > 0 ? Math.min(1, localTime / spec.fadeIn) : 1) * (spec.fadeOut > 0 ? Math.min(1, remaining / spec.fadeOut) : 1);
+  cursor.processedLeft = (left * dsp.dry + delayedLeft * dsp.delayMix + reverbLeft * dsp.reverbMix) * envelope;
+  cursor.processedRight = (right * dsp.dry + delayedRight * dsp.delayMix + reverbRight * dsp.reverbMix) * envelope;
+}
+
+function compressAudioSample(sample: number, threshold: number, ratio: number) {
+  const amplitude = Math.abs(sample);
+  if (ratio <= 1 || amplitude <= threshold) return sample;
+  return Math.sign(sample) * (threshold + (amplitude - threshold) / ratio);
 }
 
 async function advanceExportAudioCursor(cursor: ExportAudioCursor, sourceTime: number) {
@@ -1607,6 +1714,8 @@ async function createExportAudioCursors(message: Extract<EngineRequest, { type: 
       outputStart: timelineStart - exportStart,
       outputEnd: timelineEnd - exportStart,
       done: false,
+      processedLeft: 0,
+      processedRight: 0,
     });
   }
   return cursors;
@@ -1645,15 +1754,18 @@ async function encodeExportAudio(source: AudioSampleSource, message: Extract<Eng
           const sampleFrame = Math.min(sample.numberOfFrames - 1, Math.max(0, Math.floor((sourceTime - sample.timestamp) * sample.sampleRate)));
           const monoOrLeft = cursor.planes[0]?.[sampleFrame] ?? 0;
           const right = cursor.planes[Math.min(1, cursor.planes.length - 1)]?.[sampleFrame] ?? monoOrLeft;
+          processExportAudio(cursor, monoOrLeft, right, timelineTime, sampleRate);
+          const processedLeft = cursor.processedLeft;
+          const processedRight = cursor.processedRight;
           const volume = animatedClip.volume <= -60 ? 0 : Math.min(4, 10 ** (animatedClip.volume / 20));
           if (channelCount === 1) {
-            mixed[frame] += (monoOrLeft + right) * 0.5 * volume;
+            mixed[frame] += (processedLeft + processedRight) * 0.5 * volume;
           } else {
             const pan = Math.max(-1, Math.min(1, animatedClip.pan / 100));
             const leftGain = Math.cos((pan + 1) * Math.PI / 4) * Math.SQRT2 * volume;
             const rightGain = Math.sin((pan + 1) * Math.PI / 4) * Math.SQRT2 * volume;
-            mixed[frame * 2] += monoOrLeft * leftGain;
-            mixed[frame * 2 + 1] += right * rightGain;
+            mixed[frame * 2] += processedLeft * leftGain;
+            mixed[frame * 2 + 1] += processedRight * rightGain;
           }
         }
         for (let channel = 0; channel < channelCount; channel++) {

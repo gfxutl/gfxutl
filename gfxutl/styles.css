@@ -337,10 +337,54 @@ svg { width: 16px; height: 16px; stroke-width: 1.7; }
 .preview-tab-object > button { width: 16px; height: 16px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 3px; background: transparent; color: inherit; cursor: pointer; }
 .preview-tab-object > button:hover { background: #30343a; }
 .preview-tab-object > button svg { width: 9px; height: 9px; }
+.audio-waveform-editor { min-width: 0; min-height: 0; overflow: auto; background: #0b0d0e; color: #cfd2d3; scrollbar-color: #3c4145 transparent; }
+.audio-editor-toolbar { position: sticky; z-index: 5; top: 0; height: 42px; display: flex; align-items: center; gap: 9px; padding: 0 12px; border-bottom: 1px solid #292d30; background: #121517f2; backdrop-filter: blur(9px); }
+.audio-editor-toolbar button { height: 25px; border: 1px solid #363b3f; border-radius: 4px; background: #1c2023; color: #c9ccce; font-size: 8px; cursor: pointer; }
+.audio-editor-toolbar button:hover { border-color: #62686c; background: #262b2e; }
+.audio-editor-toolbar .audio-play { width: 27px; display: grid; place-items: center; border-color: #d9ddda; border-radius: 50%; background: #e8ebe9; color: #111; }
+.audio-editor-toolbar .audio-play svg { width: 11px; height: 11px; }
+.audio-editor-toolbar > div { min-width: 0; display: flex; flex-direction: column; }
+.audio-editor-toolbar strong { max-width: 220px; overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.audio-editor-toolbar small { color: #686e72; font: 7px "IBM Plex Mono", monospace; }
+.audio-selection-readout { margin-left: auto; color: #7d8488; font: 8px "IBM Plex Mono", monospace; }
+.audio-bypass { display: flex; align-items: center; gap: 5px; color: #878d91; font: 7px "IBM Plex Mono", monospace; }
+.audio-bypass input { accent-color: #fff; }
+.audio-reset { display: flex; align-items: center; gap: 5px; padding: 0 8px; }
+.audio-reset svg { width: 10px; }
+.audio-waveform-surface { margin: 13px 14px 10px; border: 1px solid #292e31; border-radius: 5px; overflow: hidden; background: linear-gradient(180deg, #111618, #0b0e10); box-shadow: 0 8px 30px #0006; }
+.audio-ruler { position: relative; height: 22px; border-bottom: 1px solid #272c2f; background: #15191b; }
+.audio-ruler span { position: absolute; top: 7px; color: #60666a; font: 7px "IBM Plex Mono", monospace; transform: translateX(-50%); }
+.audio-ruler span:first-child { transform: none; }
+.audio-ruler span:last-child { transform: translateX(-100%); }
+.audio-waveform-surface svg { display: block; width: 100%; height: 210px; cursor: crosshair; touch-action: none; }
+.audio-waveform-surface svg text { fill: #596065; font: 9px "IBM Plex Mono", monospace; }
+.wave-zero { stroke: #3a4246; stroke-width: 1; }
+.wave-selection { fill: #91cbb31c; stroke: #7eb59e88; stroke-width: 1; }
+.wave-playhead { stroke: #fff; stroke-width: 1.5; filter: drop-shadow(0 0 4px #fff8); pointer-events: none; }
+.wave-envelope { fill: none; stroke: #dfba72; stroke-width: 2; stroke-dasharray: 5 3; pointer-events: none; }
+.audio-waveform-actions { min-height: 31px; display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-top: 1px solid #252a2d; background: #101315; }
+.audio-waveform-actions button { height: 21px; padding: 0 8px; border: 1px solid #30363a; border-radius: 3px; background: #191d20; color: #92989c; font-size: 7px; cursor: pointer; }
+.audio-waveform-actions button:hover { color: #e5e8e6; border-color: #596065; }
+.audio-processing-rack { display: grid; grid-template-columns: repeat(4, minmax(190px, 1fr)); gap: 8px; padding: 0 14px 16px; }
+.audio-module { min-width: 0; border: 1px solid #292e31; border-radius: 5px; background: #121517; box-shadow: 0 5px 18px #0004; }
+.audio-module > header { height: 27px; display: flex; align-items: center; gap: 6px; padding: 0 8px; border-bottom: 1px solid #252a2d; color: #afb4b6; }
+.audio-module > header svg { width: 10px; }
+.audio-module > header strong { font-size: 8px; }
+.audio-module > header small { margin-left: auto; color: #555c60; font: 6px "IBM Plex Mono", monospace; }
+.audio-module > div { min-height: 105px; display: grid; grid-template-columns: repeat(auto-fit, minmax(54px, 1fr)); align-items: start; gap: 6px 2px; padding: 9px 6px 8px; }
+.audio-knob { position: relative; min-width: 0; display: grid; justify-items: center; gap: 3px; color: #767d81; font-size: 7px; }
+.audio-knob-dial { --knob-angle: -135deg; position: relative; width: 30px; height: 30px; border: 1px solid #41484c; border-radius: 50%; background: radial-gradient(circle at 40% 35%, #31373a, #161a1c 68%); box-shadow: inset 0 0 0 2px #0f1213, 0 2px 5px #0008; }
+.audio-knob-dial::before { content: ""; position: absolute; inset: -4px; border: 1px solid transparent; border-top-color: #739c8b; border-radius: 50%; transform: rotate(var(--knob-angle)); }
+.audio-knob-dial i { position: absolute; left: 50%; top: 3px; width: 1px; height: 8px; background: #e2e5e3; transform-origin: 50% 12px; transform: translateX(-50%) rotate(var(--knob-angle)); }
+.audio-knob input { position: absolute; top: -2px; width: 36px; height: 36px; margin: 0; opacity: 0; cursor: ns-resize; }
+.audio-knob:focus-within .audio-knob-dial { outline: 1px solid #fff; outline-offset: 2px; }
+.audio-knob output { max-width: 60px; overflow: hidden; color: #b6bbbd; font: 7px "IBM Plex Mono", monospace; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 1180px) { .audio-processing-rack { grid-template-columns: repeat(2, minmax(190px, 1fr)); } }
 .engine-light { display: inline-block; flex: none; width: 5px; height: 5px; border-radius: 50%; background: #fff; }
 .engine-light.webgpu, .engine-light.webgl2 { background: #6fa18d; box-shadow: 0 0 5px #5e947e88; }
 .engine-light.unsupported { background: #a65c4e; }
 .preview-stage { position: relative; min-width: 0; min-height: 0; margin: 13px auto; width: min(calc(100% - 32px), calc((100vh - var(--title-h) - var(--status-h) - var(--timeline-h) - 26px) * 1.7778)); aspect-ratio: 16/9; align-self: center; overflow: hidden; background: #fff; box-shadow: 0 10px 35px #0008; }
+.preview-stage.audio-preview-hidden { display: none; }
 .preview-stage canvas { position: absolute; width: 100%; height: 100%; inset: 0; }
 .safe-area { position: absolute; inset: 6%; border: 1px solid #fff0; pointer-events: none; }
 .preview-stage:hover .safe-area { border-color: #ffffff12; }
