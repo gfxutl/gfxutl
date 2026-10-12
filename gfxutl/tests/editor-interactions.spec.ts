@@ -365,6 +365,7 @@ test("requested chrome is removed and property actions compact below fixed heade
   await expect(page.locator("#main > .panel-resizer > span")).toHaveCount(0);
   await expect(page.locator("#main > section").nth(1).locator(":scope > .preview-header")).toHaveCount(0);
   await expect(page.locator("#main > section").nth(2).locator(":scope > .selected-clip > .clip-icon")).toHaveCount(0);
+  await expect(page.locator(".selected-clip > small, .property-action-stack-heading small")).toHaveCount(0);
 
   const firstSection = page.locator(".property-action-card").first();
   expect((await firstSection.locator(".property-action-card-header").boundingBox())!.height).toBeLessThanOrEqual(26);
@@ -390,6 +391,50 @@ test("requested chrome is removed and property actions compact below fixed heade
   const after = { tabs: await tabs.boundingBox(), selection: await selection.boundingBox() };
   expect(Math.round(after.tabs!.y)).toBe(Math.round(before.tabs!.y));
   expect(Math.round(after.selection!.y)).toBe(Math.round(before.selection!.y));
+});
+
+test("media view uses one toggle and preview tabs isolate timeline objects", async ({ page }) => {
+  const paneHeaderHeights = await page.locator("#main > section > div:first-child").evaluateAll((headers) => headers.slice(0, 3).map((header) => header.getBoundingClientRect().height));
+  expect(paneHeaderHeights).toHaveLength(3);
+  expect(paneHeaderHeights[0]).toBe(paneHeaderHeights[1]);
+  expect(paneHeaderHeights[2]).toBe(paneHeaderHeights[1]);
+
+  const viewToggle = page.getByRole("switch", { name: "グリッド表示" });
+  await expect(viewToggle).toHaveCount(1);
+  await expect(viewToggle).toHaveAttribute("aria-checked", "false");
+  await viewToggle.click();
+  await expect(page.getByRole("switch", { name: "階層表示" })).toHaveAttribute("aria-checked", "true");
+
+  await expect(page.locator(".engine-light")).toHaveClass(/(webgpu|webgl2)/, { timeout: 20_000 });
+  const ids = await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    editorController.addTextObject({ time: 0, timelineY: 24, positionX: -180, positionY: 0 });
+    const first = editorController.getSnapshot().selectedClipId!;
+    editorController.updateClip(first, { name: "First preview" });
+    editorController.addTextObject({ time: 0, timelineY: 96, positionX: 180, positionY: 0 });
+    const second = editorController.getSnapshot().selectedClipId!;
+    editorController.updateClip(second, { name: "Second preview" });
+    return { first, second };
+  });
+
+  const canvas = page.locator(".preview-stage canvas");
+  await page.locator(".timeline-clip", { hasText: "First preview" }).click();
+  await expect(page.getByRole("tab", { name: "総合プレビュー" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "First preview" })).toHaveAttribute("aria-selected", "true");
+  await expect(canvas).toHaveAttribute("data-preview-tab", ids.first);
+  await expect(canvas).toHaveAttribute("data-active-scene-objects", "1", { timeout: 10_000 });
+
+  await page.locator(".timeline-clip", { hasText: "Second preview" }).click();
+  await expect(page.getByRole("tab", { name: "Second preview" })).toHaveAttribute("aria-selected", "true");
+  await expect(canvas).toHaveAttribute("data-preview-tab", ids.second);
+  await expect(page.locator(".preview-tab-object")).toHaveCount(2);
+
+  await page.getByRole("tab", { name: "総合プレビュー" }).click();
+  await expect(canvas).toHaveAttribute("data-preview-tab", "composite");
+  await expect(canvas).toHaveAttribute("data-active-scene-objects", "2", { timeout: 10_000 });
+  await page.getByRole("button", { name: "First previewのプレビューを閉じる" }).click();
+  await expect(page.getByRole("tab", { name: "First preview" })).toHaveCount(0);
 });
 
 test("property actions can be removed, restored, reordered, and persist their neutral state", async ({ page }) => {
@@ -503,7 +548,7 @@ test("media panel opens a directory and expands it like a file explorer", async 
   await expect(page.locator(".timeline-clip", { hasText: "shot-01.png" })).toBeVisible({ timeout: 15_000 });
 
   await page.getByPlaceholder("フォルダ内を検索").fill("");
-  await page.getByRole("button", { name: "グリッド表示" }).click();
+  await page.getByRole("switch", { name: "グリッド表示" }).click();
   await expect(page.getByRole("list", { name: "メディアグリッド" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Footage フォルダを開く" })).toBeVisible();
   await page.getByRole("button", { name: "Footage フォルダを開く" }).click();
@@ -520,7 +565,7 @@ test("media panel opens a directory and expands it like a file explorer", async 
   await expect(page.locator(".explorer-breadcrumbs .current")).toHaveText("Footage");
   await page.getByRole("button", { name: "上のフォルダへ" }).click();
   await expect(page.getByRole("button", { name: "theme.wav", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "階層表示" }).click();
+  await page.getByRole("switch", { name: "階層表示" }).click();
   await expect(page.getByRole("tree", { name: "メディアエクスプローラー" })).toBeVisible();
 });
 
@@ -607,6 +652,77 @@ test("128 MB H.264 RAM preview is live when stopped and cached during playback",
   await expect(canvas).not.toHaveAttribute("data-cache-frames", "0", { timeout: 20_000 });
   await clickPlay(page);
   await expect(canvas).toHaveAttribute("data-preview-source", "realtime", { timeout: 20_000 });
+});
+
+test("timeline read graph fills and evicts the renderer media buffer in playback order", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves these browser-only module URLs during the test.
+    const { buildMediaReadGraph, MediaReadPlanner } = await import("/core/interface/media-read-graph.ts");
+    // @ts-expect-error Vite resolves these browser-only module URLs during the test.
+    const { MediaBuffer } = await import("/core/engine/media-buffer.ts");
+    const assets = [
+      { id: "past", size: 6 },
+      { id: "active", size: 6 },
+      { id: "next", size: 4 },
+    ];
+    const clips = [
+      { id: "past-clip", assetId: "past", start: 0, duration: 2 },
+      { id: "active-clip", assetId: "active", start: 4, duration: 3 },
+      { id: "next-clip", assetId: "next", start: 8, duration: 2 },
+    ];
+    const graph = buildMediaReadGraph(clips, assets, 5);
+    const planner = new MediaReadPlanner();
+    planner.build(clips, assets, 1);
+    const rewindBiasedGraph = planner.build(clips, assets, 5);
+    const stressAssets = Array.from({ length: 257 }, (_, index) => ({ id: `stress-${index}`, size: 1 }));
+    const stressClips = Array.from({ length: 257 }, (_, index) => ({
+      id: `stress-clip-${index}`,
+      assetId: `stress-${index}`,
+      start: (index * 73) % 257,
+      duration: 0.75 + index % 5,
+    }));
+    const stressPlanner = new MediaReadPlanner();
+    stressPlanner.build(stressClips, stressAssets, 100.5);
+    const evicted: string[] = [];
+    const disposed: string[] = [];
+    const buffer = new MediaBuffer(10, (assetId: string) => evicted.push(assetId));
+    const source = (name: string, size: number) => ({ name, size, type: "application/octet-stream", lastModified: 1 });
+    const stream = (values: number[]) => new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(Uint8Array.from(values)); controller.close(); },
+    });
+    await buffer.load("past", source("past.bin", 6), stream([1, 2, 3, 4, 5, 6]));
+    buffer.instantiateSync("past", "three-object", () => ({ name: "past-mesh" }), (value: { name: string }) => disposed.push(value.name));
+    await buffer.load("next", source("next.bin", 4), stream([9, 9, 9, 9]));
+    const planned = buffer.setGraph({ ...graph, revision: 1 });
+    await buffer.load("active", source("active.bin", 6), stream([7, 7, 7, 7, 7, 7]));
+    buffer.instantiateSync("active", "three-object", () => ({ name: "active-mesh" }), (value: { name: string }) => disposed.push(value.name));
+    const buffered = buffer.open("active");
+    return {
+      roots: graph.roots,
+      nodes: graph.nodes.map((node: { assetId: string }) => node.assetId),
+      edges: graph.edges.map((edge: { fromAssetId: string; toAssetId: string }) => `${edge.fromAssetId}>${edge.toAssetId}`),
+      rewindBiasedNodes: rewindBiasedGraph.nodes.map((node: { assetId: string }) => node.assetId),
+      treeValid: planner.validateIndex() && stressPlanner.validateIndex(),
+      requested: planned.requestedAssetIds,
+      evicted,
+      disposed,
+      state: buffer.reconcile(),
+      bytes: Array.from(buffered.readAll()),
+      backend: buffered.profile.backend,
+    };
+  });
+  expect(result.roots).toEqual(["active"]);
+  expect(result.nodes).toEqual(["active", "next", "past"]);
+  expect(result.edges).toEqual(["active>next", "next>past"]);
+  expect(result.rewindBiasedNodes).toEqual(["active", "past", "next"]);
+  expect(result.treeValid).toBe(true);
+  expect(result.requested).toEqual(["active"]);
+  expect(result.evicted).toEqual(["past"]);
+  expect(result.disposed).toEqual(["past-mesh"]);
+  expect(result.state).toMatchObject({ usedBytes: 10, maxBytes: 10, instanceCount: 1, residentAssetIds: ["next", "active"], requestedAssetIds: [] });
+  expect(result.bytes).toEqual([7, 7, 7, 7, 7, 7]);
+  expect(result.backend).toBe("media-buffer");
+  await expect(page.locator(".media-buffer-meter")).toContainText("128 MB");
 });
 
 test("settings control RAM preview capacity and audio channels persistently", async ({ page }) => {
@@ -733,6 +849,21 @@ test("export produces a playable media container", async ({ page }) => {
   let bytes = 0;
   for await (const chunk of stream) bytes += chunk.length;
   expect(bytes).toBeGreaterThan(0);
+});
+
+test("export range is not capped by the initial 32 second project length", async ({ page }) => {
+  await page.getByRole("button", { name: "出力", exact: true }).click();
+  const endTime = page.getByLabel("終了時間");
+  await expect(endTime).not.toHaveAttribute("max");
+  await endTime.fill("120");
+  await expect(endTime).toHaveValue("120");
+  const range = await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    return editorController.getSnapshot().exportSettings;
+  });
+  expect(range.startTime).toBe(0);
+  expect(range.endTime).toBe(120);
 });
 
 test("Three geometry factory creates every supported core geometry", async ({ page }) => {
@@ -993,6 +1124,45 @@ test("paused preview hover shows eight dimension handles and one rotation handle
   await expect(transformBox).toHaveCount(0);
 });
 
+test("preview hover picks front text instead of an overlapping media surface", async ({ page }) => {
+  test.setTimeout(90_000);
+  await expect(page.locator(".engine-light")).toHaveClass(/(webgpu|webgl2)/, { timeout: 20_000 });
+  await page.evaluate(() => Object.defineProperty(window, "showOpenFilePicker", { configurable: true, value: undefined }));
+  const pngBytes = await page.evaluate(async () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 64; canvas.height = 64;
+    const context = canvas.getContext("2d")!;
+    context.fillStyle = "#145da0"; context.fillRect(0, 0, 64, 64);
+    const blob = await new Promise<Blob>((resolve) => canvas.toBlob((value) => resolve(value!), "image/png"));
+    return Array.from(new Uint8Array(await blob.arrayBuffer()));
+  });
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "読み込む" }).click();
+  const chooser = await chooserPromise;
+  await chooser.setFiles({ name: "hover-background.png", mimeType: "image/png", buffer: Buffer.from(pngBytes) });
+  await page.locator(".media-card", { hasText: "hover-background.png" }).dragTo(page.locator(".timeline-workspace"), { targetPosition: { x: 12, y: 220 } });
+  const ids = await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { editorController } = await import("/core/interface/index.ts");
+    const media = editorController.getSnapshot().clips.find((clip: { assetId?: string }) => Boolean(clip.assetId));
+    editorController.updateClip(media.id, { start: 0, y: 220, positionX: 0, positionY: 0 });
+    editorController.addTextObject({ time: 0, timelineY: 20, positionX: 0, positionY: 0 });
+    const title = editorController.getSnapshot().clips.find((clip: { kind: string }) => clip.kind === "title");
+    editorController.updateClip(title.id, { text: "I I", name: "I I", fontSize: 4, textDepth: 0.12 });
+    return { title: title.id, media: media.id };
+  });
+  const canvas = page.locator(".preview-stage canvas");
+  await expect(canvas).toHaveAttribute("data-active-image-objects", "1", { timeout: 10_000 });
+  await expect(canvas).toHaveAttribute("data-active-scene-objects", "1", { timeout: 10_000 });
+  const stage = page.locator(".preview-stage");
+  const bounds = await stage.boundingBox();
+  if (!bounds) throw new Error("preview stage is not visible");
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  const transformBox = page.locator(".preview-transform-box");
+  await expect(transformBox).toHaveAttribute("data-clip-id", ids.title);
+  await expect(transformBox).not.toHaveAttribute("data-clip-id", ids.media);
+});
+
 test("preview objects drag directly and carry their position keyframes", async ({ page }) => {
   await expect(page.locator(".engine-light")).toHaveClass(/(webgpu|webgl2)/, { timeout: 20_000 });
   await page.evaluate(async () => {
@@ -1056,7 +1226,7 @@ test("images render through Three and media clips share resize handles", async (
     const { editorController } = await import("/core/interface/index.ts");
     return editorController.getSnapshot().assets.find((asset: { name: string }) => asset.name === "still.png")?.sourceProfile;
   });
-  expect(imageIo).toMatchObject({ backend: "file-reader-sync", readOperations: 1 });
+  expect(imageIo).toMatchObject({ backend: "media-buffer", readOperations: 1 });
   await card.dragTo(page.locator(".timeline-workspace"), { targetPosition: { x: 20, y: 80 } });
   const canvas = page.locator(".preview-stage canvas");
   await expect(canvas).toHaveAttribute("data-active-image-objects", "1", { timeout: 10_000 });
@@ -1277,6 +1447,37 @@ test("preview context menu positions a Three object at the pointer", async ({ pa
   expect(state.positionY).not.toBe(0);
 });
 
+test("text uses GfxTextGeometry with per-glyph animation attributes", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    // @ts-expect-error Vite resolves this browser-only module URL during the test.
+    const { createGeometry, getGfxTextFontCacheInfo } = await import("/core/engine/three-geometry-factory.ts");
+    const before = getGfxTextFontCacheInfo().cachedGlyphs;
+    const geometry = createGeometry({ id: "custom-text", kind: "text", text: "ABBA", size: 1, depth: 0.1, glyphStagger: 0.05 });
+    const position = geometry.getAttribute("position");
+    const glyphIndex = geometry.getAttribute("gfxGlyphIndex");
+    const glyphDelay = geometry.getAttribute("gfxGlyphDelay");
+    const glyphOrigin = geometry.getAttribute("gfxGlyphOrigin");
+    const layout = geometry.userData.gfxText;
+    const delays = [...new Set(Array.from({ length: glyphDelay.count }, (_, index) => Number(glyphDelay.getX(index).toFixed(3))))];
+    const value = {
+      type: geometry.type,
+      positions: position.count,
+      alignedAttributeCounts: [glyphIndex.count, glyphDelay.count, glyphOrigin.count],
+      glyphs: layout.glyphs.length,
+      delays,
+      loadedGlyphs: getGfxTextFontCacheInfo().cachedGlyphs - before,
+    };
+    geometry.dispose();
+    return value;
+  });
+  expect(result.type).toBe("GfxTextGeometry");
+  expect(result.positions).toBeGreaterThan(0);
+  expect(result.alignedAttributeCounts).toEqual([result.positions, result.positions, result.positions]);
+  expect(result.glyphs).toBe(4);
+  expect(result.delays).toEqual([0, 0.05, 0.1, 0.15]);
+  expect(result.loadedGlyphs).toBe(2);
+});
+
 test("Local Font Access data is registered for editable text meshes", async ({ page }) => {
   await expect(page.locator(".engine-light")).toHaveClass(/(webgpu|webgl2)/, { timeout: 20_000 });
   const fontBase64 = readFileSync("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf").toString("base64");
@@ -1299,18 +1500,25 @@ test("Local Font Access data is registered for editable text meshes", async ({ p
       };
     }) });
   }, fontBase64);
-  const vertices = await page.evaluate(async (base64) => {
+  const localGeometry = await page.evaluate(async (base64) => {
     const binary = atob(base64);
     const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
     // @ts-expect-error Vite resolves this browser-only module URL during the test.
-    const { registerLocalFont, createGeometry } = await import("/core/engine/three-geometry-factory.ts");
+    const { registerLocalFont, createGeometry, getGfxTextFontCacheInfo } = await import("/core/engine/three-geometry-factory.ts");
     await registerLocalFont("test-local", bytes.buffer);
+    const before = getGfxTextFontCacheInfo("test-local").cachedGlyphs;
     const geometry = createGeometry({ id: "local-text", kind: "text", text: "Local", fontId: "test-local", size: 1, depth: 0.1 });
-    const count = geometry.getAttribute("position").count;
+    const result = {
+      count: geometry.getAttribute("position").count,
+      type: geometry.type,
+      loadedGlyphs: getGfxTextFontCacheInfo("test-local").cachedGlyphs - before,
+    };
     geometry.dispose();
-    return count;
+    return result;
   }, fontBase64);
-  expect(vertices).toBeGreaterThan(0);
+  expect(localGeometry.count).toBeGreaterThan(0);
+  expect(localGeometry.type).toBe("GfxTextGeometry");
+  expect(localGeometry.loadedGlyphs).toBe(5);
   await page.locator(".timeline-workspace").click({ button: "right", position: { x: 180, y: 90 } });
   await page.getByRole("menuitem", { name: "テキスト" }).click();
   await page.getByRole("button", { name: "ローカルフォントを読込" }).click();
@@ -1371,7 +1579,7 @@ test("video thumbnails animate before timeline insertion and render through Thre
     Object.defineProperty(window, "showDirectoryPicker", { configurable: true, value: async () => root });
   }, bytes);
   await page.getByRole("button", { name: "フォルダを開く" }).click();
-  await page.getByRole("button", { name: "グリッド表示" }).click();
+  await page.getByRole("switch", { name: "グリッド表示" }).click();
   const browserCard = page.locator(".media-card", { hasText: "browser-only.webm" });
   const browserThumbnail = browserCard.getByLabel("browser-only.webm のサムネイル");
   await expect.poll(async () => browserThumbnail.evaluate((canvas: HTMLCanvasElement) => {
@@ -1403,9 +1611,8 @@ test("video thumbnails animate before timeline insertion and render through Thre
     const { editorController } = await import("/core/interface/index.ts");
     return editorController.getSnapshot().assets.find((asset: { name: string }) => asset.name === "direct-frame.webm")?.sourceProfile;
   });
-  expect(videoIo?.backend).toBe("file-reader-sync");
+  expect(videoIo?.backend).toBe("media-buffer");
   expect(videoIo?.readOperations).toBeGreaterThan(0);
-  await page.getByRole("button", { name: "グリッド表示" }).click();
   const mediaThumbnail = card.getByLabel("direct-frame.webm のサムネイル");
   await expect.poll(async () => mediaThumbnail.evaluate((canvas: HTMLCanvasElement) => {
     const pixels = canvas.getContext("2d")?.getImageData(0, 0, canvas.width, canvas.height).data;

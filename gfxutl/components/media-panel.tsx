@@ -314,8 +314,7 @@ export function MediaPanel() {
         <Button size="icon" onClick={() => void openDirectory()} aria-label="フォルダを開く" title="メディアフォルダを開く"><FolderOpen /></Button>
         <Tooltip label="単体ファイルを読み込む"><Button size="icon" variant="ghost" onClick={controller.openMedia} aria-label="ファイルを読み込む"><Plus /></Button></Tooltip>
         <span className="spacer" />
-        <Tooltip label="階層表示"><Button size="icon" variant="ghost" className={view === "tree" ? "active-soft" : ""} onClick={() => changeView("tree")} aria-label="階層表示"><ListTree /></Button></Tooltip>
-        <Tooltip label="グリッド表示"><Button size="icon" variant="ghost" className={view === "grid" ? "active-soft" : ""} onClick={() => changeView("grid")} aria-label="グリッド表示"><Grid2X2 /></Button></Tooltip>
+        <Tooltip label={view === "tree" ? "グリッド表示へ切り替え" : "階層表示へ切り替え"}><Button size="icon" variant="ghost" className="media-view-toggle active-soft" onClick={() => changeView(view === "tree" ? "grid" : "tree")} aria-label={view === "tree" ? "グリッド表示" : "階層表示"} role="switch" aria-checked={view === "grid"}><ListTree /><i /><Grid2X2 /></Button></Tooltip>
         {root && <><Tooltip label="フォルダを更新"><Button size="icon" variant="ghost" onClick={() => void refreshDirectory()} aria-label="フォルダを更新"><RotateCcw /></Button></Tooltip><Tooltip label="フォルダを閉じる"><Button size="icon" variant="ghost" onClick={() => void closeDirectory()} aria-label="フォルダを閉じる"><X /></Button></Tooltip></>}
       </div>
       <label className="search-box"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="フォルダ内を検索" /></label>

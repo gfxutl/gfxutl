@@ -46,8 +46,11 @@ File System Access API、Local Font Access API、WebGPU、WebCodecs、OffscreenC
 - Box、Capsule、Circle、Cone、Cylinder、各Polyhedron、Plane、Ring、Sphere、Torus、TorusKnot、Lathe、Shape、Extrude、Tube、Edges、Wireframe、任意BufferGeometryに対応
 - glTF、HDR、EXR、ローカルフォント、3Dテキスト、PBRマテリアル、ライト、カメラ、環境設定に対応
 - プレビュー上でオブジェクトを直接選択・移動・リサイズ・回転
+- 左上固定の総合プレビューと、選択したタイムラインオブジェクトだけを描画する個別タブ
 - プレビューCanvasを別ウィンドウへ移動し、同じRenderer Workerへ再接続可能
 - 白背景の空プロジェクトから開始し、背景自体も編集可能な常設オブジェクトとして扱う
+
+テキストはThree.jsのTextGeometryを使用せず、GfxUtl独自の `GfxTextGeometry` で字形レイアウト、曲線分割、前後面・側面生成、中心合わせまでを行います。ローカルフォントはlow-memoryモードで解析し、文字列に現れたグリフだけを遅延展開・キャッシュします。生成頂点には文字番号、文字ごとの遅延時間、文字原点、文字内UVを属性として保持するため、文字単位の変形や時間差シェーダーアニメーションへ利用できます。
 
 ### 作用スタック
 
@@ -100,7 +103,7 @@ npm run build:naga
 - MP4、MOV、WebM、MKV、WAV、MP3、AAC、FLAC、PNG、JPEG、WebP、HDR、EXR、GLBをメディアブラウザへ読み込み
 - File System Access API対応環境ではディレクトリをツリー／グリッド表示し、ハンドルを保持したまま再接続
 - 動画サムネイル、音声波形、実ファイルのコーデック・解像度・サイズ・読み取り統計を表示
-- MP4／WebM、映像・音声コーデック、解像度、FPS、ビットレート、出力範囲、ステレオ／モノラルを設定して書き出し
+- MP4／WebM、映像・音声コーデック、解像度、FPS、ビットレート、上限を固定しない出力範囲、ステレオ／モノラルを設定して書き出し
 - 静止画書き出しにもタイムライン上の作用、シーン設定、ポストプロセスを反映
 
 MediaBunnyがWorker内で動画・音声をデコードし、動画フレームは `VideoSample.toVideoFrame()` から `THREE.VideoFrameTexture.setFrame()` へ渡されます。GPU描画後に不要な `VideoFrame` を明示的にcloseします。
@@ -117,10 +120,13 @@ MediaBunnyがWorker内で動画・音声をデコードし、動画フレーム�
 - 連続するピッキング要求をまとめ、古い結果をUIへ返さない
 - CodeMirrorの編集中はGLSLをUI内に保持し、明示的に適用したときだけWorkerへ送信
 - 変更の影響時間範囲だけRAMプレビューキャッシュを無効化
+- フレームごとにクリップ索引を一度だけ構築し、Three.jsルートをMap参照。モデルの再走査、未変更のマテリアル・クロップ行列・インスタンス行列・ワールド行列更新を回避
 
 RAMプレビューは既定で有効、初期容量は128 MiBです。設定画面から32～2048 MiBの範囲で変更できます。停止中に実際に描画したフレームをH.264キャッシュへ格納し、再生中は同一フレームのキャッシュを優先して表示します。
 
-メインスレッドで取得した `FileSystemFileHandle` はstructured cloneでWorkerへ渡されます。Workerは `getFile()` でスナップショットを取得し、`Blob.slice(start, end)` と `FileReaderSync.readAsArrayBuffer()` をMediaBunnyの `CustomSource` へ接続します。ファイル全体やOPFSへの複製は行わず、2 MiBキャッシュとfile-system向けプリフェッチで必要範囲だけを読み取ります。
+タイムライン区間はVS CodeのPiece Treeと同型の番兵付き赤黒木へ保持し、部分木の最大終了時刻を回転時に更新します。現在位置に重なる区間を木全体の走査なしで取得し、現在のアセット、一度表示した巻き戻し候補、未表示の未来という順に読み出しグラフを組み立てます。巻き戻し候補は閲覧回数と直近性で優遇し、未来側は距離の二乗で優先度を下げるため、遠方への投機的な先読みで128 MiBを浪費しません。
+
+UIスレッドはグラフが要求したファイルを `File.stream()` のTransferable `ReadableStream` として渡し、Renderer WorkerはRAMプレビューとは独立した固定128 MiBの「メディアバッファ」へファイル単位で格納します。メディアバッファは圧縮バイト列だけでなく、MediaBunnyの入力／sink、画像テクスチャ、glTFシーン、タイムライン用のThree.jsメッシュまで生成して同じアセットエントリで所有します。レンダー中にディスクを細かな範囲で再読込せず、容量超過時はグラフ上の優先度とLRUに従ってデータと対応するGPU・デコーダー資源を一緒に破棄し、再び必要になった時だけ新しいストリームで再ロードします。
 
 ## プロジェクト保存
 
@@ -137,7 +143,7 @@ RAMプレビューは既定で有効、初期容量は128 MiBです。設定画�
 - `gfxutl/core/protocol/`: UIとRendererが共有するstructured-clone可能な通信契約
 - `gfxutl/core/runtime.ts`: Workerを生成しUIへ注入する合成ルート
 - `gfxutl/core/engine/media.worker.ts`: メディアI/O、Three.jsレンダー、Naga呼び出し、RAMプレビュー、書き出しを担う専用Worker
-- `gfxutl/core/engine/`: Three.jsシーン、ジオメトリ、Renderer、ファイルソース、RAMキャッシュ
+- `gfxutl/core/engine/`: Three.jsシーン、ジオメトリ、Renderer、128 MiBメディアバッファ、RAMプレビューキャッシュ
 - `gfxutl/core/naga-wasm/`: Rust製Nagaブリッジと生成済みブラウザWASM
 - `gfxutl/core/persistence/`: プロジェクト文書とFileSystemHandle／IndexedDB永続化
 - `gfxutl/tests/`: Playwrightによる編集操作・描画・保存・書き出しのE2Eテスト

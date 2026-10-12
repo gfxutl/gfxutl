@@ -6,6 +6,7 @@ import { assignTimelineGroups, expandGroupToValidBoundary, hasGroupBoundaryCross
 import { loadHandleProjects, saveHandleProject } from "../persistence/handle-project-store";
 import { createProjectDocument, parseProjectDocument, type ProjectDocument } from "../project/project-document";
 import { clampTimelineZoom } from "./timeline-zoom";
+import { MediaReadPlanner } from "./media-read-graph";
 
 type Listener = () => void;
 
@@ -64,6 +65,8 @@ const initialState: EditorState = {
   snapEnabled: true,
   selectedClipId: null,
   selectedClipIds: [],
+  previewClipTabs: [],
+  activePreviewClipId: null,
   selectedAssetId: null,
   backgroundSelected: false,
   background: { id: "background", name: "背景オブジェクト", color: 0xffffff, scene: structuredClone(defaultSceneSettings) },
@@ -71,6 +74,7 @@ const initialState: EditorState = {
   clips: [],
   fonts: [],
   cache: { usedBytes: 0, maxBytes: loadedSettings.ramPreviewMaxBytes, entries: 0, codec: "H.264" },
+  mediaBuffer: { usedBytes: 0, maxBytes: 128 * MiB, entries: 0, pending: 0, instances: 0 },
   engine: "initializing",
   cameraProjection: "orthographic",
   mediaBunnyReady: false,
@@ -125,6 +129,7 @@ export class EditorController {
   private listeners = new Set<Listener>();
   private engine: EngineClient;
   private virtualTimeline = new VirtualTimeline();
+  private mediaReadPlanner = new MediaReadPlanner();
   private previewCanvases = new WeakSet<HTMLCanvasElement>();
   private frame = 0;
   private lastTick = 0;
@@ -368,6 +373,8 @@ export class EditorController {
         exportSettings: project.exportSettings,
         selectedClipId: null,
         selectedClipIds: [],
+        previewClipTabs: [],
+        activePreviewClipId: null,
         selectedAssetId: null,
         backgroundSelected: false,
       });
@@ -398,6 +405,8 @@ export class EditorController {
       loopPlayback: false,
       selectedClipId: null,
       selectedClipIds: [],
+      previewClipTabs: [],
+      activePreviewClipId: null,
       selectedAssetId: null,
       backgroundSelected: false,
       exportSettings: { ...initialState.exportSettings },
@@ -556,6 +565,14 @@ export class EditorController {
       this.renderPreview(true);
     } else if (message.type === "cache") {
       this.update({ cache: { ...this.state.cache, usedBytes: message.usedBytes, maxBytes: message.maxBytes, entries: message.entries } });
+    } else if (message.type === "media-buffer-state") {
+      this.update({ mediaBuffer: {
+        usedBytes: message.usedBytes,
+        maxBytes: message.maxBytes,
+        entries: message.residentAssetIds.length,
+        pending: message.requestedAssetIds.length,
+        instances: message.instanceCount,
+      } });
     } else if (message.type === "export-progress") {
       this.update({ exportProgress: message.progress });
     } else if (message.type === "video-frame-ready") {
@@ -626,6 +643,7 @@ export class EditorController {
 
   renderPreview(cache = false) {
     if (!this.canvasReady) return;
+    this.engine.setMediaReadGraph(this.mediaReadPlanner.build(this.state.clips, this.state.assets, this.state.currentTime));
     if (this.state.playing) {
       const frame = Math.floor(this.state.currentTime * this.state.fps);
       if (frame === this.lastPlaybackFrame) return;
@@ -636,7 +654,7 @@ export class EditorController {
     const renderClips = this.getRenderClips();
     const patch = this.virtualTimeline.reconcile(renderClips);
     if (patch) this.engine.patchTimeline(patch);
-    this.engine.render(this.state.currentTime, cache && this.state.settings.ramPreviewEnabled, this.state.playing ? "playback" : "realtime", this.state.fps, this.state.background.scene);
+    this.engine.render(this.state.currentTime, cache && this.state.settings.ramPreviewEnabled && !this.state.activePreviewClipId, this.state.playing ? "playback" : "realtime", this.state.fps, this.state.background.scene, this.state.activePreviewClipId ?? undefined);
   }
 
   private getRenderClips(): RenderClip[] {
@@ -819,13 +837,43 @@ export class EditorController {
     const selectedClipIds = additive
       ? this.state.selectedClipIds.includes(id) ? this.state.selectedClipIds.filter((item) => item !== id) : [...this.state.selectedClipIds, id]
       : [id];
-    this.update({ selectedClipId: selectedClipIds.includes(id) ? id : selectedClipIds.at(-1) ?? null, selectedClipIds, selectedAssetId: clip?.assetId ?? null, backgroundSelected: false });
+    const previewable = clip && clip.kind !== "audio" && clip.kind !== "group";
+    this.update({
+      selectedClipId: selectedClipIds.includes(id) ? id : selectedClipIds.at(-1) ?? null,
+      selectedClipIds,
+      selectedAssetId: clip?.assetId ?? null,
+      backgroundSelected: false,
+      ...(previewable ? {
+        previewClipTabs: this.state.previewClipTabs.includes(id) ? this.state.previewClipTabs : [...this.state.previewClipTabs, id],
+        activePreviewClipId: id,
+      } : {}),
+    });
+    if (previewable) this.renderPreview(false);
   };
   selectClips = (ids: string[], additive = false) => {
     const selectedClipIds = additive ? [...new Set([...this.state.selectedClipIds, ...ids])] : ids;
     const selectedClipId = selectedClipIds.at(-1) ?? null;
     const clip = this.state.clips.find((item) => item.id === selectedClipId);
-    this.update({ selectedClipIds, selectedClipId, selectedAssetId: clip?.assetId ?? null, backgroundSelected: false });
+    const previewable = clip && clip.kind !== "audio" && clip.kind !== "group";
+    this.update({
+      selectedClipIds, selectedClipId, selectedAssetId: clip?.assetId ?? null, backgroundSelected: false,
+      ...(previewable ? {
+        previewClipTabs: this.state.previewClipTabs.includes(clip.id) ? this.state.previewClipTabs : [...this.state.previewClipTabs, clip.id],
+        activePreviewClipId: clip.id,
+      } : {}),
+    });
+    if (previewable) this.renderPreview(false);
+  };
+  setPreviewTab = (clipId: string | null) => {
+    if (clipId !== null && !this.state.previewClipTabs.includes(clipId)) return;
+    this.update({ activePreviewClipId: clipId });
+    this.renderPreview(false);
+  };
+  closePreviewTab = (clipId: string) => {
+    const previewClipTabs = this.state.previewClipTabs.filter((id) => id !== clipId);
+    const activePreviewClipId = this.state.activePreviewClipId === clipId ? null : this.state.activePreviewClipId;
+    this.update({ previewClipTabs, activePreviewClipId });
+    if (activePreviewClipId !== this.state.activePreviewClipId) this.renderPreview(false);
   };
   selectAsset = (id: string | null) => this.update({ selectedAssetId: id, selectedClipId: null, selectedClipIds: [], backgroundSelected: false });
   selectBackground = () => this.update({ backgroundSelected: true, selectedAssetId: null, selectedClipId: null, selectedClipIds: [] });
@@ -893,6 +941,9 @@ export class EditorController {
   };
   updateExportSettings = (patch: Partial<ExportSettings>) => {
     const next = { ...this.state.exportSettings, ...patch };
+    const minimumDuration = 1 / Math.max(1, next.fps);
+    next.startTime = Number.isFinite(next.startTime) ? Math.max(0, next.startTime) : this.state.exportSettings.startTime;
+    next.endTime = Number.isFinite(next.endTime) ? Math.max(next.startTime + minimumDuration, next.endTime) : this.state.exportSettings.endTime;
     if (patch.format === "mp4") {
       if (!["avc", "hevc", "av1"].includes(next.videoCodec)) next.videoCodec = "avc";
       if (!["aac", "opus", "none"].includes(next.audioCodec)) next.audioCodec = "aac";
@@ -1131,7 +1182,13 @@ export class EditorController {
   removeClip = (id: string) => {
     const selectedClipIds = this.state.selectedClipIds.filter((item) => item !== id);
     const clips = assignTimelineGroups(this.state.clips.filter((clip) => clip.id !== id));
-    this.update({ clips, selectedClipId: this.state.selectedClipId === id ? selectedClipIds.at(-1) ?? null : this.state.selectedClipId, selectedClipIds });
+    this.update({
+      clips,
+      selectedClipId: this.state.selectedClipId === id ? selectedClipIds.at(-1) ?? null : this.state.selectedClipId,
+      selectedClipIds,
+      previewClipTabs: this.state.previewClipTabs.filter((clipId) => clipId !== id),
+      activePreviewClipId: this.state.activePreviewClipId === id ? null : this.state.activePreviewClipId,
+    });
     this.invalidatePreviewCache();
     this.schedulePersistence();
     this.renderPreview(false);
@@ -1285,7 +1342,13 @@ export class EditorController {
   cutSelection = async () => {
     const ids = [...timelineGroupDescendants(this.state.clips, this.state.selectedClipIds)];
     if (!ids.length || !(await this.copySelection())) return;
-    this.update({ clips: assignTimelineGroups(this.state.clips.filter((clip) => !ids.includes(clip.id))), selectedClipId: null, selectedClipIds: [] });
+    this.update({
+      clips: assignTimelineGroups(this.state.clips.filter((clip) => !ids.includes(clip.id))),
+      selectedClipId: null,
+      selectedClipIds: [],
+      previewClipTabs: this.state.previewClipTabs.filter((id) => !ids.includes(id)),
+      activePreviewClipId: this.state.activePreviewClipId && ids.includes(this.state.activePreviewClipId) ? null : this.state.activePreviewClipId,
+    });
     this.invalidatePreviewCache();
     this.schedulePersistence();
     this.renderPreview(false);

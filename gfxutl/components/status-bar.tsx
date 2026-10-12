@@ -7,6 +7,8 @@ export function StatusBar() {
   const { state, controller } = useEditor();
   const used = state.cache.usedBytes / 1024 / 1024;
   const max = state.cache.maxBytes / 1024 / 1024;
+  const mediaUsed = state.mediaBuffer.usedBytes / 1024 / 1024;
+  const mediaMax = state.mediaBuffer.maxBytes / 1024 / 1024;
   const ramPreviewEnabled = state.settings.ramPreviewEnabled;
   const gpuContext = state.engine === "webgpu" ? "WebGPU" : state.engine === "webgl2" ? "WebGL" : state.engine === "unsupported" ? "GPU利用不可" : "GPU初期化中";
   return (
@@ -16,6 +18,13 @@ export function StatusBar() {
         <span className="renderer-stats" title={`Lines ${state.rendererStats.lines} / Points ${state.rendererStats.points} / Geometries ${state.rendererStats.geometries} / Textures ${state.rendererStats.textures}`}>
           {state.rendererStats.calls} calls · {state.rendererStats.triangles.toLocaleString()} tris · {state.rendererStats.frameMs.toFixed(1)} ms
         </span>
+      </div>
+      <div className="media-buffer-meter" data-media-buffer-entries={state.mediaBuffer.entries} data-media-buffer-pending={state.mediaBuffer.pending}>
+        <Database />
+        <span>メディアバッファ</span>
+        <div className="meter"><i style={{ width: `${mediaMax > 0 ? Math.min(100, mediaUsed / mediaMax * 100) : 0}%` }} /></div>
+        <strong>{mediaUsed.toFixed(1)} / {mediaMax.toFixed(0)} MB</strong>
+        <span className="codec">{state.mediaBuffer.entries} files · {state.mediaBuffer.instances} instances{state.mediaBuffer.pending ? ` · ${state.mediaBuffer.pending} loading` : ""}</span>
       </div>
       <div className={`cache-meter ${ramPreviewEnabled ? "" : "disabled"}`} data-cache-entries={state.cache.entries} data-cache-enabled={ramPreviewEnabled}>
         <Database />

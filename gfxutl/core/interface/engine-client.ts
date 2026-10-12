@@ -1,4 +1,4 @@
-import type { EngineRequest, EngineResponse, ExportSettings, MediaFileSource, RenderClip, SceneObjectSpec, SceneSettings, SceneSettingsPatch, TimelinePatch } from "../protocol/engine-protocol";
+import type { EngineRequest, EngineResponse, ExportSettings, MediaFileSource, MediaReadGraph, RenderClip, SceneObjectSpec, SceneSettings, SceneSettingsPatch, TimelinePatch } from "../protocol/engine-protocol";
 
 type MediaInfo = Extract<EngineResponse, { type: "media-info" }>;
 type ExportResult = { buffer: ArrayBuffer; mimeType: string };
@@ -18,11 +18,15 @@ export class EngineClient {
   private pickQueue: Array<{ ndcX: number; ndcY: number; coalescible: boolean; resolves: Array<(clipId: string | undefined) => void> }> = [];
   private renderSequence = 0;
   private renderInFlight = false;
-  private pendingRender: { time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; sceneSettings: SceneSettings } | null = null;
+  private pendingRender: { time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; sceneSettings: SceneSettings; focusClipId?: string } | null = null;
   private pendingTimelinePatch: TimelinePatch | null = null;
   private lastSceneSettings: SceneSettings | null = null;
   private lastResize = "";
   private initialPreviewCache: { enabled: boolean; maxBytes: number } | undefined;
+  private mediaFiles = new Map<string, File>();
+  private mediaBufferLoads = new Set<string>();
+  private mediaGraphRevision = 0;
+  private mediaGraphSignature = "";
 
   constructor(private worker: Worker, private onMessage: (message: EngineResponse) => void) {
     this.worker.onerror = (event) => this.onMessage({ type: "error", message: event.message || "Workerの初期化に失敗しました" });
@@ -51,6 +55,9 @@ export class EngineClient {
     } else if (message.type === "render-complete") {
       this.renderInFlight = false;
       this.flushPendingRender();
+    } else if (message.type === "media-buffer-state") {
+      for (const assetId of message.residentAssetIds) this.mediaBufferLoads.delete(assetId);
+      for (const assetId of message.requestedAssetIds) this.loadMediaBufferAsset(assetId);
     } else if (message.type === "error" && message.requestId) {
       this.pending.get(message.requestId)?.reject(new Error(message.message));
       this.pendingExports.get(message.requestId)?.reject(new Error(message.message));
@@ -103,10 +110,10 @@ export class EngineClient {
     this.post({ type: "resize", width, height, dpr });
   }
   patchTimeline(patch: TimelinePatch) { this.pendingTimelinePatch = mergeTimelinePatches(this.pendingTimelinePatch, patch); }
-  render(time: number, cache: boolean, mode: "realtime" | "playback", fps: number, sceneSettings: SceneSettings) {
+  render(time: number, cache: boolean, mode: "realtime" | "playback", fps: number, sceneSettings: SceneSettings, focusClipId?: string) {
     // Keep at most one GPU/decode operation in flight. During a slow frame the
     // newest playhead position supersedes every intermediate request.
-    this.pendingRender = { time, cache, mode, fps, sceneSettings };
+    this.pendingRender = { time, cache, mode, fps, sceneSettings, focusClipId };
     this.flushPendingRender();
   }
 
@@ -123,6 +130,7 @@ export class EngineClient {
     this.post({
       type: "render", sequence, time: next.time, cache: next.cache,
       mode: next.mode, fps: next.fps,
+      ...(next.focusClipId ? { focusClipId: next.focusClipId } : {}),
       ...(patch ? { timelinePatch: patch } : {}),
       ...(sceneSettingsPatch ? { sceneSettingsPatch } : {}),
     });
@@ -130,29 +138,54 @@ export class EngineClient {
 
   inspectMedia(file: File, assetId: string, handle?: FileSystemFileHandle) {
     const requestId = crypto.randomUUID();
+    this.mediaFiles.set(assetId, file);
     return new Promise<MediaInfo>((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject });
-      this.post({ type: "inspect-media", requestId, assetId, source: mediaFileSource(file, handle) });
+      const stream = file.stream();
+      this.post({ type: "inspect-media", requestId, assetId, source: mediaFileSource(file), stream }, [stream as unknown as Transferable]);
     });
   }
 
   inspectImage(file: File, assetId: string, handle?: FileSystemFileHandle) {
     const requestId = crypto.randomUUID();
+    this.mediaFiles.set(assetId, file);
     return new Promise<MediaInfo>((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject });
-      this.post({ type: "inspect-image", requestId, assetId, source: mediaFileSource(file, handle) });
+      const stream = file.stream();
+      this.post({ type: "inspect-image", requestId, assetId, source: mediaFileSource(file), stream }, [stream as unknown as Transferable]);
     });
   }
 
   inspectModel(file: File, assetId: string, handle?: FileSystemFileHandle) {
     const requestId = crypto.randomUUID();
+    this.mediaFiles.set(assetId, file);
     return new Promise<MediaInfo>((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject });
-      this.post({ type: "inspect-model", requestId, assetId, source: mediaFileSource(file, handle) });
+      const stream = file.stream();
+      this.post({ type: "inspect-model", requestId, assetId, source: mediaFileSource(file), stream }, [stream as unknown as Transferable]);
     });
   }
 
-  releaseMedia(assetId: string) { this.post({ type: "release-media", assetId }); }
+  releaseMedia(assetId: string) {
+    this.mediaFiles.delete(assetId);
+    this.mediaBufferLoads.delete(assetId);
+    this.post({ type: "release-media", assetId });
+  }
+
+  setMediaReadGraph(graph: Omit<MediaReadGraph, "revision">) {
+    const signature = JSON.stringify(graph);
+    if (signature === this.mediaGraphSignature) return;
+    this.mediaGraphSignature = signature;
+    this.post({ type: "media-buffer-plan", graph: { ...graph, revision: ++this.mediaGraphRevision } });
+  }
+
+  private loadMediaBufferAsset(assetId: string) {
+    const file = this.mediaFiles.get(assetId);
+    if (!file || this.mediaBufferLoads.has(assetId)) return;
+    this.mediaBufferLoads.add(assetId);
+    const stream = file.stream();
+    this.post({ type: "media-buffer-load", assetId, source: mediaFileSource(file), stream }, [stream as unknown as Transferable]);
+  }
 
   decodeAudioPreview(assetId: string, startTime: number, endTime: number) {
     const requestId = crypto.randomUUID();
@@ -234,20 +267,12 @@ export class EngineClient {
   registerFont(fontId: string, buffer: ArrayBuffer) { this.post({ type: "font-register", fontId, buffer }, [buffer]); }
 }
 
-function mediaFileSource(file: File, handle?: FileSystemFileHandle): MediaFileSource {
-  let cloneableHandle: FileSystemFileHandle | undefined;
-  if (handle) {
-    try {
-      structuredClone(handle);
-      cloneableHandle = handle;
-    } catch { /* Test doubles and legacy handles fall back to the File object. */ }
-  }
+function mediaFileSource(file: File): MediaFileSource {
   return {
     name: file.name,
     type: file.type,
     size: file.size,
     lastModified: file.lastModified,
-    ...(cloneableHandle ? { handle: cloneableHandle } : { file }),
   };
 }
 

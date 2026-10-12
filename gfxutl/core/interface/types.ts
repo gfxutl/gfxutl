@@ -115,6 +115,14 @@ export interface CacheState {
   codec: "H.264";
 }
 
+export interface MediaBufferStatus {
+  usedBytes: number;
+  maxBytes: number;
+  entries: number;
+  pending: number;
+  instances: number;
+}
+
 export interface TimelineMarker {
   id: string;
   time: number;
@@ -155,6 +163,8 @@ export interface EditorState {
   snapEnabled: boolean;
   selectedClipId: string | null;
   selectedClipIds: string[];
+  previewClipTabs: string[];
+  activePreviewClipId: string | null;
   selectedAssetId: string | null;
   backgroundSelected: boolean;
   background: BackgroundObject;
@@ -162,6 +172,7 @@ export interface EditorState {
   clips: TimelineClip[];
   fonts: FontFaceInfo[];
   cache: CacheState;
+  mediaBuffer: MediaBufferStatus;
   engine: "initializing" | "webgpu" | "webgl2" | "unsupported";
   cameraProjection: "orthographic" | "perspective";
   mediaBunnyReady: boolean;

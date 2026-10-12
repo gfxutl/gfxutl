@@ -50,6 +50,8 @@ export interface GeometrySpec {
   bevelThickness?: number;
   bevelSize?: number;
   bevelSegments?: number;
+  /** Seconds between adjacent glyph animation phases in GfxTextGeometry. */
+  glyphStagger?: number;
   source?: Omit<GeometrySpec, "id">;
 }
 
@@ -313,25 +315,47 @@ export interface MediaFileSource {
   type: string;
   size: number;
   lastModified: number;
-  handle?: FileSystemFileHandle;
-  file?: File;
 }
 
 export interface SourceIoProfile {
-  backend: "file-reader-sync";
+  backend: "media-buffer";
   bytesRead: number;
   readOperations: number;
   largestRead: number;
+}
+
+export interface MediaReadGraphNode {
+  assetId: string;
+  size: number;
+  active: boolean;
+  priority: number;
+  occurrences: number;
+}
+
+export interface MediaReadGraphEdge {
+  fromAssetId: string;
+  toAssetId: string;
+  timelineTime: number;
+}
+
+/** Timeline-derived file-use graph consumed by the renderer's media buffer. */
+export interface MediaReadGraph {
+  revision: number;
+  roots: string[];
+  nodes: MediaReadGraphNode[];
+  edges: MediaReadGraphEdge[];
 }
 
 export type EngineRequest =
   | { type: "init"; canvas: OffscreenCanvas; port: MessagePort; width: number; height: number; dpr: number; previewCache?: { enabled: boolean; maxBytes: number } }
   | { type: "attach-canvas"; canvas: OffscreenCanvas; width: number; height: number; dpr: number }
   | { type: "resize"; width: number; height: number; dpr: number }
-  | { type: "render"; sequence: number; time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; timelinePatch?: TimelinePatch; sceneSettingsPatch?: SceneSettingsPatch }
-  | { type: "inspect-media"; requestId: string; assetId: string; source: MediaFileSource }
-  | { type: "inspect-image"; requestId: string; assetId: string; source: MediaFileSource }
-  | { type: "inspect-model"; requestId: string; assetId: string; source: MediaFileSource }
+  | { type: "render"; sequence: number; time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; focusClipId?: string; timelinePatch?: TimelinePatch; sceneSettingsPatch?: SceneSettingsPatch }
+  | { type: "inspect-media"; requestId: string; assetId: string; source: MediaFileSource; stream: ReadableStream<Uint8Array> }
+  | { type: "inspect-image"; requestId: string; assetId: string; source: MediaFileSource; stream: ReadableStream<Uint8Array> }
+  | { type: "inspect-model"; requestId: string; assetId: string; source: MediaFileSource; stream: ReadableStream<Uint8Array> }
+  | { type: "media-buffer-plan"; graph: MediaReadGraph }
+  | { type: "media-buffer-load"; assetId: string; source: MediaFileSource; stream: ReadableStream<Uint8Array> }
   | { type: "release-media"; assetId: string }
   | { type: "decode-audio-preview"; requestId: string; assetId: string; startTime: number; endTime: number }
   | { type: "media-thumbnail"; requestId: string; assetId: string; time: number }
@@ -369,6 +393,7 @@ export type EngineResponse =
   | { type: "pick-result"; requestId: string; clipId?: string }
   | { type: "glsl-compiled"; requestId: string; wgsl: string }
   | { type: "cache"; usedBytes: number; maxBytes: number; entries: number }
+  | { type: "media-buffer-state"; usedBytes: number; maxBytes: number; instanceCount: number; residentAssetIds: string[]; requestedAssetIds: string[]; skippedAssetIds: string[] }
   | {
       type: "render-complete";
       sequence: number;

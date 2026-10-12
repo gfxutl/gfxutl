@@ -7,9 +7,14 @@ interface SceneRecord {
   root: THREE.Object3D;
   fill: THREE.Mesh | THREE.LineSegments | THREE.Points | THREE.Sprite;
   outline?: THREE.Mesh;
+  pickProxy?: THREE.Mesh;
   geometryKey: string;
   shapeSignature: string;
   materialKind: string;
+  materialSignature: string;
+  shadowSignature: string;
+  instancesSignature: string;
+  transformSignature: string;
 }
 
 interface CachedGeometry { geometry: THREE.BufferGeometry; refs: number }
@@ -47,40 +52,65 @@ export class ThreeSceneCore {
               : new THREE.Mesh(geometry, material);
       let root: THREE.Object3D = fill;
       let outline: THREE.Mesh | undefined;
+      let pickProxy: THREE.Mesh | undefined;
       if (outlineWidth > 0 && fill instanceof THREE.Mesh) {
-        const group = new THREE.Group();
         outline = new THREE.Mesh(geometry, createNormalExtrudedOutlineMaterial(spec.material, outlineWidth));
         outline.name = `${spec.id}:outline`;
         // The displaced shell extends beyond the source geometry bounds.
         outline.frustumCulled = false;
         outline.userData.gfxOutlineMode = "normal-extrusion";
         outline.userData.gfxOutlineWidth = outlineWidth;
-        group.add(outline, fill);
+      }
+      if (spec.geometry.kind === "text" && fill instanceof THREE.Mesh) pickProxy = createTextPickProxy(geometry);
+      if (outline || pickProxy) {
+        const group = new THREE.Group();
+        if (outline) group.add(outline);
+        if (pickProxy) group.add(pickProxy);
+        group.add(fill);
         root = group;
       }
-      record = { root, fill, outline, geometryKey, shapeSignature, materialKind };
+      record = { root, fill, outline, pickProxy, geometryKey, shapeSignature, materialKind, materialSignature: "", shadowSignature: "", instancesSignature: "", transformSignature: "" };
       this.objects.set(spec.id, record);
     }
 
-    updateMaterial(record.fill.material, spec.material, this.resolveTexture);
-    if (record.fill instanceof THREE.InstancedMesh) updateInstances(record.fill, spec.instances ?? []);
-    if (record.outline) updateOutlineMaterial(record.outline.material, spec.material);
+    // THREE-OPT: retain materials and touch GPU-facing uniforms only when their spec changed.
+    const materialSignature = JSON.stringify(spec.material ?? {});
+    if (record.materialSignature !== materialSignature) {
+      updateMaterial(record.fill.material, spec.material, this.resolveTexture);
+      if (record.outline) updateOutlineMaterial(record.outline.material, spec.material);
+      record.materialSignature = materialSignature;
+    }
+    const instancesSignature = JSON.stringify(spec.instances ?? []);
+    if (record.fill instanceof THREE.InstancedMesh && record.instancesSignature !== instancesSignature) {
+      updateInstances(record.fill, spec.instances ?? []);
+      record.instancesSignature = instancesSignature;
+    }
     record.fill.renderOrder = spec.renderOrder ?? 0;
     if (record.outline) record.outline.renderOrder = spec.renderOrder ?? 0;
-    record.fill.castShadow = Boolean(spec.castShadow);
-    record.fill.receiveShadow = Boolean(spec.receiveShadow);
-    record.fill.traverse((child) => {
-      child.castShadow = Boolean(spec.castShadow);
-      child.receiveShadow = Boolean(spec.receiveShadow);
-    });
-    applyTransform(record.root, spec);
+    if (record.pickProxy) record.pickProxy.renderOrder = spec.renderOrder ?? 0;
+    const shadowSignature = `${Boolean(spec.castShadow)}:${Boolean(spec.receiveShadow)}`;
+    if (record.shadowSignature !== shadowSignature) {
+      record.fill.traverse((child) => {
+        child.castShadow = Boolean(spec.castShadow);
+        child.receiveShadow = Boolean(spec.receiveShadow);
+      });
+      record.shadowSignature = shadowSignature;
+    }
+    const transformSignature = JSON.stringify(spec.transform ?? {});
+    if (record.transformSignature !== transformSignature) {
+      // THREE-OPT: matrix/world propagation is skipped for material-only animation frames.
+      applyTransform(record.root, spec);
+      record.transformSignature = transformSignature;
+    }
     record.root.name = spec.id;
     record.root.visible = spec.visible ?? true;
     record.root.renderOrder = spec.renderOrder ?? 0;
     record.root.layers.set(THREE.MathUtils.clamp(spec.layer ?? 0, 0, 31));
-    const parent = spec.parentId ? this.objects.get(spec.parentId)?.root ?? this.scene.getObjectByName(spec.parentId) : undefined;
+    // THREE-OPT: all managed roots are indexed; recursive scene name lookup is unnecessary.
+    const parent = spec.parentId ? this.objects.get(spec.parentId)?.root : undefined;
     const destination = parent && canParent(record.root, parent) ? parent : this.scene;
-    destination.add(record.root);
+    // THREE-OPT: Object3D.add reparents and dispatches events; do it only on an actual hierarchy change.
+    if (record.root.parent !== destination) destination.add(record.root);
     return record.root;
   }
 
@@ -113,6 +143,7 @@ export class ThreeSceneCore {
       childMaterials.filter(Boolean).forEach((material) => materials.add(material));
     });
     materials.forEach((material) => material.dispose());
+    record.pickProxy?.geometry.dispose();
     this.releaseGeometry(record.geometryKey);
     this.objects.delete(id);
   }
@@ -124,8 +155,32 @@ export class ThreeSceneCore {
   }
 }
 
+function createTextPickProxy(source: THREE.BufferGeometry) {
+  if (!source.boundingBox) source.computeBoundingBox();
+  const bounds = source.boundingBox;
+  if (!bounds || bounds.isEmpty()) return undefined;
+  const z = bounds.max.z + 0.0001;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute([
+    bounds.min.x, bounds.min.y, z,
+    bounds.max.x, bounds.min.y, z,
+    bounds.max.x, bounds.max.y, z,
+    bounds.min.x, bounds.max.y, z,
+  ], 3));
+  geometry.setIndex([0, 1, 2, 0, 2, 3]);
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  const material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+  material.visible = false;
+  const proxy = new THREE.Mesh(geometry, material);
+  proxy.userData.gfxPickProxy = true;
+  proxy.castShadow = false;
+  proxy.receiveShadow = false;
+  return proxy;
+}
+
 /**
- * Inverted-hull text outline. The source TextGeometry is retained verbatim and
+ * Inverted-hull text outline. The source GfxTextGeometry is retained verbatim and
  * its render position is displaced along the normalized local vertex normal.
  */
 export function createNormalExtrudedOutlineMaterial(spec: SceneMaterialSpec = {}, distance = 0) {
@@ -149,18 +204,20 @@ function canParent(object: THREE.Object3D, parent: THREE.Object3D) {
   return object !== parent;
 }
 
+// THREE-OPT: worker execution is serialized, so one scratch set safely serves all instance updates.
+const instanceMatrix = new THREE.Matrix4();
+const instancePosition = new THREE.Vector3();
+const instanceRotation = new THREE.Euler();
+const instanceQuaternion = new THREE.Quaternion();
+const instanceScale = new THREE.Vector3();
+
 function updateInstances(mesh: THREE.InstancedMesh, instances: NonNullable<SceneObjectSpec["instances"]>) {
-  const matrix = new THREE.Matrix4();
-  const position = new THREE.Vector3();
-  const rotation = new THREE.Euler();
-  const quaternion = new THREE.Quaternion();
-  const scale = new THREE.Vector3();
   instances.forEach((instance, index) => {
-    position.set(...instance.position);
-    rotation.set(...(instance.rotation ?? [0, 0, 0]));
-    quaternion.setFromEuler(rotation);
-    scale.set(...(instance.scale ?? [1, 1, 1]));
-    mesh.setMatrixAt(index, matrix.compose(position, quaternion, scale));
+    instancePosition.set(...instance.position);
+    instanceRotation.set(...(instance.rotation ?? [0, 0, 0]));
+    instanceQuaternion.setFromEuler(instanceRotation);
+    instanceScale.set(...(instance.scale ?? [1, 1, 1]));
+    mesh.setMatrixAt(index, instanceMatrix.compose(instancePosition, instanceQuaternion, instanceScale));
   });
   mesh.instanceMatrix.needsUpdate = true;
   mesh.computeBoundingBox();

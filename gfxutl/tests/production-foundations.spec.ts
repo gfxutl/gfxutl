@@ -116,8 +116,8 @@ test("custom context menu is available in both upper side panes", async ({ page 
 
 test("preview transport is replaced by a hover-expanding timeline time pill", async ({ page }) => {
   await expect(page.locator(".preview-panel > .transport")).toHaveCount(0);
-  const removedXPathExists = await page.evaluate(() => Boolean(document.evaluate('//*[@id="main"]/section[2]/div[2]', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE).singleNodeValue));
-  expect(removedXPathExists).toBe(false);
+  await expect(page.locator(".preview-panel > .preview-tabs")).toBeVisible();
+  await expect(page.locator(".preview-panel > .preview-stage")).toBeVisible();
 
   const pill = page.locator(".timeline-transport-pill");
   await expect(page.locator(".timeline-pill-clock-compact")).toHaveText("00:00:00");

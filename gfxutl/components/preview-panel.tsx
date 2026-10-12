@@ -1,4 +1,4 @@
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Layers3, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useEditor } from "../core/interface";
 import type { TimelineClip } from "../core/interface";
@@ -18,6 +18,9 @@ export function PreviewPanel() {
   const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
   const [poppedOut, setPoppedOut] = useState(false);
   const [surfaceKey, setSurfaceKey] = useState(0);
+  const previewTabs = useMemo(() => state.previewClipTabs
+    .map((id) => state.clips.find((clip) => clip.id === id))
+    .filter((clip): clip is TimelineClip => Boolean(clip)), [state.clips, state.previewClipTabs]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -84,9 +87,10 @@ export function PreviewPanel() {
   useEffect(() => { if (state.playing) setHoveredClipId(null); }, [state.playing]);
 
   const previewObjects = useMemo(() => state.clips
-    .filter((clip) => clip.kind !== "audio" && state.currentTime >= clip.start && state.currentTime < clip.start + clip.duration)
-    .map((clip) => previewBounds(animatedClip(clip, state.currentTime), state.assets.find((asset) => asset.id === clip.assetId)))
-    .sort((a, b) => (b.clip.positionZ ?? 0) - (a.clip.positionZ ?? 0) || a.clip.y - b.clip.y), [state.clips, state.assets, state.currentTime]);
+    .filter((clip) => !state.activePreviewClipId || clip.id === state.activePreviewClipId)
+    .filter((clip) => clip.kind !== "audio" && (state.activePreviewClipId === clip.id || state.currentTime >= clip.start && state.currentTime < clip.start + clip.duration))
+    .map((clip) => previewBounds(animatedClip(clip, state.activePreviewClipId === clip.id ? Math.max(clip.start, Math.min(state.currentTime, clip.start + clip.duration - 1 / state.fps)) : state.currentTime), state.assets.find((asset) => asset.id === clip.assetId)))
+    .sort((a, b) => (b.clip.positionZ ?? 0) - (a.clip.positionZ ?? 0) || a.clip.y - b.clip.y), [state.clips, state.assets, state.currentTime, state.activePreviewClipId, state.fps]);
   const hoveredObject = previewObjects.find((object) => object.clip.id === hoveredClipId);
 
   const pickPoint = async (element: HTMLElement, clientX: number, clientY: number, coalesce = false) => {
@@ -221,6 +225,10 @@ export function PreviewPanel() {
 
   return (
     <section className="preview-panel panel" ref={panelRef}>
+      <div className="preview-tabs" role="tablist" aria-label="プレビュータブ">
+        <button className={`preview-tab preview-tab-composite ${state.activePreviewClipId === null ? "active" : ""}`} role="tab" aria-selected={state.activePreviewClipId === null} aria-label="総合プレビュー" title="総合プレビュー" onClick={() => controller.setPreviewTab(null)}><Layers3 /></button>
+        {previewTabs.map((clip) => <div key={clip.id} className={`preview-tab preview-tab-object ${state.activePreviewClipId === clip.id ? "active" : ""}`} role="tab" tabIndex={0} aria-selected={state.activePreviewClipId === clip.id} title={`${clip.name}のみをプレビュー`} onClick={() => controller.setPreviewTab(clip.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); controller.setPreviewTab(clip.id); } }}><span>{clip.name}</span><button type="button" aria-label={`${clip.name}のプレビューを閉じる`} onClick={(event) => { event.stopPropagation(); controller.closePreviewTab(clip.id); }}><X /></button></div>)}
+      </div>
       <div className={`preview-stage ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""}`} ref={stageRef} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; if (!draggingClipId) setHoveredClipId(null); }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
         event.preventDefault();
         const rect = event.currentTarget.getBoundingClientRect();
@@ -230,7 +238,7 @@ export function PreviewPanel() {
           positionY: ((event.clientY - rect.top) / rect.height - 0.5) * 900,
         });
       }}>
-        {!poppedOut ? <canvas key={surfaceKey} ref={canvasRef} data-camera-projection={state.cameraProjection} data-video-frames={state.videoFramesRendered} data-geometry-objects={state.geometryObjectsReady} data-active-scene-objects={state.activeSceneObjects} data-active-image-objects={state.activeImageObjects} data-playing-audio-objects={state.playingAudioObjects} data-preview-source={state.previewSource} data-cache-frames={state.cachedFramesDisplayed} data-preview-frames={state.previewFramesRendered} /> : <div className="preview-popout-placeholder"><ExternalLink /><span>プレビューは別ウィンドウで表示中です</span><button type="button" onClick={(event) => { event.stopPropagation(); popoutRef.current?.close(); }}>この画面に戻す</button></div>}
+        {!poppedOut ? <canvas key={surfaceKey} ref={canvasRef} data-preview-tab={state.activePreviewClipId ?? "composite"} data-camera-projection={state.cameraProjection} data-video-frames={state.videoFramesRendered} data-geometry-objects={state.geometryObjectsReady} data-active-scene-objects={state.activeSceneObjects} data-active-image-objects={state.activeImageObjects} data-playing-audio-objects={state.playingAudioObjects} data-preview-source={state.previewSource} data-cache-frames={state.cachedFramesDisplayed} data-preview-frames={state.previewFramesRendered} /> : <div className="preview-popout-placeholder"><ExternalLink /><span>プレビューは別ウィンドウで表示中です</span><button type="button" onClick={(event) => { event.stopPropagation(); popoutRef.current?.close(); }}>この画面に戻す</button></div>}
         <div className="safe-area" />
         {!state.playing && hoveredObject && <TransformHandles object={hoveredObject} dragging={draggingClipId === hoveredObject.clip.id} onMove={beginMove} onResize={beginResize} onRotate={beginRotate} />}
       </div>

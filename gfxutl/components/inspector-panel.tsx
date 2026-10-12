@@ -161,7 +161,7 @@ export function InspectorPanel() {
         <button className={tab === "metadata" ? "active" : ""} onClick={() => setTab("metadata")}>メタデータ</button>
       </div>
       {tab !== "inspector" && <div className="selected-clip">
-        <div><strong>{selected?.name ?? background?.name ?? asset?.name ?? "項目未選択"}</strong><small>{selected ? `${selected.duration.toFixed(1)}秒 · ${selected.kind.toUpperCase()}` : background ? "SCENE · 常時表示" : asset ? `${asset.kind.toUpperCase()} · ${formatBytes(asset.size)}` : "メディアまたはタイムラインから選択"}</small></div>
+        <div><strong>{selected?.name ?? background?.name ?? asset?.name ?? "項目未選択"}</strong></div>
       </div>}
       {tab === "inspector" ? <RealtimeLayerInspector clips={state.clips} currentTime={state.currentTime} fps={state.fps} selectedClipId={state.selectedClipId} onSelect={controller.selectClip} /> : tab === "metadata" ? background ? <div className="metadata-view"><div className="metadata-row"><span>名前</span><strong>背景オブジェクト</strong></div><div className="metadata-row"><span>種類</span><strong>SCENE BACKGROUND</strong></div><div className="metadata-row"><span>表示範囲</span><strong>プロジェクト全体</strong></div></div> : <MetadataView clip={selected} asset={asset} fps={state.fps} /> : background ? <div className="inspector-section background-inspector">
         <div className="section-title"><span>背景</span><small>THREE.SCENE</small></div>
@@ -293,7 +293,7 @@ function ClipPropertyActionStack({ clip, allClips }: { clip: TimelineClip; allCl
   const addKind = available.includes(requestedKind) ? requestedKind : available[0];
   return <div className="property-action-stack">
     <div className="property-action-stack-heading">
-      <div><strong>作用スタック</strong><small>上から順にオブジェクトへ作用</small></div>
+      <div><strong>作用スタック</strong></div>
       <span>{actions.length}</span>
     </div>
     <div className="property-action-list">
@@ -605,8 +605,8 @@ function MetadataView({ clip, asset, fps }: { clip?: import("../core/interface")
     ["解像度", asset?.width && asset.height ? `${asset.width} × ${asset.height}` : "—"],
     ["メディア長", asset?.duration ? formatMetadataTime(asset.duration, fps) : "静止画"],
     ["ファイルサイズ", asset ? formatBytes(asset.size) : "—"],
-    ["ソースI/O", asset?.sourceProfile ? `FileReaderSync · ${asset.sourceProfile.readOperations} reads · ${formatBytes(asset.sourceProfile.bytesRead)}` : "—"],
-    ["最大read", asset?.sourceProfile ? formatBytes(asset.sourceProfile.largestRead) : "—"],
+    ["ソースI/O", asset?.sourceProfile ? `Media Buffer · ${asset.sourceProfile.readOperations} chunks · ${formatBytes(asset.sourceProfile.bytesRead)}` : "—"],
+    ["最大chunk", asset?.sourceProfile ? formatBytes(asset.sourceProfile.largestRead) : "—"],
     ["クリップ開始", clip ? formatMetadataTime(clip.start, fps) : "—"],
     ["クリップ長", clip ? formatMetadataTime(clip.duration, fps) : "—"],
     ["ソースオフセット", clip ? formatMetadataTime(clip.offset, fps) : "—"],
