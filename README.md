@@ -27,6 +27,8 @@ npm run test:e2e
 
 File System Access API、Local Font Access API、WebGPU、WebCodecs、OffscreenCanvasを利用するため、Chromium系ブラウザのlocalhostまたはHTTPS環境を推奨します。利用できない機能は、可能な範囲でファイル入力、組み込みフォント、WebGL 2へフォールバックします。
 
+本番ビルドはmanifest、192／512 pxアイコン、Service Workerを含むインストール可能なPWAです。対応するデスクトップChromiumではWindow Controls Overlayを要求し、ネイティブ操作欄の実測高をペインタブ高へ同期します。Windows／Linux／ChromeOSでは右端、macOSでは左端の操作領域を避け、macOSのメディアタブは右揃えになります。通常のタブ表示やOverlay非対応環境では従来の29 pxレイアウトを維持します。
+
 ## 主な機能
 
 ### 自由配置タイムライン

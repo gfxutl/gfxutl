@@ -7,6 +7,7 @@ import { PanelResizers } from "./components/panel-resizers";
 import { useEditor } from "./core/interface";
 import { useEffect } from "react";
 import { EditorContextMenu } from "./components/editor-context-menu";
+import { observeWindowControlsOverlay } from "./core/interface/window-controls-overlay";
 
 export function App() {
   const { state, controller } = useEditor();
@@ -17,6 +18,10 @@ export function App() {
     root.style.setProperty("--right-w", `${state.layout.rightPanelWidth}px`);
     root.style.setProperty("--timeline-h", `${state.layout.timelineHeight}px`);
   }, [state.layout]);
+  useEffect(() => {
+    const root = document.getElementById("main");
+    return root ? observeWindowControlsOverlay(root) : undefined;
+  }, []);
   useEffect(() => {
     const controlKeyboard = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
