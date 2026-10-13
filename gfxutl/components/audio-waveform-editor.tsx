@@ -1,4 +1,9 @@
-import { Pause, Play, RotateCcw, SlidersHorizontal } from "lucide-react";
+import {
+  ArrowReset20Regular as RotateCcw,
+  Options16Regular as SlidersHorizontal,
+  Pause16Regular as Pause,
+  Play16Regular as Play,
+} from "@fluentui/react-icons";
 import { useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { resolveAudioProcessing } from "../core/interface/audio-processing";
 import { useEditor, type AudioProcessingSpec, type MediaAsset, type TimelineClip } from "../core/interface";

@@ -1,4 +1,10 @@
-import { CheckCircle2, FileVideo2, Gauge, MonitorUp, Settings2 } from "lucide-react";
+import {
+  CheckmarkCircle16Regular as CheckCircle2,
+  ArrowExportUp20Regular as MonitorUp,
+  Gauge16Regular as Gauge,
+  Settings16Regular as Settings2,
+  VideoClip16Regular as FileVideo2,
+} from "@fluentui/react-icons";
 import { useEditor } from "../core/interface";
 import { Button } from "./ui/button";
 

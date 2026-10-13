@@ -1,4 +1,13 @@
-import { AudioLines, Database, FileDown, FilePlus2, FolderOpen, Save, Settings2, Trash2 } from "lucide-react";
+import {
+  Database16Regular as Database,
+  Delete16Regular as Trash2,
+  DocumentAdd16Regular as FilePlus2,
+  DocumentArrowDown16Regular as FileDown,
+  FolderOpen16Regular as FolderOpen,
+  Save16Regular as Save,
+  Settings16Regular as Settings2,
+  SoundWaveCircle16Regular as AudioLines,
+} from "@fluentui/react-icons";
 import { useEditor } from "../core/interface";
 import { Button } from "./ui/button";
 

@@ -1,4 +1,16 @@
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Eye, EyeOff, Plus, SlidersHorizontal, Trash2 } from "lucide-react";
+import {
+  Add16Regular as Plus,
+  ArrowDown16Regular as ArrowDown,
+  ArrowHookDownRight16Regular,
+  ArrowUp16Regular as ArrowUp,
+  ChevronDown16Regular as ChevronDown,
+  ChevronRight12Regular,
+  ChevronRight16Regular as ChevronRight,
+  Delete16Regular as Trash2,
+  Eye16Regular as Eye,
+  EyeOff16Regular as EyeOff,
+  Options16Regular as SlidersHorizontal,
+} from "@fluentui/react-icons";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { bracketMatching, indentOnInput, indentUnit, StreamLanguage } from "@codemirror/language";
 import { shader } from "@codemirror/legacy-modes/mode/clike";
@@ -126,7 +138,7 @@ function SceneKeyframeEditor({ scene, currentTime, fps }: { scene: SceneSettings
   const labels = new Map(properties.map((item) => [item.property, item.label]));
   const keys = scene.keyframes ?? [];
   return <details className="scene-keyframes">
-    <summary><span>シーンアニメーション</span><small>{keys.length} KEYS</small></summary>
+    <summary><ChevronRight12Regular /><span>シーンアニメーション</span><small>{keys.length} KEYS</small></summary>
     <div className="scene-keyframe-body">
       <div className="keyframe-add-row"><select aria-label="シーンキーフレームのプロパティ" value={selected.property} onChange={(event) => setProperty(event.target.value)}>{properties.map((item) => <option key={item.property} value={item.property}>{item.label}</option>)}</select><Button size="sm" onClick={() => controller.addSceneKeyframe(selected.property, selected.value)}><Plus /> 現在値</Button></div>
       <small>{currentTime.toFixed(3)}s（{Math.round(currentTime * fps)}f）に記録</small>
@@ -488,7 +500,7 @@ function RealtimeLayerInspector({ clips, currentTime, fps, selectedClipId, onSel
               <span>3D L{clip.layer ?? 0}</span>
               <span>{elapsed.toFixed(2)} / {clip.duration.toFixed(2)}s</span>
             </span>
-            {(clip.groupId || clip.parentId) && <span className="layer-parent">↳ {names.get(clip.groupId ?? clip.parentId!) ?? "親レイヤー"}</span>}
+            {(clip.groupId || clip.parentId) && <span className="layer-parent"><ArrowHookDownRight16Regular />{names.get(clip.groupId ?? clip.parentId!) ?? "親レイヤー"}</span>}
           </span>
         </button>;
       })}

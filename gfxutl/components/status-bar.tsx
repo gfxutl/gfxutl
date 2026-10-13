@@ -1,4 +1,4 @@
-import { Database, Gauge, Trash2 } from "lucide-react";
+import { Database16Regular as Database, Delete16Regular as Trash2, Gauge16Regular as Gauge } from "@fluentui/react-icons";
 import { useEditor } from "../core/interface";
 import { Button } from "./ui/button";
 import { Tooltip } from "./ui/tooltip";

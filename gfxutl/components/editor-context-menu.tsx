@@ -1,4 +1,20 @@
-import { Box, Clipboard, ClipboardPaste, Copy, Flag, FolderTree, Magnet, Scissors, Sparkles, Type, Circle, Undo2, Redo2, Pentagon, Trash2 } from "lucide-react";
+import {
+  ArrowRedo16Regular as Redo2,
+  ArrowUndo16Regular as Undo2,
+  Circle16Regular as Circle,
+  Clipboard16Regular as Clipboard,
+  ClipboardPaste16Regular as ClipboardPaste,
+  Copy16Regular as Copy,
+  Cube16Regular as Box,
+  Cut16Regular as Scissors,
+  Delete16Regular as Trash2,
+  Flag16Regular as Flag,
+  FolderList16Regular as FolderTree,
+  Pentagon20Regular as Pentagon,
+  Sparkle16Regular as Sparkles,
+  Target16Regular as Magnet,
+  TextFont16Regular as Type,
+} from "@fluentui/react-icons";
 import { useEffect, type MouseEvent } from "react";
 import { useEditor } from "../core/interface";
 

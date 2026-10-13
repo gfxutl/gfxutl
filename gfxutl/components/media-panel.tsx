@@ -1,4 +1,24 @@
-import { ArrowLeft, AudioLines, Box, ChevronDown, ChevronRight, File, FileImage, FileVideo, Folder, FolderOpen, Grid2X2, HardDrive, Image, ListTree, Plus, RefreshCw, RotateCcw, Search, X } from "lucide-react";
+import {
+  Add16Regular as Plus,
+  ArrowLeft16Regular as ArrowLeft,
+  ArrowReset20Regular as RotateCcw,
+  ArrowSync16Regular as RefreshCw,
+  ChevronDown16Regular as ChevronDown,
+  ChevronRight16Regular as ChevronRight,
+  Cube16Regular as Box,
+  Dismiss16Regular as X,
+  Document16Regular as File,
+  DocumentImage16Regular as FileImage,
+  Folder16Regular as Folder,
+  FolderOpen16Regular as FolderOpen,
+  Grid16Regular as Grid2X2,
+  HardDrive16Regular as HardDrive,
+  Image16Regular as Image,
+  Search16Regular as Search,
+  SoundWaveCircle16Regular as AudioLines,
+  TextBulletListTree16Regular as ListTree,
+  VideoClip16Regular as FileVideo,
+} from "@fluentui/react-icons";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useEditor } from "../core/interface";
 import type { MediaAsset } from "../core/interface";

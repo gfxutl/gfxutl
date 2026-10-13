@@ -1,4 +1,4 @@
-import { Check, ChevronDown } from "lucide-react";
+import { Checkmark16Regular as Check, ChevronDown16Regular as ChevronDown } from "@fluentui/react-icons";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { FontFaceInfo } from "../core/interface";
 

@@ -1,4 +1,19 @@
-import { ChevronsLeft, ChevronsRight, Expand, ExternalLink, Pause, Play, Repeat2, SkipBack, SkipForward } from "lucide-react";
+import {
+  ArrowRepeatAll16Regular as Repeat2,
+  ChevronDoubleLeft16Regular as ChevronsLeft,
+  ChevronDoubleRight16Regular as ChevronsRight,
+  Cube16Regular,
+  FolderList16Regular,
+  FullScreenMaximize16Regular as Expand,
+  MusicNote216Regular,
+  Next16Regular as SkipForward,
+  Open16Regular as ExternalLink,
+  Pause16Regular as Pause,
+  Play16Regular as Play,
+  Previous16Regular as SkipBack,
+  TextT12Regular,
+  VideoClip16Regular,
+} from "@fluentui/react-icons";
 import { memo, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { clampTimelineZoom, MIN_GROUP_HEIGHT, timelineClipHeight, timelineGroupDescendants, useEditor } from "../core/interface";
 import type { TimelineClip } from "../core/interface";
@@ -377,7 +392,7 @@ const Clip = memo(function Clip({ clip, waveformPeaks, pxPerSecond, selected, du
       style={{ left: clip.start * pxPerSecond, top: clip.y, width: Math.max(MIN_CLIP_WIDTH, clip.duration * pxPerSecond), height: timelineClipHeight(clip), zIndex: dragging ? 30_000 : clip.kind === "group" ? 100 + nestingDepth * 100 + (selected ? 1 : 0) : Math.max(1_000, 10_000 + nestingDepth * 100 - Math.round(clip.y)), "--clip-color": clip.color } as React.CSSProperties}
     >
       {(dragging || resizing) && <output className="clip-drag-readout">{resizing ? `${clip.duration.toFixed(2)}s` : `${clip.start.toFixed(2)}s · y ${Math.round(clip.y)}`}</output>}
-      <span>{clip.kind === "group" ? "▣" : clip.kind === "title" ? "T" : clip.kind === "audio" ? "♫" : clip.kind === "object" ? "◆" : "◈"}</span><strong>{clip.name}{clip.kind === "group" ? ` · ${childCount}` : ""}</strong>
+      <span className="timeline-clip-kind">{clip.kind === "group" ? <FolderList16Regular /> : clip.kind === "title" ? <TextT12Regular /> : clip.kind === "audio" ? <MusicNote216Regular /> : clip.kind === "object" ? <Cube16Regular /> : <VideoClip16Regular />}</span><strong>{clip.name}{clip.kind === "group" ? ` · ${childCount}` : ""}</strong>
       {selected && (clip.keyframes ?? []).map((keyframe) => <i className="timeline-keyframe" key={keyframe.id} title={`${keyframe.property}: ${keyframe.value} · ドラッグで時刻変更`} style={{ left: `${Math.max(0, Math.min(100, keyframe.time / Math.max(0.001, clip.duration) * 100))}%` }} onPointerDown={(event) => beginKeyframeDrag(keyframe.id, keyframe.time, event)} onClick={(event) => { event.stopPropagation(); controller.setTime(clip.start + keyframe.time); controller.selectClip(clip.id); }} />)}
       {clip.kind === "audio" && <div className="waveform" data-waveform-source={waveformPeaks?.length ? "media" : "pending"}>{(waveformPeaks?.length ? waveformPeaks : Array.from({ length: 24 }, () => 0.08)).map((peak, i) => <i key={i} style={{ height: `${Math.max(4, Math.min(100, peak * 100))}%` }} />)}</div>}
       {clip.kind === "video" && <div className="frame-strip">{Array.from({ length: Math.max(3, Math.floor(clip.duration / 3)) }, (_, i) => <i key={i} />)}</div>}

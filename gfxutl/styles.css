@@ -38,7 +38,7 @@ body.is-resizing-ew, body.is-resizing-ew * { cursor: col-resize !important; }
 body.is-resizing-ns, body.is-resizing-ns * { cursor: row-resize !important; }
 button, input { font: inherit; }
 button { color: inherit; }
-svg { width: 16px; height: 16px; stroke-width: 1.7; }
+svg { width: 16px; height: 16px; }
 
 .panel { position: absolute; background: var(--panel); border-color: var(--line); border-style: solid; }
 .spacer { flex: 1; }
@@ -441,7 +441,8 @@ svg { width: 16px; height: 16px; stroke-width: 1.7; }
 .layer-progress i { display: block; height: 100%; min-width: 1px; opacity: .85; }
 .layer-metrics { display: grid; grid-template-columns: 38px 45px 45px minmax(0, 1fr); gap: 3px; color: #71767b; font: 7px "IBM Plex Mono", monospace; }
 .layer-metrics span:last-child { overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
-.layer-parent { overflow: hidden; margin-top: -1px; color: #5f6469; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.layer-parent { overflow: hidden; margin-top: -1px; display: flex; align-items: center; gap: 2px; color: #5f6469; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.layer-parent svg { flex: none; width: 8px; height: 8px; }
 .layer-inspector-empty { min-height: 190px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; color: #4e5358; text-align: center; }
 .layer-inspector-empty span { font: 8px "IBM Plex Mono", monospace; letter-spacing: .12em; }
 .layer-inspector-empty small { color: #5d6267; font-size: 8px; }
@@ -584,8 +585,8 @@ svg { width: 16px; height: 16px; stroke-width: 1.7; }
 .scene-keyframes { margin-top: 10px; border: 1px solid #292d31; border-radius: 4px; background: #0d0f11; }
 .scene-keyframes > summary { display: flex; min-height: 31px; padding: 0 8px; align-items: center; gap: 7px; color: #a7aaad; font-size: 9px; cursor: pointer; list-style: none; }
 .scene-keyframes > summary::-webkit-details-marker { display: none; }
-.scene-keyframes > summary::before { content: "›"; color: #666b70; transform: rotate(0deg); transition: transform .12s; }
-.scene-keyframes[open] > summary::before { transform: rotate(90deg); }
+.scene-keyframes > summary > svg { flex: none; width: 10px; height: 10px; color: #666b70; transform: rotate(0deg); transition: transform .12s; }
+.scene-keyframes[open] > summary > svg { transform: rotate(90deg); }
 .scene-keyframes > summary small { margin-left: auto; color: #62676b; font: 7px "IBM Plex Mono", monospace; }
 .scene-keyframe-body { padding: 7px; border-top: 1px solid #292d31; }
 .keyframe-add-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; }
@@ -696,7 +697,8 @@ svg { width: 16px; height: 16px; stroke-width: 1.7; }
 .group-resize-se { right: -5px; bottom: -5px; cursor: nwse-resize; }
 .group-resize-sw { left: -5px; bottom: -5px; cursor: nesw-resize; }
 .clip-drag-readout { position: absolute; left: 0; top: -24px; z-index: 70; height: 19px; display: flex; align-items: center; padding: 0 6px; border: 1px solid #4a4e52; border-radius: 3px; background: #181a1ded; color: #fff; box-shadow: 0 4px 12px #0008; font: 8px "IBM Plex Mono", monospace; white-space: nowrap; pointer-events: none; }
-.timeline-clip > span { position: absolute; z-index: 3; left: 5px; top: 3px; font: 600 7px "IBM Plex Mono", monospace; opacity: .8; }
+.timeline-clip > .timeline-clip-kind { position: absolute; z-index: 3; left: 4px; top: 3px; display: grid; place-items: center; opacity: .8; }
+.timeline-clip-kind svg { width: 9px; height: 9px; }
 .timeline-clip > strong { position: absolute; z-index: 3; left: 17px; top: 3px; right: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 7px; font-weight: 500; text-shadow: 0 1px 2px #000; }
 .timeline-clip .timeline-keyframe { position: absolute; z-index: 12; bottom: 3px; width: 7px; height: 7px; margin-left: -3px; border: 1px solid #111; background: #fff; transform: rotate(45deg); cursor: pointer; }
 .timeline-clip .clip-trim-handle { position: absolute; z-index: 20; top: 0; bottom: 0; width: 8px; background: #ffffff12; cursor: ew-resize; touch-action: none; }

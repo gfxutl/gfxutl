@@ -1,4 +1,4 @@
-import { ExternalLink, Layers3, X } from "lucide-react";
+import { Dismiss16Regular as X, Layer20Regular as Layers3, Open16Regular as ExternalLink } from "@fluentui/react-icons";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useEditor } from "../core/interface";
 import type { TimelineClip } from "../core/interface";
