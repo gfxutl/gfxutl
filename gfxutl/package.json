@@ -7,8 +7,7 @@
     "build:naga": "cargo build --manifest-path core/naga-wasm/Cargo.toml --release --target wasm32-unknown-unknown && wasm-bindgen --target web --out-dir core/naga-wasm/pkg --out-name naga_wasm core/naga-wasm/target/wasm32-unknown-unknown/release/gfxutl_naga_wasm.wasm",
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
-    "preview": "vite preview --host 0.0.0.0",
-    "test:e2e": "playwright test"
+    "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",
@@ -30,7 +29,6 @@
     "three.regular.helvetiker": "^1.0.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.63.0",
     "@types/node": "^26.6.4",
     "@types/opentype.js": "^1.3.10",
     "@types/react": "latest",

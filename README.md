@@ -21,8 +21,6 @@ npm run build
 # 本番ビルドのプレビュー
 npm run preview
 
-# Playwright E2Eテスト
-npm run test:e2e
 ```
 
 File System Access API、Local Font Access API、WebGPU、WebCodecs、OffscreenCanvasを利用するため、Chromium系ブラウザのlocalhostまたはHTTPS環境を推奨します。利用できない機能は、可能な範囲でファイル入力、組み込みフォント、WebGL 2へフォールバックします。
