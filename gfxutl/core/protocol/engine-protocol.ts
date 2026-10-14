@@ -17,7 +17,7 @@ export type GeometryKind =
   | "dodecahedron" | "icosahedron" | "octahedron" | "plane"
   | "ring" | "sphere" | "tetrahedron" | "torus" | "torusKnot"
   | "lathe" | "shape" | "extrude" | "tube" | "polyhedron"
-  | "edges" | "wireframe" | "buffer" | "text";
+  | "edges" | "wireframe" | "buffer" | "text" | "text2d";
 
 export type MaterialKind = "basic" | "lambert" | "phong" | "standard" | "physical" | "toon" | "normal";
 export type BlendMode = "normal" | "add" | "multiply" | "subtract" | "none";
@@ -43,8 +43,12 @@ export interface GeometrySpec {
   drawRange?: { start: number; count: number };
   text?: string;
   fontId?: string;
+  fontFamily?: string;
   size?: number;
   depth?: number;
+  color?: number;
+  outlineColor?: number;
+  outlineWidth?: number;
   curveSegments?: number;
   bevelEnabled?: boolean;
   bevelThickness?: number;

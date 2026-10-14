@@ -75,6 +75,8 @@ export interface TimelineClip {
   primitive?: "mesh" | "points" | "line" | "sprite";
   particleSystem?: import("../protocol/engine-protocol").ParticleSystemSpec;
   text?: string;
+  /** Legacy titles without this field are 3D text. */
+  textMode?: "2d" | "3d";
   fontId?: string;
   fontFamily?: string;
   fontSize?: number;

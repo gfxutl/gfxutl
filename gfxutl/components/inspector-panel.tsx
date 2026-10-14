@@ -33,7 +33,10 @@ function keyframeProperties(clip: TimelineClip): Array<[KeyframeProperty, string
   const properties = [...BASE_KEYFRAME_PROPERTIES];
   if (clip.kind === "video") properties.push(["cropLeft", "クロップ 左"], ["cropRight", "クロップ 右"], ["cropTop", "クロップ 上"], ["cropBottom", "クロップ 下"]);
   if (clip.kind === "video" || clip.kind === "audio") properties.push(["volume", "音量"], ["pan", "パン"], ["speed", "速度"]);
-  if (clip.kind === "title") properties.push(["fontSize", "文字サイズ"], ["textDepth", "文字の奥行き"], ["textOutlineWidth", "輪郭の太さ"]);
+  if (clip.kind === "title") {
+    properties.push(["fontSize", "文字サイズ"], ["textOutlineWidth", "輪郭の太さ"]);
+    if (clip.textMode !== "2d") properties.push(["textDepth", "文字の奥行き"]);
+  }
   if (clip.kind === "object") {
     properties.push(["instanceCount", "インスタンス数"], ["instanceSpacing", "インスタンス間隔"]);
     for (const [key, label] of [["color", "材質 色"], ["emissive", "材質 発光色"], ["emissiveIntensity", "材質 発光強度"], ["roughness", "材質 粗さ"], ["metalness", "材質 金属度"], ["clearcoat", "材質 クリアコート"], ["transmission", "材質 透過"], ["ior", "材質 IOR"]] as const) properties.push([`material.${key}`, label]);
@@ -234,12 +237,12 @@ export function InspectorPanel() {
       </div> : <>
       <div className="property-base-heading"><span>素体</span><small>{selected.kind.toUpperCase()} OBJECT</small></div>
       {selected.kind === "title" && <div className="inspector-section text-inspector">
-        <div className="section-title"><span>テキストメッシュ</span><small>THREE.TEXT</small></div>
+        <div className="section-title"><span>{selected.textMode === "2d" ? "2D Text" : "3D Text"}</span><small>{selected.textMode === "2d" ? "CANVAS 2D" : "THREE.TEXT"}</small></div>
         <div className="section-body">
-          <label className="text-editor-field"><span>内容</span><textarea aria-label="テキスト内容" value={selected.text ?? selected.name} onChange={(event) => controller.updateClip(selected.id, { text: event.target.value, name: event.target.value.split("\n")[0].slice(0, 36) || "Text" })} /></label>
+          <label className="text-editor-field"><span>内容</span><textarea aria-label="テキスト内容" value={selected.text ?? selected.name} onChange={(event) => controller.updateClip(selected.id, { text: event.target.value, name: event.target.value.split("\n")[0].slice(0, 36) || (selected.textMode === "2d" ? "2D Text" : "3D Text") })} /></label>
           <FontPicker fonts={state.fonts} value={selected.fontId} loadPreview={controller.loadFontPreview} onChange={(fontId) => void controller.setTextFont(selected.id, fontId)} />
-          <div className="font-access-row"><small>{selected.fontFamily ?? "Helvetiker"}</small><Button size="sm" variant="ghost" onClick={controller.loadFonts}>{state.fonts.length ? "フォントを再読込" : "ローカルフォントを読込"}</Button></div>
-          <div className="field-grid"><NumberField label="サイズ" value={selected.fontSize ?? 1.2} onChange={(value) => controller.updateClip(selected.id, { fontSize: Math.max(0.01, value) })} /><NumberField label="奥行き" value={selected.textDepth ?? 0.12} onChange={(value) => controller.updateClip(selected.id, { textDepth: Math.max(0, value) })} /></div>
+          <div className="font-access-row"><small>{selected.fontFamily ?? (selected.textMode === "2d" ? "sans-serif" : "Helvetiker")}</small><Button size="sm" variant="ghost" onClick={controller.loadFonts}>{state.fonts.length ? "フォントを再読込" : "ローカルフォントを読込"}</Button></div>
+          <div className="field-grid"><NumberField label="サイズ" value={selected.fontSize ?? 1.2} onChange={(value) => controller.updateClip(selected.id, { fontSize: Math.max(0.01, value) })} />{selected.textMode !== "2d" && <NumberField label="奥行き" value={selected.textDepth ?? 0.12} onChange={(value) => controller.updateClip(selected.id, { textDepth: Math.max(0, value) })} />}</div>
           <label className="color-field"><span>色</span><input aria-label="テキスト色" type="color" value={`#${(selected.textColor ?? 0x202020).toString(16).padStart(6, "0")}`} onChange={(event) => controller.updateClip(selected.id, { textColor: Number.parseInt(event.target.value.slice(1), 16) })} /></label>
           <div className="text-decoration-title">枠線</div>
           <div className="field-grid"><NumberField label="太さ" value={selected.textOutlineWidth ?? 0.02} onChange={(value) => controller.updateClip(selected.id, { textOutlineWidth: Math.max(0, value) })} /><label className="compact-color-field"><span>色</span><input aria-label="枠線色" type="color" value={`#${(selected.textOutlineColor ?? 0xffffff).toString(16).padStart(6, "0")}`} onChange={(event) => controller.updateClip(selected.id, { textOutlineColor: Number.parseInt(event.target.value.slice(1), 16) })} /></label></div>

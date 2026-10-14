@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import { distance, float, hue, length, max, normalLocal, positionLocal, pow, saturation, smoothstep, texture as textureNode, uv, vec2, vec3, vec4 } from "three/tsl";
 import type { SceneMaterialSpec, SceneObjectSpec } from "../protocol/engine-protocol";
 import { createGeometry } from "./three-geometry-factory";
+import { loadBuiltInObjectClass } from "./built-in-objects/object-loader";
 
 interface SceneRecord {
   root: THREE.Object3D;
@@ -29,7 +30,7 @@ export class ThreeSceneCore {
 
   getObject(id: string) { return this.objects.get(id)?.root; }
 
-  upsert(spec: SceneObjectSpec) {
+  async upsert(spec: SceneObjectSpec) {
     const geometryKey = JSON.stringify(spec.geometry);
     const outlineWidth = Math.max(0, spec.material?.outlineWidth ?? 0);
     const shapeSignature = `${geometryKey}:${outlineWidth}:${spec.instances?.length ?? 0}`;
@@ -40,7 +41,8 @@ export class ThreeSceneCore {
 
     if (!record || record.shapeSignature !== shapeSignature || record.materialKind !== materialKind) {
       if (record) this.remove(spec.id);
-      const geometry = this.acquireGeometry(geometryKey, spec);
+      const ObjectClass = await loadBuiltInObjectClass(spec.geometry.kind);
+      const geometry = await this.acquireGeometry(geometryKey, spec);
       const material = isLine ? createLineMaterial(spec.material)
         : primitive === "points" ? createPointsMaterial(spec.material)
           : primitive === "sprite" ? createSpriteMaterial(spec.material)
@@ -49,7 +51,7 @@ export class ThreeSceneCore {
         : primitive === "points" ? new THREE.Points(geometry, material as THREE.PointsMaterial)
           : primitive === "sprite" ? new THREE.Sprite(material as THREE.SpriteMaterial)
             : spec.instances?.length ? new THREE.InstancedMesh(geometry, material, spec.instances.length)
-              : new THREE.Mesh(geometry, material);
+              : new ObjectClass(geometry, material);
       let root: THREE.Object3D = fill;
       let outline: THREE.Mesh | undefined;
       let pickProxy: THREE.Mesh | undefined;
@@ -114,10 +116,10 @@ export class ThreeSceneCore {
     return record.root;
   }
 
-  private acquireGeometry(key: string, spec: SceneObjectSpec) {
+  private async acquireGeometry(key: string, spec: SceneObjectSpec) {
     const cached = this.geometries.get(key);
     if (cached) { cached.refs++; return cached.geometry; }
-    const geometry = createGeometry(spec.geometry);
+    const geometry = await createGeometry(spec.geometry);
     this.geometries.set(key, { geometry, refs: 1 });
     return geometry;
   }
@@ -343,7 +345,8 @@ function applyMaterialTextures(material: THREE.Material, spec: SceneMaterialSpec
   let changed = false;
   for (const [property, assetId, usage] of assignments) {
     if (!(property in mutable)) continue;
-    const next = assetId ? resolveTexture?.(assetId, usage) ?? null : null;
+    const objectMap = property === "map" ? material.userData.gfxObjectMap as THREE.Texture | undefined : undefined;
+    const next = assetId ? resolveTexture?.(assetId, usage) ?? null : objectMap ?? null;
     if (mutable[property] !== next) { mutable[property] = next; changed = true; }
   }
   if (changed) material.needsUpdate = true;

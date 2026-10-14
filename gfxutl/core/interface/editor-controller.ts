@@ -778,12 +778,20 @@ export class EditorController {
   private sceneObjectForClip(clip: TimelineClip, renderOrder: number): SceneObjectSpec | undefined {
     if (clip.kind !== "title" && clip.kind !== "object") return undefined;
     if (clip.particleSystem) return undefined;
+    const isText2D = clip.kind === "title" && clip.textMode === "2d";
     const geometry = clip.kind === "title"
-      ? {
-          id: `${clip.id}:text`, kind: "text" as const, text: clip.text ?? clip.name,
-          fontId: clip.fontId, size: clip.fontSize ?? 1.2, depth: clip.textDepth ?? 0.12,
-          curveSegments: 8, bevelEnabled: false,
-        }
+      ? isText2D
+        ? {
+            id: `${clip.id}:text2d`, kind: "text2d" as const, text: clip.text ?? clip.name,
+            fontId: clip.fontId, fontFamily: clip.fontFamily, size: clip.fontSize ?? 1.2,
+            color: clip.textColor ?? 0x202020, outlineColor: clip.textOutlineColor ?? 0xffffff,
+            outlineWidth: clip.textOutlineWidth ?? 0,
+          }
+        : {
+            id: `${clip.id}:text`, kind: "text" as const, text: clip.text ?? clip.name,
+            fontId: clip.fontId, fontFamily: clip.fontFamily, size: clip.fontSize ?? 1.2, depth: clip.textDepth ?? 0.12,
+            curveSegments: 8, bevelEnabled: false,
+          }
       : clip.geometry;
     if (!geometry) return undefined;
     const visual = applySceneClipEffects(clip);
@@ -795,14 +803,14 @@ export class EditorController {
       primitive: clip.primitive ?? "mesh",
       material: {
         kind: clip.kind === "title" ? "basic" : clip.material?.kind ?? "standard",
-        color: clip.kind === "title" ? clip.textColor ?? 0x202020 : clip.material?.color ?? clip.textColor ?? 0x3d73a0,
+        color: clip.kind === "title" ? isText2D ? 0xffffff : clip.textColor ?? 0x202020 : clip.material?.color ?? clip.textColor ?? 0x3d73a0,
         ...clip.material,
         effects: clip.effects ?? [],
         opacity: visual.opacity,
         side: clip.kind === "title" ? "double" : clip.material?.side ?? "front",
-        depthTest: true, depthWrite: (clip.opacity ?? 100) >= 100, transparent: true,
-        outlineColor: clip.kind === "title" ? clip.textOutlineColor ?? 0xffffff : undefined,
-        outlineWidth: clip.kind === "title" ? clip.textOutlineWidth ?? 0.02 : undefined,
+        depthTest: true, depthWrite: isText2D ? false : (clip.opacity ?? 100) >= 100, transparent: true,
+        outlineColor: clip.kind === "title" && !isText2D ? clip.textOutlineColor ?? 0xffffff : undefined,
+        outlineWidth: clip.kind === "title" && !isText2D ? clip.textOutlineWidth ?? 0.02 : undefined,
       },
       transform: {
         position: [visual.positionX, visual.positionY, (clip.positionZ ?? 0) / 100],
@@ -1278,20 +1286,29 @@ export class EditorController {
     if (this.state.playing) this.syncAudioPlayback(true, true);
   };
 
-  addTextObject = (placement?: Partial<Pick<ContextMenuState, "time" | "timelineY" | "positionX" | "positionY">>) => {
+  private addTextObjectWithMode = (textMode: "2d" | "3d", placement?: Partial<Pick<ContextMenuState, "time" | "timelineY" | "positionX" | "positionY">>) => {
     const id = crypto.randomUUID();
     const start = this.snapTime(placement?.time ?? this.state.currentTime);
     const stagger = this.objectStagger(start, placement?.positionX ?? 0, placement?.positionY ?? 0);
+    const is2D = textMode === "2d";
     const clip: TimelineClip = {
-      id, name: "Text", text: "Text", kind: "title", color: "#9169b6", start,
+      id, name: `${textMode.toUpperCase()} Text`, text: "Text", textMode, kind: "title", color: is2D ? "#5f8fb5" : "#9169b6", start,
       y: Math.max(0, placement?.timelineY ?? 32), duration: 5, offset: 0,
       positionX: (placement?.positionX ?? 0) + stagger.x, positionY: (placement?.positionY ?? 0) + stagger.y,
       positionZ: 0,
-      scale: 100, scaleX: 100, scaleY: 100, rotation: 0, opacity: 100, fontSize: 1.2, textDepth: 0.12,
-      textColor: 0x202020, textOutlineColor: 0xffffff, textOutlineWidth: 0.02, fontFamily: "Helvetiker",
+      scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: 0, rotationY: 0, opacity: 100, fontSize: 1.2,
+      textDepth: is2D ? undefined : 0.12, textColor: 0x202020, textOutlineColor: 0xffffff,
+      textOutlineWidth: is2D ? 0 : 0.02, fontFamily: is2D ? "sans-serif" : "Helvetiker",
     };
     this.insertObjectClip(clip);
   };
+
+  /** Backwards-compatible API: the original Text object is now explicitly 3D Text. */
+  addTextObject = (placement?: Partial<Pick<ContextMenuState, "time" | "timelineY" | "positionX" | "positionY">>) => this.addText3DObject(placement);
+
+  addText3DObject = (placement?: Partial<Pick<ContextMenuState, "time" | "timelineY" | "positionX" | "positionY">>) => this.addTextObjectWithMode("3d", placement);
+
+  addText2DObject = (placement?: Partial<Pick<ContextMenuState, "time" | "timelineY" | "positionX" | "positionY">>) => this.addTextObjectWithMode("2d", placement);
 
   addGroupObject = (placement?: Partial<Pick<ContextMenuState, "time" | "timelineY">>) => {
     const id = crypto.randomUUID();
@@ -1378,6 +1395,7 @@ export class EditorController {
 
   setTextFont = async (clipId: string, fontId: string) => {
     const entry = this.localFontEntries.get(fontId);
+    const clip = this.state.clips.find((item) => item.id === clipId);
     if (entry && !this.registeredFonts.has(fontId)) {
       try {
         const buffer = await (await entry.blob()).arrayBuffer();
@@ -1388,7 +1406,7 @@ export class EditorController {
         return;
       }
     }
-    this.updateClip(clipId, { fontId: entry ? fontId : undefined, fontFamily: entry?.family ?? "Helvetiker" });
+    this.updateClip(clipId, { fontId: entry ? fontId : undefined, fontFamily: entry?.family ?? (clip?.textMode === "2d" ? "sans-serif" : "Helvetiker") });
   };
 
   loadFontPreview = (fontId: string) => {

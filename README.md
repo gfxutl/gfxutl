@@ -46,13 +46,13 @@ File System Access API、Local Font Access API、WebGPU、WebCodecs、OffscreenC
 - Three.js `WebGPURenderer` を使用し、WebGPU非対応環境ではWebGL 2へフォールバック
 - 動画と静止画をNode Materialで描画し、クロップ、マスク、色調、透明度などをGPU上で合成
 - Box、Capsule、Circle、Cone、Cylinder、各Polyhedron、Plane、Ring、Sphere、Torus、TorusKnot、Lathe、Shape、Extrude、Tube、Edges、Wireframe、任意BufferGeometryに対応
-- glTF、HDR、EXR、ローカルフォント、3Dテキスト、PBRマテリアル、ライト、カメラ、環境設定に対応
+- glTF、HDR、EXR、ローカルフォント、Canvasベースの2D Text、押し出し形状の3D Text、PBRマテリアル、ライト、カメラ、環境設定に対応
 - プレビュー上でオブジェクトを直接選択・移動・リサイズ・回転
 - 左上固定の総合プレビューと、選択したタイムラインオブジェクトだけを描画する個別タブ
 - プレビューCanvasを別ウィンドウへ移動し、同じRenderer Workerへ再接続可能
 - 白背景の空プロジェクトから開始し、背景自体も編集可能な常設オブジェクトとして扱う
 
-テキストはThree.jsのTextGeometryを使用せず、GfxUtl独自の `GfxTextGeometry` で字形レイアウト、曲線分割、前後面・側面生成、中心合わせまでを行います。ローカルフォントはlow-memoryモードで解析し、文字列に現れたグリフだけを遅延展開・キャッシュします。生成頂点には文字番号、文字ごとの遅延時間、文字原点、文字内UVを属性として保持するため、文字単位の変形や時間差シェーダーアニメーションへ利用できます。
+2D TextはCanvas 2Dで文字と枠線を透明テクスチャへ描画し、平面オブジェクトとして合成します。3D TextはThree.jsのTextGeometryを使用せず、GfxUtl独自の `GfxTextGeometry` で字形レイアウト、曲線分割、前後面・側面生成、中心合わせまでを行います。ローカルフォントはlow-memoryモードで解析し、文字列に現れたグリフだけを遅延展開・キャッシュします。生成頂点には文字番号、文字ごとの遅延時間、文字原点、文字内UVを属性として保持するため、文字単位の変形や時間差シェーダーアニメーションへ利用できます。
 
 ### 作用スタック
 

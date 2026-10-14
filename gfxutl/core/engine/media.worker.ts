@@ -253,7 +253,7 @@ async function replaceCanvas(nextCanvas: OffscreenCanvas, nextWidth: number, nex
   timelineRoots.clear();
   reportedSceneObjectCount = -1;
   reportedImageObjectCount = -1;
-  for (const object of standaloneObjects.values()) sceneCore.upsert(object);
+  for (const object of standaloneObjects.values()) await sceneCore.upsert(object);
   cache.clear();
   setupEncoder();
 }
@@ -925,7 +925,7 @@ function updateParticleSurfaces(time: number, frame: RenderFrameIndex, renderer 
   }
 }
 
-function updateTimelineSceneObjects(frame: RenderFrameIndex) {
+async function updateTimelineSceneObjects(frame: RenderFrameIndex) {
   if (!sceneCore) return false;
   let changed = false;
   for (const id of sceneClipSignatures.keys()) {
@@ -952,7 +952,7 @@ function updateTimelineSceneObjects(frame: RenderFrameIndex) {
       continue;
     }
     if (sceneClipSignatures.get(object.id) !== object) {
-      const root = sceneCore.upsert(object);
+      const root = await sceneCore.upsert(object);
       timelineRoots.set(clip.id, root);
       sceneClipSignatures.set(object.id, object);
       send({ type: "geometry-ready", id: object.id });
@@ -1103,7 +1103,11 @@ function evaluateClipAtTime(clip: RenderClip, timelineTime: number) {
     const geometry = evaluated.sceneObject.geometry;
     if (properties.has("fontSize")) geometry.size = animatedNumber(evaluated, "fontSize", geometry.size ?? 1.2);
     if (properties.has("textDepth")) geometry.depth = animatedNumber(evaluated, "textDepth", geometry.depth ?? 0.12);
-    if (properties.has("textOutlineWidth") && evaluated.sceneObject.material) evaluated.sceneObject.material.outlineWidth = animatedNumber(evaluated, "textOutlineWidth", evaluated.sceneObject.material.outlineWidth ?? 0.02);
+    if (properties.has("textOutlineWidth")) {
+      const width = animatedNumber(evaluated, "textOutlineWidth", geometry.outlineWidth ?? evaluated.sceneObject.material?.outlineWidth ?? 0.02);
+      if (geometry.kind === "text2d") geometry.outlineWidth = width;
+      else if (evaluated.sceneObject.material) evaluated.sceneObject.material.outlineWidth = width;
+    }
   }
   if (evaluated.sceneObject && (properties.has("instanceCount") || properties.has("instanceSpacing"))) {
     const count = Math.max(1, Math.min(1_000, Math.floor(evaluated.instanceCount)));
@@ -1248,7 +1252,7 @@ async function renderRealtime(time: number, _shouldCache: boolean, clips: Render
   clips = evaluateClipsAtTime(clips, time);
   const frame = createRenderFrameIndex(clips, time);
   if (cachedPreviewSurface) cachedPreviewSurface.mesh.visible = false;
-  updateTimelineSceneObjects(frame);
+  await updateTimelineSceneObjects(frame);
   updateImageSurfaces(frame);
   updateModelSurfaces(time, frame);
   updateParticleSurfaces(time, frame);
@@ -1852,7 +1856,7 @@ async function exportVideo(message: Extract<EngineRequest, { type: "export" }>) 
       }
       const frameClips = evaluateClipsAtTime(message.clips, timelineTime);
       const frameIndex = createRenderFrameIndex(frameClips, timelineTime);
-      updateTimelineSceneObjects(frameIndex);
+      await updateTimelineSceneObjects(frameIndex);
       updateImageSurfaces(frameIndex);
       updateModelSurfaces(timelineTime, frameIndex);
       updateParticleSurfaces(timelineTime, frameIndex, exportRenderer);
@@ -1914,7 +1918,7 @@ async function exportStill(message: Extract<EngineRequest, { type: "export-still
     postProcessTime.value = message.time;
     const clips = evaluateClipsAtTime(message.clips, message.time);
     const frameIndex = createRenderFrameIndex(clips, message.time);
-    updateTimelineSceneObjects(frameIndex);
+    await updateTimelineSceneObjects(frameIndex);
     updateImageSurfaces(frameIndex);
     updateModelSurfaces(message.time, frameIndex);
     updateParticleSurfaces(message.time, frameIndex, renderer);
@@ -2027,7 +2031,7 @@ async function handleMessage(message: EngineRequest) {
     if (message.type === "geometry-upsert") {
       if (!sceneCore) throw new Error("Three.js scene is not initialized");
       standaloneObjects.set(message.object.id, message.object);
-      sceneCore.upsert(message.object);
+      await sceneCore.upsert(message.object);
       send({ type: "geometry-ready", id: message.object.id });
       graphics?.render();
     }

@@ -54,7 +54,7 @@ export function EditorContextMenu() {
     className="editor-context-menu"
     role="menu"
     aria-label="編集メニュー"
-    style={{ left: Math.min(menu.x, window.innerWidth - 224), top: Math.max(4, Math.min(menu.y, window.innerHeight - 370)) }}
+    style={{ left: Math.min(menu.x, window.innerWidth - 224), top: Math.max(4, Math.min(menu.y, window.innerHeight - 396)) }}
     onPointerDown={(event) => event.stopPropagation()}
     onContextMenu={(event) => event.preventDefault()}
   >
@@ -80,7 +80,8 @@ export function EditorContextMenu() {
     <div className="context-menu-separator" />
     <div className="context-menu-label">オブジェクトを追加</div>
     <button role="menuitem" onClick={(event) => run(event, () => controller.addGroupObject(placement))}><FolderTree />グループ</button>
-    <button role="menuitem" onClick={(event) => run(event, () => controller.addTextObject(placement))}><Type />テキスト</button>
+    <button role="menuitem" onClick={(event) => run(event, () => controller.addText2DObject(placement))}><Type />2D Text</button>
+    <button role="menuitem" onClick={(event) => run(event, () => controller.addText3DObject(placement))}><Type />3D Text</button>
     <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("shape", placement))}><Pentagon />シェイプ</button>
     <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("box", placement))}><Box />立方体</button>
     <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("sphere", placement))}><Circle />球体</button>
