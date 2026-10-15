@@ -8,9 +8,11 @@ import { useEditor } from "./core/interface";
 import { useEffect } from "react";
 import { EditorContextMenu } from "./components/editor-context-menu";
 import { observeWindowControlsOverlay } from "./core/interface/window-controls-overlay";
+import { useI18n } from "./core/i18n";
 
 export function App() {
   const { state, controller } = useEditor();
+  const { t } = useI18n();
   useEffect(() => {
     const root = document.getElementById("main");
     if (!root) return;
@@ -77,7 +79,7 @@ export function App() {
       <StatusBar />
       <PanelResizers />
       <EditorContextMenu />
-      {state.notice && <div className="toast" role="status"><span />{state.notice}</div>}
+      {state.notice && <div className="toast" role="status"><span />{t(state.notice)}</div>}
     </>
   );
 }

@@ -25,9 +25,11 @@ import {
 } from "@fluentui/react-icons";
 import { useEffect, type MouseEvent } from "react";
 import { useEditor } from "../core/interface";
+import { useI18n } from "../core/i18n";
 
 export function EditorContextMenu() {
   const { state, controller } = useEditor();
+  const { t } = useI18n();
   const menu = state.contextMenu;
 
   useEffect(() => {
@@ -64,54 +66,54 @@ export function EditorContextMenu() {
   return <div
     className={`editor-context-menu${submenuOpensLeft ? " submenu-opens-left" : ""}`}
     role="menu"
-    aria-label="編集メニュー"
+    aria-label={t("編集メニュー")}
     style={{ left: menuLeft, top: Math.max(4, Math.min(menu.y, window.innerHeight - 396)) }}
     onPointerDown={(event) => event.stopPropagation()}
     onContextMenu={(event) => event.preventDefault()}
   >
-    <div className="context-menu-label"><Clipboard /> 編集</div>
-    <div className="context-menu-action-row context-menu-action-row-two" role="group" aria-label="履歴操作">
-      <button role="menuitem" aria-keyshortcuts="Meta+Z Control+Z" title="元に戻す (⌘Z)" disabled={!state.canUndo} onClick={(event) => run(event, () => { controller.undo(); controller.closeContextMenu(); })}><Undo2 /><span>元に戻す</span></button>
-      <button role="menuitem" aria-keyshortcuts="Meta+Shift+Z Control+Shift+Z" title="やり直す (⇧⌘Z)" disabled={!state.canRedo} onClick={(event) => run(event, () => { controller.redo(); controller.closeContextMenu(); })}><Redo2 /><span>やり直す</span></button>
+    <div className="context-menu-label"><Clipboard /> {t("編集")}</div>
+    <div className="context-menu-action-row context-menu-action-row-two" role="group" aria-label={t("履歴操作")}>
+      <button role="menuitem" aria-keyshortcuts="Meta+Z Control+Z" title={`${t("元に戻す")} (⌘Z)`} disabled={!state.canUndo} onClick={(event) => run(event, () => { controller.undo(); controller.closeContextMenu(); })}><Undo2 /><span>{t("元に戻す")}</span></button>
+      <button role="menuitem" aria-keyshortcuts="Meta+Shift+Z Control+Shift+Z" title={`${t("やり直す")} (⇧⌘Z)`} disabled={!state.canRedo} onClick={(event) => run(event, () => { controller.redo(); controller.closeContextMenu(); })}><Redo2 /><span>{t("やり直す")}</span></button>
     </div>
-    <div className="context-menu-action-row context-menu-action-row-three" role="group" aria-label="クリップボード操作">
-      <button role="menuitem" aria-keyshortcuts="Meta+X Control+X" title="切り取り (⌘X)" disabled={!state.selectedClipId} onClick={(event) => run(event, async () => { await controller.cutSelection(); controller.closeContextMenu(); })}><Scissors /><span>切り取り</span></button>
-      <button role="menuitem" aria-keyshortcuts="Meta+C Control+C" title="コピー (⌘C)" disabled={!state.selectedClipId} onClick={(event) => run(event, async () => { await controller.copySelection(); controller.closeContextMenu(); })}><Copy /><span>コピー</span></button>
-      <button role="menuitem" aria-keyshortcuts="Meta+V Control+V" title="貼り付け (⌘V)" onClick={(event) => run(event, () => controller.pasteFromClipboard())}><ClipboardPaste /><span>貼り付け</span></button>
+    <div className="context-menu-action-row context-menu-action-row-three" role="group" aria-label={t("クリップボード操作")}>
+      <button role="menuitem" aria-keyshortcuts="Meta+X Control+X" title={`${t("切り取り")} (⌘X)`} disabled={!state.selectedClipId} onClick={(event) => run(event, async () => { await controller.cutSelection(); controller.closeContextMenu(); })}><Scissors /><span>{t("切り取り")}</span></button>
+      <button role="menuitem" aria-keyshortcuts="Meta+C Control+C" title={`${t("コピー")} (⌘C)`} disabled={!state.selectedClipId} onClick={(event) => run(event, async () => { await controller.copySelection(); controller.closeContextMenu(); })}><Copy /><span>{t("コピー")}</span></button>
+      <button role="menuitem" aria-keyshortcuts="Meta+V Control+V" title={`${t("貼り付け")} (⌘V)`} onClick={(event) => run(event, () => controller.pasteFromClipboard())}><ClipboardPaste /><span>{t("貼り付け")}</span></button>
     </div>
     {(menu.scope === "timeline" || menu.scope === "clip") && <>
       <div className="context-menu-separator" />
-      <div className="context-menu-label">タイムライン</div>
-      <button role="menuitem" disabled={!state.selectedClipIds.length} onClick={(event) => run(event, () => { controller.splitSelectionAt(menu.time); controller.closeContextMenu(); })}><Scissors />カット<kbd>{menu.time.toFixed(2)}s</kbd></button>
+      <div className="context-menu-label">{t("タイムライン")}</div>
+      <button role="menuitem" disabled={!state.selectedClipIds.length} onClick={(event) => run(event, () => { controller.splitSelectionAt(menu.time); controller.closeContextMenu(); })}><Scissors />{t("カット")}<kbd>{menu.time.toFixed(2)}s</kbd></button>
       {targetMarker
-        ? <button role="menuitem" onClick={(event) => run(event, () => { controller.removeMarker(targetMarker.id); controller.closeContextMenu(); })}><Trash2 />このマーカーを削除</button>
-        : <button role="menuitem" onClick={(event) => run(event, () => { controller.addMarker(menu.time); controller.closeContextMenu(); })}><Flag />マーカーを追加<kbd>M</kbd></button>}
-      <button role="menuitemcheckbox" aria-checked={state.snapEnabled} className={state.snapEnabled ? "checked" : ""} onClick={(event) => run(event, () => { controller.toggleSnap(); controller.closeContextMenu(); })}><Magnet />マグネット<kbd>{state.snapEnabled ? "ON" : "OFF"}</kbd></button>
+        ? <button role="menuitem" onClick={(event) => run(event, () => { controller.removeMarker(targetMarker.id); controller.closeContextMenu(); })}><Trash2 />{t("このマーカーを削除")}</button>
+        : <button role="menuitem" onClick={(event) => run(event, () => { controller.addMarker(menu.time); controller.closeContextMenu(); })}><Flag />{t("マーカーを追加")}<kbd>M</kbd></button>}
+      <button role="menuitemcheckbox" aria-checked={state.snapEnabled} className={state.snapEnabled ? "checked" : ""} onClick={(event) => run(event, () => { controller.toggleSnap(); controller.closeContextMenu(); })}><Magnet />{t("マグネット")}<kbd>{state.snapEnabled ? "ON" : "OFF"}</kbd></button>
     </>}
     <div className="context-menu-separator" />
     <div className="context-menu-submenu">
-      <button role="menuitem" aria-haspopup="menu"><Sparkles /><span>新規</span><ChevronRight className="context-menu-chevron" /></button>
-      <div className="context-menu-submenu-panel" role="menu" aria-label="新規オブジェクト">
-        <button role="menuitem" onClick={(event) => run(event, () => controller.addGroupObject(placement))}><FolderTree />グループ</button>
+      <button role="menuitem" aria-haspopup="menu"><Sparkles /><span>{t("新規")}</span><ChevronRight className="context-menu-chevron" /></button>
+      <div className="context-menu-submenu-panel" role="menu" aria-label={t("新規オブジェクト")}>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.addGroupObject(placement))}><FolderTree />{t("グループ")}</button>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addText2DObject(placement))}><Type />2D Text</button>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addText3DObject(placement))}><Type />3D Text</button>
-        <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("shape", placement))}><Pentagon />シェイプ</button>
-        <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("box", placement))}><Box />立方体</button>
-        <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("sphere", placement))}><Circle />球体</button>
-        <button role="menuitem" onClick={(event) => run(event, () => controller.addParticleObject(placement))}><Sparkles />GPUパーティクル</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("shape", placement))}><Pentagon />{t("シェイプ")}</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("box", placement))}><Box />{t("立方体")}</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("sphere", placement))}><Circle />{t("球体")}</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.addParticleObject(placement))}><Sparkles />{t("GPUパーティクル")}</button>
       </div>
     </div>
     {menu.scope === "preview" && <div className="context-menu-submenu">
-      <button role="menuitem" aria-haspopup="menu" disabled={!hasPreviewSelection}><Layers /><span>配置</span><ChevronRight className="context-menu-chevron" /></button>
-      {hasPreviewSelection && <div className="context-menu-submenu-panel" role="menu" aria-label="配置">
-        <button role="menuitem" onClick={(event) => run(event, () => controller.arrangePreviewSelection("front"))}><ChevronDoubleUp />最前面に配置</button>
-        <button role="menuitem" onClick={(event) => run(event, () => controller.arrangePreviewSelection("forward"))}><ArrowUp />前面に配置</button>
-        <button role="menuitem" onClick={(event) => run(event, () => controller.arrangePreviewSelection("backward"))}><ArrowDown />後面に配置</button>
-        <button role="menuitem" onClick={(event) => run(event, () => controller.arrangePreviewSelection("back"))}><ChevronDoubleDown />最後面に配置</button>
+      <button role="menuitem" aria-haspopup="menu" disabled={!hasPreviewSelection}><Layers /><span>{t("配置")}</span><ChevronRight className="context-menu-chevron" /></button>
+      {hasPreviewSelection && <div className="context-menu-submenu-panel" role="menu" aria-label={t("配置")}>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.arrangePreviewSelection("front"))}><ChevronDoubleUp />{t("最前面に配置")}</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.arrangePreviewSelection("forward"))}><ArrowUp />{t("前面に配置")}</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.arrangePreviewSelection("backward"))}><ArrowDown />{t("後面に配置")}</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.arrangePreviewSelection("back"))}><ChevronDoubleDown />{t("最後面に配置")}</button>
         <div className="context-menu-separator" />
-        <button role="menuitem" onClick={(event) => run(event, () => controller.centerPreviewSelection("both"))}><AlignCenterHorizontal />上下左右中央に配置</button>
-        <button role="menuitem" onClick={(event) => run(event, () => controller.centerPreviewSelection("vertical"))}><AlignCenterHorizontal />上下中央に配置</button>
-        <button role="menuitem" onClick={(event) => run(event, () => controller.centerPreviewSelection("horizontal"))}><AlignCenterVertical />左右中央に配置</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.centerPreviewSelection("both"))}><AlignCenterHorizontal />{t("上下左右中央に配置")}</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.centerPreviewSelection("vertical"))}><AlignCenterHorizontal />{t("上下中央に配置")}</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.centerPreviewSelection("horizontal"))}><AlignCenterVertical />{t("左右中央に配置")}</button>
       </div>}
     </div>}
   </div>;

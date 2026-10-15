@@ -4,9 +4,11 @@ import { useEditor } from "../core/interface";
 import type { TimelineClip } from "../core/interface";
 import type { MediaAsset } from "../core/interface";
 import { AudioWaveformEditor } from "./audio-waveform-editor";
+import { useI18n } from "../core/i18n";
 
 export function PreviewPanel() {
   const { state, controller } = useEditor();
+  const { t } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLElement>(null);
@@ -60,8 +62,8 @@ export function PreviewPanel() {
   const popOutPreview = () => {
     const popup = window.open("", "gfxutl-preview", "popup=yes,width=960,height=600");
     if (!popup) return;
-    popup.document.title = "GfxUtl プレビュー";
-    popup.document.body.innerHTML = `<main><canvas></canvas><button type="button" aria-label="プレビューを戻す">GfxUtlへ戻す</button></main>`;
+    popup.document.title = t("GfxUtl プレビュー");
+    popup.document.body.innerHTML = `<main><canvas></canvas><button type="button"></button></main>`;
     const style = popup.document.createElement("style");
     style.textContent = "html,body,main{margin:0;width:100%;height:100%;overflow:hidden;background:#111}main{display:grid;place-items:center}canvas{display:block;width:min(100vw,calc(100vh * var(--preview-aspect-ratio)));height:min(100vh,calc(100vw * var(--preview-aspect-inverse)))}button{position:fixed;right:12px;top:12px;border:1px solid #777;background:#202225;color:#fff;padding:8px 12px;border-radius:4px;cursor:pointer}";
     popup.document.head.append(style);
@@ -70,6 +72,8 @@ export function PreviewPanel() {
     const popupCanvas = popup.document.querySelector("canvas") as HTMLCanvasElement | null;
     const returnButton = popup.document.querySelector("button") as HTMLButtonElement | null;
     if (!popupCanvas || !returnButton) { popup.close(); return; }
+    returnButton.textContent = t("GfxUtlへ戻す");
+    returnButton.setAttribute("aria-label", t("プレビューを戻す"));
     popoutRef.current = popup;
     setPoppedOut(true);
     const attach = () => {
@@ -276,9 +280,9 @@ export function PreviewPanel() {
 
   return (
     <section className="preview-panel panel" ref={panelRef}>
-      <div className="preview-tabs" role="tablist" aria-label="プレビュータブ">
-        <button className={`preview-tab preview-tab-composite ${state.activePreviewClipId === null ? "active" : ""}`} role="tab" aria-selected={state.activePreviewClipId === null} aria-label="総合プレビュー" title="総合プレビュー" onClick={() => controller.setPreviewTab(null)}><Layers3 /></button>
-        {previewTabs.map((clip) => <div key={clip.id} className={`preview-tab preview-tab-object ${state.activePreviewClipId === clip.id ? "active" : ""}`} role="tab" tabIndex={0} aria-selected={state.activePreviewClipId === clip.id} title={`${clip.name}のみをプレビュー`} onClick={() => controller.setPreviewTab(clip.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); controller.setPreviewTab(clip.id); } }}><span>{clip.name}</span><button type="button" aria-label={`${clip.name}のプレビューを閉じる`} onClick={(event) => { event.stopPropagation(); controller.closePreviewTab(clip.id); }}><X /></button></div>)}
+      <div className="preview-tabs" role="tablist" aria-label={t("プレビュータブ")}>
+        <button className={`preview-tab preview-tab-composite ${state.activePreviewClipId === null ? "active" : ""}`} role="tab" aria-selected={state.activePreviewClipId === null} aria-label={t("総合プレビュー")} title={t("総合プレビュー")} onClick={() => controller.setPreviewTab(null)}><Layers3 /></button>
+        {previewTabs.map((clip) => <div key={clip.id} className={`preview-tab preview-tab-object ${state.activePreviewClipId === clip.id ? "active" : ""}`} role="tab" tabIndex={0} aria-selected={state.activePreviewClipId === clip.id} title={t("{name}のみをプレビュー", { name: clip.name })} onClick={() => controller.setPreviewTab(clip.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); controller.setPreviewTab(clip.id); } }}><span>{clip.name}</span><button type="button" aria-label={t("{name}のプレビューを閉じる", { name: clip.name })} onClick={(event) => { event.stopPropagation(); controller.closePreviewTab(clip.id); }}><X /></button></div>)}
       </div>
       {activeAudioClip && <AudioWaveformEditor clip={activeAudioClip} asset={state.assets.find((asset) => asset.id === activeAudioClip.assetId)} />}
       <div className={`preview-stage ${activeAudioClip ? "audio-preview-hidden" : ""} ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""}`} ref={stageRef} style={previewStyle} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; if (!draggingClipId) setHoveredClipId(null); }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
@@ -290,7 +294,7 @@ export function PreviewPanel() {
           positionY: ((event.clientY - rect.top) / rect.height - 0.5) * previewWorldHeight * 100,
         });
       }}>
-        {!poppedOut ? <canvas key={surfaceKey} ref={canvasRef} data-preview-tab={state.activePreviewClipId ?? "composite"} data-camera-projection={state.cameraProjection} data-video-frames={state.videoFramesRendered} data-geometry-objects={state.geometryObjectsReady} data-active-scene-objects={state.activeSceneObjects} data-active-image-objects={state.activeImageObjects} data-playing-audio-objects={state.playingAudioObjects} data-preview-source={state.previewSource} data-cache-frames={state.cachedFramesDisplayed} data-preview-frames={state.previewFramesRendered} /> : <div className="preview-popout-placeholder"><ExternalLink /><span>プレビューは別ウィンドウで表示中です</span><button type="button" onClick={(event) => { event.stopPropagation(); popoutRef.current?.close(); }}>この画面に戻す</button></div>}
+        {!poppedOut ? <canvas key={surfaceKey} ref={canvasRef} data-preview-tab={state.activePreviewClipId ?? "composite"} data-camera-projection={state.cameraProjection} data-video-frames={state.videoFramesRendered} data-geometry-objects={state.geometryObjectsReady} data-active-scene-objects={state.activeSceneObjects} data-active-image-objects={state.activeImageObjects} data-playing-audio-objects={state.playingAudioObjects} data-preview-source={state.previewSource} data-cache-frames={state.cachedFramesDisplayed} data-preview-frames={state.previewFramesRendered} /> : <div className="preview-popout-placeholder"><ExternalLink /><span>{t("プレビューは別ウィンドウで表示中です")}</span><button type="button" onClick={(event) => { event.stopPropagation(); popoutRef.current?.close(); }}>{t("この画面に戻す")}</button></div>}
         <div className="safe-area" />
         {!state.playing && hoveredObject && <TransformHandles object={hoveredObject} worldWidth={previewWorldWidth} worldHeight={previewWorldHeight} dragging={draggingClipId === hoveredObject.clip.id} onMove={beginMove} onResize={beginResize} onRotate={beginRotate} />}
       </div>

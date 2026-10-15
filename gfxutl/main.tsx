@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import { AboutPage } from "./components/about-page";
+import { I18nProvider } from "./core/i18n";
 import "./styles.css";
 import "./about-page.css";
 
@@ -15,7 +16,7 @@ if (aboutRoute) {
 
 ReactDOM.createRoot(document.getElementById("main")!).render(
   <React.StrictMode>
-    {aboutRoute ? <AboutPage /> : <App />}
+    <I18nProvider>{aboutRoute ? <AboutPage /> : <App />}</I18nProvider>
   </React.StrictMode>,
 );
 

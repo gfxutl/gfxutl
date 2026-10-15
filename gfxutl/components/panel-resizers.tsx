@@ -1,6 +1,7 @@
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import type { EditorLayout } from "../core/interface";
 import { useEditor } from "../core/interface";
+import { useI18n } from "../core/i18n";
 
 type ResizeKey = keyof EditorLayout;
 
@@ -12,6 +13,7 @@ const labels: Record<ResizeKey, string> = {
 
 export function PanelResizers() {
   const { state, controller } = useEditor();
+  const { t } = useI18n();
 
   const clampSize = (key: ResizeKey, value: number) => {
     if (key === "timelineHeight") {
@@ -62,7 +64,7 @@ export function PanelResizers() {
     <div
       className={`panel-resizer resizer-${key}`}
       role="separator"
-      aria-label={labels[key]}
+      aria-label={t(labels[key])}
       aria-orientation={orientation}
       aria-valuenow={state.layout[key]}
       tabIndex={0}

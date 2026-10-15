@@ -256,6 +256,7 @@ svg { width: 16px; height: 16px; }
 .settings-switch input:checked + i::after { left: 15px; background: #191b1d; }
 .settings-switch input:focus-visible + i { outline: 1px solid #fff; outline-offset: 2px; }
 .settings-field { height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; border-top: 1px solid #24272a; color: #8d9297; font-size: 8px; }
+.settings-field select { min-width: 128px; height: 23px; box-sizing: border-box; border: 1px solid #303338; border-radius: 3px; outline: 0; padding: 0 6px; background: #0e1011; color: #d0d2d4; font-size: 8px; }
 .settings-number { width: 90px; height: 24px; display: grid; grid-template-columns: 1fr 25px; border: 1px solid #303338; border-radius: 3px; background: #0e1011; }
 .settings-number input { min-width: 0; border: 0; outline: 0; padding: 0 5px; background: transparent; color: #d0d2d4; font: 8px "IBM Plex Mono", monospace; }
 .settings-number small { display: grid; place-items: center; border-left: 1px solid #303338; color: #696e73; font: 7px "IBM Plex Mono", monospace; }

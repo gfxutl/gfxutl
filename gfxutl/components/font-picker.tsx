@@ -1,6 +1,7 @@
 import { Checkmark16Regular as Check, ChevronDown16Regular as ChevronDown, Search16Regular as Search } from "@fluentui/react-icons";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { FontFaceInfo } from "../core/interface";
+import { useI18n } from "../core/i18n";
 
 const FONT_LOAD_GROUP_SIZE = 6;
 
@@ -12,6 +13,7 @@ type FontPickerProps = {
 };
 
 export function FontPicker({ fonts, value = "", onChange, loadPreview }: FontPickerProps) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedPreviewFamily, setSelectedPreviewFamily] = useState<string>();
@@ -101,12 +103,12 @@ export function FontPicker({ fonts, value = "", onChange, loadPreview }: FontPic
   };
 
   return <div className="select-field font-picker-field">
-    <span>フォント</span>
+    <span>{t("フォント")}</span>
     <div className="font-picker" ref={rootRef}>
       <button
         type="button"
         role="combobox"
-        aria-label="フォント"
+        aria-label={t("フォント")}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls="font-picker-list"
@@ -114,18 +116,18 @@ export function FontPicker({ fonts, value = "", onChange, loadPreview }: FontPic
         onClick={() => setOpen((current) => !current)}
       >
         <span style={selectedPreviewFamily ? { fontFamily: selectedPreviewFamily } : undefined}>
-          {selectedFont ? `${selectedFont.family} ${selectedFont.style}` : "Helvetiker（内蔵）"}
+          {selectedFont ? `${selectedFont.family} ${selectedFont.style}` : t("Helvetiker（内蔵）")}
         </span>
         <ChevronDown aria-hidden="true" />
       </button>
       {open && <div className="font-picker-list">
         <label className="font-picker-search">
           <Search aria-hidden="true" />
-          <input ref={searchRef} type="search" value={query} placeholder="フォント名を検索" aria-label="フォント名を検索" onChange={(event) => setQuery(event.target.value)} />
+          <input ref={searchRef} type="search" value={query} placeholder={t("フォント名を検索")} aria-label={t("フォント名を検索")} onChange={(event) => setQuery(event.target.value)} />
         </label>
-        <div id="font-picker-list" ref={listRef} className="font-picker-options" role="listbox" aria-label="フォント一覧">
+        <div id="font-picker-list" ref={listRef} className="font-picker-options" role="listbox" aria-label={t("フォント一覧")}>
           {showBuiltin && <button type="button" role="option" aria-selected={!value} className={!value ? "selected builtin" : "builtin"} onClick={() => choose("")}>
-            <Check aria-hidden="true" /><span>Helvetiker</span><small>内蔵</small>
+            <Check aria-hidden="true" /><span>Helvetiker</span><small>{t("内蔵")}</small>
           </button>}
           {fontGroups.map((group, groupIndex) => <Fragment key={group[0].postscriptName}>
             <span className="font-load-marker" data-font-group={groupIndex} aria-hidden="true" />
@@ -148,7 +150,7 @@ export function FontPicker({ fonts, value = "", onChange, loadPreview }: FontPic
               </button>;
             })}
           </Fragment>)}
-          {!showBuiltin && filteredFonts.length === 0 && <div className="font-picker-empty">該当するフォントがありません</div>}
+          {!showBuiltin && filteredFonts.length === 0 && <div className="font-picker-empty">{t("該当するフォントがありません")}</div>}
         </div>
       </div>}
     </div>

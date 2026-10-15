@@ -20,6 +20,7 @@ import {
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { clampTimelineVerticalZoom, clampTimelineZoom, MIN_GROUP_HEIGHT, timelineClipHeight, timelineGroupDescendants, useEditor } from "../core/interface";
 import type { TimelineClip } from "../core/interface";
+import { useI18n } from "../core/i18n";
 
 const MIN_WORKSPACE_HEIGHT = 720;
 const BASE_PX_PER_SECOND = 26;
@@ -47,6 +48,7 @@ function zoomAnchorScrollLeft(time: number, pointerX: number, zoom: number, dura
 
 export function TimelinePanel() {
   const { state, controller } = useEditor();
+  const { t } = useI18n();
   const pxPerSecond = BASE_PX_PER_SECOND * state.zoom;
   const panelRef = useRef<HTMLElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -201,21 +203,21 @@ export function TimelinePanel() {
 
   return (
     <section className="timeline-panel panel" ref={panelRef}>
-      <div className="timeline-transport-pill" role="toolbar" aria-label="タイムライン再生コントロール">
+      <div className="timeline-transport-pill" role="toolbar" aria-label={t("タイムライン再生コントロール")}>
         <time className="timeline-pill-clock timeline-pill-clock-compact" dateTime={`PT${Math.max(0, state.currentTime)}S`}>{formatClock(state.currentTime)}</time>
         <time className="timeline-pill-clock timeline-pill-clock-precise" dateTime={`PT${Math.max(0, state.currentTime)}S`}>{formatPreciseClock(state.currentTime)}</time>
         <div className="timeline-pill-expanded" onPointerUpCapture={(event) => (event.target as HTMLElement).closest<HTMLButtonElement>("button")?.blur()}>
           <span className="timeline-pill-duration">/ {formatClock(state.duration)}</span>
           <i className="timeline-pill-divider" />
-          <button type="button" title="先頭へ" aria-label="先頭へ" onClick={() => controller.setTime(0)}><SkipBack /></button>
-          <button type="button" title="1フレーム戻る" aria-label="1フレーム戻る" onClick={() => controller.nudge(-1)}><ChevronsLeft /></button>
-          <button type="button" className="play-button" title={state.playing ? "一時停止" : "再生"} aria-label={state.playing ? "一時停止" : "再生"} onClick={controller.togglePlayback}>{state.playing ? <Pause /> : <Play />}</button>
-          <button type="button" title="1フレーム進む" aria-label="1フレーム進む" onClick={() => controller.nudge(1)}><ChevronsRight /></button>
-          <button type="button" title="末尾へ" aria-label="末尾へ" onClick={() => controller.setTime(state.duration)}><SkipForward /></button>
+          <button type="button" title={t("先頭へ")} aria-label={t("先頭へ")} onClick={() => controller.setTime(0)}><SkipBack /></button>
+          <button type="button" title={t("1フレーム戻る")} aria-label={t("1フレーム戻る")} onClick={() => controller.nudge(-1)}><ChevronsLeft /></button>
+          <button type="button" className="play-button" title={t(state.playing ? "一時停止" : "再生")} aria-label={t(state.playing ? "一時停止" : "再生")} onClick={controller.togglePlayback}>{state.playing ? <Pause /> : <Play />}</button>
+          <button type="button" title={t("1フレーム進む")} aria-label={t("1フレーム進む")} onClick={() => controller.nudge(1)}><ChevronsRight /></button>
+          <button type="button" title={t("末尾へ")} aria-label={t("末尾へ")} onClick={() => controller.setTime(state.duration)}><SkipForward /></button>
           <i className="timeline-pill-divider" />
-          <button type="button" className={state.loopPlayback ? "active" : ""} title={`出力範囲をループ ${state.loopPlayback ? "ON" : "OFF"}`} aria-label="出力範囲をループ" aria-pressed={state.loopPlayback} onClick={controller.toggleLoopPlayback}><Repeat2 /></button>
-          <button type="button" title="別ウィンドウで表示" aria-label="プレビューを別ウィンドウで表示" onClick={() => requestPreviewAction("popout")}><ExternalLink /></button>
-          <button type="button" title="フルスクリーン" aria-label="プレビューをフルスクリーン表示" onClick={() => requestPreviewAction("fullscreen")}><Expand /></button>
+          <button type="button" className={state.loopPlayback ? "active" : ""} title={`${t("出力範囲をループ")} ${state.loopPlayback ? "ON" : "OFF"}`} aria-label={t("出力範囲をループ")} aria-pressed={state.loopPlayback} onClick={controller.toggleLoopPlayback}><Repeat2 /></button>
+          <button type="button" title={t("別ウィンドウで表示")} aria-label={t("プレビューを別ウィンドウで表示")} onClick={() => requestPreviewAction("popout")}><ExternalLink /></button>
+          <button type="button" title={t("フルスクリーン")} aria-label={t("プレビューをフルスクリーン表示")} onClick={() => requestPreviewAction("fullscreen")}><Expand /></button>
         </div>
       </div>
       <div className="timeline-scroll free-timeline-scroll" ref={scrollRef}>
@@ -234,7 +236,7 @@ export function TimelinePanel() {
             controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "timeline", time: point.time, timelineY: point.y, positionX: 0, positionY: 0 });
           }}
         >
-          {dropPoint && <div className="asset-drop-ghost" style={{ left: dropPoint.x, top: dropPoint.y * state.timelineVerticalZoom }}><span>ここに配置</span></div>}
+          {dropPoint && <div className="asset-drop-ghost" style={{ left: dropPoint.x, top: dropPoint.y * state.timelineVerticalZoom }}><span>{t("ここに配置")}</span></div>}
           {cursorGuideX !== null && <div className="timeline-cursor-guide" style={{ left: cursorGuideX }} />}
           {alignmentSuggestion && <div
             className="timeline-alignment-guide"
@@ -242,9 +244,9 @@ export function TimelinePanel() {
             data-moving-edge={alignmentSuggestion.movingEdge}
             data-target-edge={alignmentSuggestion.targetEdge}
             style={{ left: alignmentSuggestion.x, top: alignmentSuggestion.top * state.timelineVerticalZoom, height: alignmentSuggestion.height * state.timelineVerticalZoom }}
-          ><span>端を揃える</span></div>}
+          ><span>{t("端を揃える")}</span></div>}
           {selectionBox && <div className="timeline-selection-box" style={selectionBox} />}
-          {state.markers.map((marker) => <button key={marker.id} className="timeline-marker" title={`${marker.label} · クリックで移動 / ダブルクリックで改名 / Shift+クリックで削除`} style={{ left: marker.time * pxPerSecond, "--marker-color": marker.color } as React.CSSProperties} onPointerDown={(event) => event.stopPropagation()} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const point = positionFromPointer(event.clientX, event.clientY); controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "timeline", time: marker.time, timelineY: point.y, positionX: 0, positionY: 0, markerId: marker.id }); }} onDoubleClick={(event) => { event.stopPropagation(); const label = window.prompt("マーカー名", marker.label); if (label?.trim()) controller.updateMarker(marker.id, { label: label.trim() }); }} onClick={(event) => { event.stopPropagation(); if (event.shiftKey) controller.removeMarker(marker.id); else controller.setTime(marker.time); }}><i /><span>{marker.label}</span></button>)}
+          {state.markers.map((marker) => <button key={marker.id} className="timeline-marker" title={`${marker.label} · ${t("クリックで移動 / ダブルクリックで改名 / Shift+クリックで削除")}`} style={{ left: marker.time * pxPerSecond, "--marker-color": marker.color } as React.CSSProperties} onPointerDown={(event) => event.stopPropagation()} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const point = positionFromPointer(event.clientX, event.clientY); controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "timeline", time: marker.time, timelineY: point.y, positionX: 0, positionY: 0, markerId: marker.id }); }} onDoubleClick={(event) => { event.stopPropagation(); const label = window.prompt(t("マーカー名"), marker.label); if (label?.trim()) controller.updateMarker(marker.id, { label: label.trim() }); }} onClick={(event) => { event.stopPropagation(); if (event.shiftKey) controller.removeMarker(marker.id); else controller.setTime(marker.time); }}><i /><span>{marker.label}</span></button>)}
           {orderedClips.map((clip) => <Clip key={clip.id} clip={clip} waveformPeaks={clip.assetId ? state.assets.find((asset) => asset.id === clip.assetId)?.waveformPeaks : undefined} pxPerSecond={pxPerSecond} verticalZoom={state.timelineVerticalZoom} selected={state.selectedClipIds.includes(clip.id)} durationResizable={clip.kind === "group" || clip.kind === "title" || clip.kind === "object" || Boolean(clip.assetId && resizableAssetIds.has(clip.assetId))} childCount={state.clips.filter((item) => item.groupId === clip.id).length} nestingDepth={nestingDepths.get(clip.id) ?? 0} fps={state.fps} snapEnabled={state.snapEnabled} onAlignmentSuggestion={setAlignmentSuggestion} controller={controller} />)}
           <div className="playhead free-playhead" style={{ left: state.currentTime * pxPerSecond }}><div className="playhead-cap" /><i /></div>
         </div>
@@ -272,6 +274,7 @@ function requestPreviewAction(action: "popout" | "fullscreen") {
 }
 
 const Clip = memo(function Clip({ clip, waveformPeaks, pxPerSecond, verticalZoom, selected, durationResizable, childCount, nestingDepth, fps, snapEnabled, onAlignmentSuggestion, controller }: { clip: TimelineClip; waveformPeaks?: number[]; pxPerSecond: number; verticalZoom: number; selected: boolean; durationResizable: boolean; childCount: number; nestingDepth: number; fps: number; snapEnabled: boolean; onAlignmentSuggestion: (suggestion: AlignmentSuggestion | null) => void; controller: typeof import("../core/interface").editorController }) {
+  const { t } = useI18n();
   const [dragging, setDragging] = useState(false);
   const [resizing, setResizing] = useState(false);
   const drag = useRef<{ pointerId: number; startX: number; startY: number; originalStart: number; originalY: number; lastStart: number; lastY: number } | null>(null);
@@ -451,15 +454,15 @@ const Clip = memo(function Clip({ clip, waveformPeaks, pxPerSecond, verticalZoom
     >
       {(dragging || resizing) && <output className="clip-drag-readout">{resizing ? `${clip.duration.toFixed(2)}s` : `${clip.start.toFixed(2)}s · y ${Math.round(clip.y)}`}</output>}
       <span className="timeline-clip-kind">{clip.kind === "group" ? <FolderList16Regular /> : clip.kind === "title" ? <TextT12Regular /> : clip.kind === "audio" ? <MusicNote216Regular /> : clip.kind === "object" ? <Cube16Regular /> : <VideoClip16Regular />}</span><strong>{clip.name}{clip.kind === "group" ? ` · ${childCount}` : ""}</strong>
-      {(muted || visual) && <span className="timeline-clip-status" role="img" aria-label={[muted ? "ミュート" : "", visual ? clip.visible === false ? "非表示" : "表示" : ""].filter(Boolean).join("、")}>
-        {muted && <span title="ミュート"><SpeakerMute /></span>}
-        {visual && <span title={clip.visible === false ? "非表示" : "表示"}>{clip.visible === false ? <EyeOff /> : <Eye />}</span>}
+      {(muted || visual) && <span className="timeline-clip-status" role="img" aria-label={[muted ? t("ミュート") : "", visual ? t(clip.visible === false ? "非表示" : "表示") : ""].filter(Boolean).join(", ")}>
+        {muted && <span title={t("ミュート")}><SpeakerMute /></span>}
+        {visual && <span title={t(clip.visible === false ? "非表示" : "表示")}>{clip.visible === false ? <EyeOff /> : <Eye />}</span>}
       </span>}
-      {selected && (clip.keyframes ?? []).map((keyframe) => <i className="timeline-keyframe" key={keyframe.id} title={`${keyframe.property}: ${keyframe.value} · ドラッグで時刻変更`} style={{ left: `${Math.max(0, Math.min(100, keyframe.time / Math.max(0.001, clip.duration) * 100))}%` }} onPointerDown={(event) => beginKeyframeDrag(keyframe.id, keyframe.time, event)} onClick={(event) => { event.stopPropagation(); controller.setTime(clip.start + keyframe.time); controller.selectClip(clip.id); }} />)}
+      {selected && (clip.keyframes ?? []).map((keyframe) => <i className="timeline-keyframe" key={keyframe.id} title={`${keyframe.property}: ${keyframe.value} · ${t("ドラッグで時刻変更")}`} style={{ left: `${Math.max(0, Math.min(100, keyframe.time / Math.max(0.001, clip.duration) * 100))}%` }} onPointerDown={(event) => beginKeyframeDrag(keyframe.id, keyframe.time, event)} onClick={(event) => { event.stopPropagation(); controller.setTime(clip.start + keyframe.time); controller.selectClip(clip.id); }} />)}
       {clip.kind === "audio" && <div className="waveform" data-waveform-source={waveformPeaks?.length ? "media" : "pending"}>{(waveformPeaks?.length ? waveformPeaks : Array.from({ length: 24 }, () => 0.08)).map((peak, i) => <i key={i} style={{ height: `${Math.max(4, Math.min(100, peak * 100))}%` }} />)}</div>}
       {clip.kind === "video" && <div className="frame-strip">{Array.from({ length: Math.max(3, Math.floor(clip.duration / 3)) }, (_, i) => <i key={i} />)}</div>}
-      {selected && durationResizable && clip.kind !== "group" && <><i className="clip-trim-handle trim-start" title="左端をドラッグして長さを変更" onPointerDown={(event) => beginResize("start", event)} /><i className="clip-trim-handle trim-end" title="右端をドラッグして長さを変更" onPointerDown={(event) => beginResize("end", event)} /></>}
-      {selected && clip.kind === "group" && (["n", "s", "e", "w", "ne", "nw", "se", "sw"] as GroupResizeEdge[]).map((edge) => <i key={edge} className={`group-resize-handle group-resize-${edge}`} data-resize-edge={edge} title="グループ境界を伸縮" onPointerDown={(event) => beginGroupResize(edge, event)} />)}
+      {selected && durationResizable && clip.kind !== "group" && <><i className="clip-trim-handle trim-start" title={t("左端をドラッグして長さを変更")} onPointerDown={(event) => beginResize("start", event)} /><i className="clip-trim-handle trim-end" title={t("右端をドラッグして長さを変更")} onPointerDown={(event) => beginResize("end", event)} /></>}
+      {selected && clip.kind === "group" && (["n", "s", "e", "w", "ne", "nw", "se", "sw"] as GroupResizeEdge[]).map((edge) => <i key={edge} className={`group-resize-handle group-resize-${edge}`} data-resize-edge={edge} title={t("グループ境界を伸縮")} onPointerDown={(event) => beginGroupResize(edge, event)} />)}
     </button>
   );
 }, (previous, next) => previous.clip === next.clip

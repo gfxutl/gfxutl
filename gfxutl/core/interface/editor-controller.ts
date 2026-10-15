@@ -12,6 +12,7 @@ import { DEFAULT_COMPOSITION_SIZE, normalizeBackgroundSize, normalizeComposition
 import { DEFAULT_SEQUENCE_DURATION, sequenceEnd } from "./sequence-duration";
 import { readRendererPluginPackage } from "../plugins/plugin-package";
 import { bundleRendererPlugin } from "../plugins/plugin-bundler";
+import { translateCurrent as t } from "../i18n";
 
 type Listener = () => void;
 
@@ -81,7 +82,7 @@ const initialState: EditorState = {
   activePreviewClipId: null,
   selectedAssetId: null,
   backgroundSelected: true,
-  background: { id: "background", name: "背景オブジェクト", color: 0xffffff, ...DEFAULT_COMPOSITION_SIZE, scene: structuredClone(defaultSceneSettings) },
+  background: { id: "background", name: t("背景オブジェクト"), color: 0xffffff, ...DEFAULT_COMPOSITION_SIZE, scene: structuredClone(defaultSceneSettings) },
   assets: [],
   clips: [],
   fonts: [],
@@ -381,9 +382,9 @@ export class EditorController {
         window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
       }
       this.schedulePersistence();
-      this.toast(`${filename} を保存しました`);
+      this.toast(t("{name} を保存しました", { name: filename }));
     } catch (error) {
-      if ((error as DOMException).name !== "AbortError") this.toast(error instanceof Error ? `保存失敗: ${error.message}` : "プロジェクトを保存できませんでした");
+      if ((error as DOMException).name !== "AbortError") this.toast(error instanceof Error ? t("保存失敗: {message}", { message: error.message }) : t("プロジェクトを保存できませんでした"));
     }
   };
 
@@ -428,14 +429,14 @@ export class EditorController {
       this.engine.clearCache();
       this.renderPreview(true);
       this.schedulePersistence();
-      this.toast(`${project.name} を開きました`);
+      this.toast(t("{name} を開きました", { name: project.name }));
     } catch (error) {
-      if ((error as DOMException).name !== "AbortError") this.toast(error instanceof Error ? error.message : "プロジェクトを開けませんでした");
+      if ((error as DOMException).name !== "AbortError") this.toast(error instanceof Error ? error.message : t("プロジェクトを開けませんでした"));
     }
   };
 
   newProject = () => {
-    if ((this.state.clips.length || this.state.assets.length) && !window.confirm("現在の編集内容を閉じて新規プロジェクトを作成しますか？")) return;
+    if ((this.state.clips.length || this.state.assets.length) && !window.confirm(t("現在の編集内容を閉じて新規プロジェクトを作成しますか？"))) return;
     this.projectFileHandle = undefined;
     this.update({
       projectName: "Untitled Project",
@@ -443,7 +444,7 @@ export class EditorController {
       duration: DEFAULT_SEQUENCE_DURATION,
       currentTime: 0,
       playing: false,
-      background: { id: "background", name: "背景オブジェクト", color: 0xffffff, ...DEFAULT_COMPOSITION_SIZE, scene: structuredClone(defaultSceneSettings) },
+      background: { id: "background", name: t("背景オブジェクト"), color: 0xffffff, ...DEFAULT_COMPOSITION_SIZE, scene: structuredClone(defaultSceneSettings) },
       assets: [],
       clips: [],
       markers: [],
@@ -491,7 +492,7 @@ export class EditorController {
     this.update({ assets: this.state.assets.map((asset) => targets.some((target) => target.id === asset.id) ? { ...asset, fileStatus: "loading" } : asset) });
     const results = await Promise.all(targets.map((asset) => this.restoreAssetFile(asset.id, true)));
     const restored = results.filter(Boolean).length;
-    this.toast(restored ? `${restored} 件のメディアを再接続しました` : "ファイルへのアクセス許可が必要です");
+    this.toast(restored ? t("{count} 件のメディアを再接続しました", { count: restored }) : t("ファイルへのアクセス許可が必要です"));
     this.renderPreview(true);
   };
 
@@ -657,7 +658,7 @@ export class EditorController {
         }
       }
     } catch {
-      if (token === this.audioPreviewToken) this.toast("音声プレビューをデコードできませんでした");
+      if (token === this.audioPreviewToken) this.toast(t("音声プレビューをデコードできませんでした"));
     }
   }
 
@@ -950,7 +951,7 @@ export class EditorController {
     const existing = this.state.markers.find((marker) => Math.abs(marker.time - markerTime) < 0.5 / this.state.fps);
     if (existing) return;
     const colors = ["#f0c36a", "#72b7d2", "#c481d8", "#7dc58b"];
-    this.update({ markers: [...this.state.markers, { id: crypto.randomUUID(), time: markerTime, label: label?.trim() || `マーカー ${this.state.markers.length + 1}`, color: colors[this.state.markers.length % colors.length] }].sort((a, b) => a.time - b.time) });
+    this.update({ markers: [...this.state.markers, { id: crypto.randomUUID(), time: markerTime, label: label?.trim() || t("マーカー {number}", { number: this.state.markers.length + 1 }), color: colors[this.state.markers.length % colors.length] }].sort((a, b) => a.time - b.time) });
     this.schedulePersistence();
   };
   updateMarker = (id: string, patch: Partial<EditorState["markers"][number]>) => {
@@ -1337,7 +1338,7 @@ export class EditorController {
     const actions = resolveClipPropertyActions(clip);
     if (actions.some((action) => action.kind === kind)) return;
     const postProcess: ClipPostProcess | undefined = kind === "postProcess" ? {
-      id: crypto.randomUUID(), name: "GLSLシェーダー", enabled: true,
+      id: crypto.randomUUID(), name: t("GLSLシェーダー"), enabled: true,
       glsl: DEFAULT_POST_PROCESS_GLSL, compileStatus: "draft",
     } : undefined;
     this.updateClip(id, {
@@ -1443,7 +1444,7 @@ export class EditorController {
     const start = this.snapTime(placement?.time ?? this.state.currentTime);
     const source: TimelineClip = {
       id,
-      name: "グループ",
+      name: t("グループ"),
       kind: "group",
       color: "#4f6880",
       start,
@@ -1469,7 +1470,7 @@ export class EditorController {
     const id = crypto.randomUUID();
     const start = this.snapTime(placement?.time ?? this.state.currentTime);
     const clip: TimelineClip = {
-      id, name: "GPUパーティクル", kind: "object", color: "#6ca6d9", start,
+      id, name: t("GPUパーティクル"), kind: "object", color: "#6ca6d9", start,
       y: Math.max(0, placement?.timelineY ?? 92), duration: 5, offset: 0,
       positionX: placement?.positionX ?? 0, positionY: placement?.positionY ?? 0, positionZ: 0,
       scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: 0, rotationY: 0, opacity: 100,
@@ -1483,7 +1484,7 @@ export class EditorController {
     const id = crypto.randomUUID();
     const start = this.snapTime(placement?.time ?? this.state.currentTime);
     const stagger = this.objectStagger(start, placement?.positionX ?? 0, placement?.positionY ?? 0);
-    const names: Partial<Record<GeometryKind, string>> = { box: "立方体", sphere: "球体", plane: "平面", torus: "トーラス", shape: "シェイプ" };
+    const names: Partial<Record<GeometryKind, string>> = { box: t("立方体"), sphere: t("球体"), plane: t("平面"), torus: t("トーラス"), shape: t("シェイプ") };
     const args: Partial<Record<GeometryKind, number[]>> = { box: [2, 2, 0.5], sphere: [1.25, 32, 20], plane: [2.5, 2.5], torus: [1, 0.32, 16, 48] };
     const clip: TimelineClip = {
       id, name: names[kind] ?? kind, kind: "object", color: "#4f83a8", start,
@@ -1529,7 +1530,7 @@ export class EditorController {
         this.engine.registerFont(fontId, buffer);
         this.registeredFonts.add(fontId);
       } catch {
-        this.toast("フォントデータを読み込めませんでした");
+      this.toast(t("フォントデータを読み込めませんでした"));
         return;
       }
     }
@@ -1561,7 +1562,7 @@ export class EditorController {
   loadRendererPlugin = async () => {
     const pickDirectory = window.showDirectoryPicker;
     if (!pickDirectory) {
-      this.toast("このブラウザはディレクトリ選択に対応していません");
+      this.toast(t("このブラウザはディレクトリ選択に対応していません"));
       return;
     }
     let pendingPlugin: Awaited<ReturnType<typeof readRendererPluginPackage>> | undefined;
@@ -1575,22 +1576,22 @@ export class EditorController {
       }) });
       const loaded = await this.engine.loadRendererPlugin(await bundleRendererPlugin(plugin));
       this.update({ plugins: upsertPlugin(this.state.plugins, loaded) });
-      if (loaded.status === "active") this.toast(`${loaded.name} を読み込みました`);
-      else this.toast(`${loaded.name}: ${loaded.error ?? "プラグインを読み込めませんでした"}`);
+      if (loaded.status === "active") this.toast(t("{name} を読み込みました", { name: loaded.name }));
+      else this.toast(`${loaded.name}: ${loaded.error ?? t("プラグインを読み込めませんでした")}`);
     } catch (error) {
       if (pendingPlugin) this.update({ plugins: upsertPlugin(this.state.plugins, {
         id: pendingPlugin.id, name: pendingPlugin.name, version: pendingPlugin.version, entry: pendingPlugin.entry,
         status: "error", moduleCount: pendingPlugin.files.length,
-        error: error instanceof Error ? error.message : "プラグインを読み込めませんでした",
+        error: error instanceof Error ? error.message : t("プラグインを読み込めませんでした"),
       }) });
-      if ((error as DOMException).name !== "AbortError") this.toast(error instanceof Error ? error.message : "プラグインを読み込めませんでした");
+      if ((error as DOMException).name !== "AbortError") this.toast(error instanceof Error ? error.message : t("プラグインを読み込めませんでした"));
     }
   };
 
   reloadRendererPlugin = async (pluginId: string) => {
     const directory = this.pluginDirectories.get(pluginId);
     if (!directory) {
-      this.toast("このプラグインのディレクトリをもう一度選択してください");
+      this.toast(t("このプラグインのディレクトリをもう一度選択してください"));
       return;
     }
     try {
@@ -1601,11 +1602,11 @@ export class EditorController {
       }) });
       const loaded = await this.engine.loadRendererPlugin(await bundleRendererPlugin({ ...plugin, id: pluginId }));
       this.update({ plugins: upsertPlugin(this.state.plugins, loaded) });
-      if (loaded.status === "active") this.toast(`${loaded.name} を再読み込みしました`);
+      if (loaded.status === "active") this.toast(t("{name} を再読み込みしました", { name: loaded.name }));
     } catch (error) {
       const current = this.state.plugins.find((plugin) => plugin.id === pluginId);
-      if (current) this.update({ plugins: upsertPlugin(this.state.plugins, { ...current, status: "error", error: error instanceof Error ? error.message : "プラグインを再読み込みできませんでした" }) });
-      this.toast(error instanceof Error ? error.message : "プラグインを再読み込みできませんでした");
+      if (current) this.update({ plugins: upsertPlugin(this.state.plugins, { ...current, status: "error", error: error instanceof Error ? error.message : t("プラグインを再読み込みできませんでした") }) });
+      this.toast(error instanceof Error ? error.message : t("プラグインを再読み込みできませんでした"));
     }
   };
 
@@ -1622,7 +1623,7 @@ export class EditorController {
     const payload: ClipboardPayload = { type: "gfxutl/timeline-object", version: 2, clips };
     this.memoryClipboard = payload;
     try { await navigator.clipboard?.writeText(JSON.stringify(payload)); } catch { /* In-memory fallback remains available. */ }
-    this.toast(clips.length === 1 ? `${clips[0].name} をコピーしました` : `${clips.length} 個のオブジェクトをコピーしました`);
+    this.toast(clips.length === 1 ? t("{name} をコピーしました", { name: clips[0].name }) : t("{count} 個のオブジェクトをコピーしました", { count: clips.length }));
     return true;
   };
 
@@ -1651,7 +1652,7 @@ export class EditorController {
         if (parsed.type === "gfxutl/timeline-object" && parsed.version === 2 && parsed.clips?.length) payload = parsed as ClipboardPayload;
       }
     } catch { /* Clipboard permission may be unavailable; use the session fallback. */ }
-    if (!payload) { this.toast("貼り付け可能なGfxUtlオブジェクトがありません"); return; }
+    if (!payload) { this.toast(t("貼り付け可能なGfxUtlオブジェクトがありません")); return; }
     const menu = this.state.contextMenu;
     const minStart = Math.min(...payload.clips.map((clip) => clip.start));
     const minY = Math.min(...payload.clips.map((clip) => clip.y));
@@ -1687,7 +1688,7 @@ export class EditorController {
     this.invalidatePreviewCache();
     this.schedulePersistence();
     this.renderPreview(false);
-    this.toast(pasted.length === 1 ? `${pasted[0].name} を貼り付けました` : `${pasted.length} 個のオブジェクトを貼り付けました`);
+    this.toast(pasted.length === 1 ? t("{name} を貼り付けました", { name: pasted[0].name }) : t("{count} 個のオブジェクトを貼り付けました", { count: pasted.length }));
   };
 
   splitSelectionAt = (time = this.state.contextMenu?.time ?? this.state.currentTime) => {
@@ -1706,7 +1707,7 @@ export class EditorController {
       created.push(right);
       return [{ ...clip, duration: leftDuration }, right];
     });
-    if (!created.length) { this.toast("カット位置がクリップの範囲外です"); return; }
+    if (!created.length) { this.toast(t("カット位置がクリップの範囲外です")); return; }
     this.update({ clips, selectedClipId: created.at(-1)!.id, selectedClipIds: created.map((clip) => clip.id), contextMenu: null });
     this.invalidatePreviewCache();
     this.schedulePersistence();
@@ -1716,7 +1717,7 @@ export class EditorController {
   addMask = (clipId: string, shape: ClipMask["shape"] = "rectangle") => {
     const clip = this.state.clips.find((item) => item.id === clipId);
     if (!clip || clip.kind !== "video") return;
-    const mask: ClipMask = { id: crypto.randomUUID(), name: `マスク ${(clip.masks?.length ?? 0) + 1}`, enabled: true, shape, mode: "add", inverted: false, x: 50, y: 50, width: 70, height: 70, feather: 0, opacity: 100 };
+    const mask: ClipMask = { id: crypto.randomUUID(), name: t("マスク {number}", { number: (clip.masks?.length ?? 0) + 1 }), enabled: true, shape, mode: "add", inverted: false, x: 50, y: 50, width: 70, height: 70, feather: 0, opacity: 100 };
     this.updateClip(clipId, { masks: [...(clip.masks ?? []), mask] });
   };
 
@@ -1840,11 +1841,11 @@ export class EditorController {
         window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
       }
       this.update({ exportStatus: "done", exportProgress: 1 });
-      this.toast(`${filename} を書き出しました`);
+      this.toast(t("{name} を書き出しました", { name: filename }));
     } catch (error) {
       if ((error as DOMException).name === "AbortError") return;
       this.update({ exportStatus: "error" });
-      this.toast(error instanceof Error ? `書き出し失敗: ${error.message}` : "書き出しに失敗しました");
+      this.toast(error instanceof Error ? t("書き出し失敗: {message}", { message: error.message }) : t("書き出しに失敗しました"));
     }
   };
 
@@ -1867,9 +1868,9 @@ export class EditorController {
         anchor.click();
         window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
       }
-      this.toast(`${filename} を書き出しました`);
+      this.toast(t("{name} を書き出しました", { name: filename }));
     } catch (error) {
-      if ((error as DOMException).name !== "AbortError") this.toast(error instanceof Error ? `静止画の書き出し失敗: ${error.message}` : "静止画を書き出せませんでした");
+      if ((error as DOMException).name !== "AbortError") this.toast(error instanceof Error ? t("静止画の書き出し失敗: {message}", { message: error.message }) : t("静止画を書き出せませんでした"));
     }
   };
 
@@ -1892,7 +1893,7 @@ export class EditorController {
       }
       await this.importMediaFile(file, handle);
     } catch (error) {
-      if ((error as DOMException).name !== "AbortError") this.toast(error instanceof Error ? `3Dモデルを開けませんでした: ${error.message}` : "3Dモデルを開けませんでした");
+      if ((error as DOMException).name !== "AbortError") this.toast(error instanceof Error ? t("3Dモデルを開けませんでした: {message}", { message: error.message }) : t("3Dモデルを開けませんでした"));
     }
   };
 
@@ -1912,14 +1913,14 @@ export class EditorController {
 
       await this.importMediaFile(file, handle);
     } catch (error) {
-      if ((error as DOMException).name !== "AbortError") this.toast("メディアを開けませんでした");
+      if ((error as DOMException).name !== "AbortError") this.toast(t("メディアを開けませんでした"));
     }
   };
 
   importMediaFile = async (file: File, handle?: FileSystemFileHandle, sourcePath?: string) => {
     const kind = mediaKindForFile(file);
     if (!kind) {
-      this.toast(`${file.name} は対応していないファイルです`);
+      this.toast(t("{name} は対応していないファイルです", { name: file.name }));
       return null;
     }
     const existing = this.state.assets.find((asset) => sourcePath
@@ -1947,11 +1948,11 @@ export class EditorController {
         const { assets: _assets, clips: _clips, ...project } = this.currentProjectDocument();
         await saveHandleProject(readyAsset, this.state.clips, project).catch(() => { /* Persistence failure must not invalidate a decoded asset. */ });
       }
-      this.toast(`${file.name} を読み込みました${extension ? ` · ${extension.toUpperCase()}` : ""}`);
+      this.toast(t("{name} を読み込みました{extension}", { name: file.name, extension: extension ? ` · ${extension.toUpperCase()}` : "" }));
       return id;
     } catch (error) {
       this.update({ assets: this.state.assets.map((item) => item.id === id ? { ...item, fileStatus: "missing" } : item) });
-      this.toast(error instanceof Error ? `${file.name}: ${error.message}` : `${file.name} を読み込めませんでした`);
+      this.toast(error instanceof Error ? `${file.name}: ${error.message}` : t("{name} を読み込めませんでした", { name: file.name }));
       return null;
     }
   };
@@ -1984,7 +1985,7 @@ export class EditorController {
 
   loadFonts = async () => {
     if (!window.queryLocalFonts) {
-      this.toast("このブラウザはLocal Font Access APIに対応していません");
+      this.toast(t("このブラウザはLocal Font Access APIに対応していません"));
       return;
     }
     try {
@@ -1996,9 +1997,9 @@ export class EditorController {
         this.localFontEntries.set(font.postscriptName, font);
       });
       this.update({ fonts: [...unique.values()].slice(0, 500) });
-      this.toast(`${unique.size} 個のローカルフォントを利用できます`);
+      this.toast(t("{count} 個のローカルフォントを利用できます", { count: unique.size }));
     } catch (error) {
-      if ((error as DOMException).name !== "AbortError") this.toast("ローカルフォントへのアクセスが拒否されました");
+      if ((error as DOMException).name !== "AbortError") this.toast(t("ローカルフォントへのアクセスが拒否されました"));
     }
   };
 
@@ -2066,17 +2067,17 @@ function cubicBezierAt(easing: ClipKeyframe["easing"], x: number) {
 
 function createEffect(kind: ClipEffectKind): ClipEffect {
   const definitions: Record<ClipEffectKind, Omit<ClipEffect, "id" | "kind">> = {
-    transform: { name: "変形", enabled: true, params: { x: 0, y: 0, scale: 100, rotation: 0 } },
-    brightness: { name: "明るさ", enabled: true, params: { amount: 0 } },
-    tint: { name: "色調", enabled: true, params: { red: 100, green: 100, blue: 100 } },
-    opacity: { name: "透明度", enabled: true, params: { amount: 100 } },
-    contrast: { name: "コントラスト", enabled: true, params: { amount: 0 } },
-    saturation: { name: "彩度", enabled: true, params: { amount: 100 } },
-    gamma: { name: "ガンマ", enabled: true, params: { amount: 100 } },
-    hue: { name: "色相", enabled: true, params: { angle: 0 } },
-    chromaKey: { name: "クロマキー", enabled: true, params: { red: 0, green: 100, blue: 0, threshold: 20, softness: 10 } },
-    vignette: { name: "ビネット", enabled: true, params: { amount: 35, size: 65 } },
-    pixelate: { name: "ピクセル化", enabled: true, params: { size: 8 } },
+    transform: { name: t("変形"), enabled: true, params: { x: 0, y: 0, scale: 100, rotation: 0 } },
+    brightness: { name: t("明るさ"), enabled: true, params: { amount: 0 } },
+    tint: { name: t("色調"), enabled: true, params: { red: 100, green: 100, blue: 100 } },
+    opacity: { name: t("透明度"), enabled: true, params: { amount: 100 } },
+    contrast: { name: t("コントラスト"), enabled: true, params: { amount: 0 } },
+    saturation: { name: t("彩度"), enabled: true, params: { amount: 100 } },
+    gamma: { name: t("ガンマ"), enabled: true, params: { amount: 100 } },
+    hue: { name: t("色相"), enabled: true, params: { angle: 0 } },
+    chromaKey: { name: t("クロマキー"), enabled: true, params: { red: 0, green: 100, blue: 0, threshold: 20, softness: 10 } },
+    vignette: { name: t("ビネット"), enabled: true, params: { amount: 35, size: 65 } },
+    pixelate: { name: t("ピクセル化"), enabled: true, params: { size: 8 } },
   };
   return { id: crypto.randomUUID(), kind, ...definitions[kind], params: { ...definitions[kind].params } };
 }

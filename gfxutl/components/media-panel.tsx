@@ -28,6 +28,7 @@ import { Tooltip } from "./ui/tooltip";
 import { ExportPanel } from "./export-panel";
 import { SettingsPanel } from "./settings-panel";
 import { PluginPanel } from "./plugin-panel";
+import { useI18n } from "../core/i18n";
 
 type ExplorerNode = {
   id: string;
@@ -48,6 +49,7 @@ const KindIcon = ({ kind }: { kind: MediaAsset["kind"] }) => kind === "audio" ? 
 
 function MediaThumbnail({ asset, playing }: { asset: MediaAsset; playing: boolean }) {
   const { controller } = useEditor();
+  const { t } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hovered, setHovered] = useState(false);
 
@@ -99,14 +101,15 @@ function MediaThumbnail({ asset, playing }: { asset: MediaAsset; playing: boolea
   }, [asset.duration, asset.fileStatus, asset.id, asset.kind, controller, hovered, playing]);
 
   return <div className={`media-thumb thumb-${asset.kind}`} onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
-    <canvas ref={canvasRef} width={160} height={90} aria-label={`${asset.name} のサムネイル`} />
+    <canvas ref={canvasRef} width={160} height={90} aria-label={`${asset.name} ${t("プレビュー")}`} />
     <KindIcon kind={asset.kind} />
     {asset.duration > 0 && <time>{formatDuration(asset.duration)}</time>}
-    {asset.fileStatus && asset.fileStatus !== "ready" && <span className="media-file-status"><RefreshCw />{asset.fileStatus === "loading" ? "読込中" : "再接続"}</span>}
+    {asset.fileStatus && asset.fileStatus !== "ready" && <span className="media-file-status"><RefreshCw />{t(asset.fileStatus === "loading" ? "読込中" : "再接続")}</span>}
   </div>;
 }
 
 function ExplorerImageThumbnail({ node }: { node: ExplorerNode }) {
+  const { t } = useI18n();
   const [url, setUrl] = useState<string | null>(null);
 
   useEffect(() => {
@@ -128,7 +131,7 @@ function ExplorerImageThumbnail({ node }: { node: ExplorerNode }) {
   }, [node.file, node.handle, node.path]);
 
   return url
-    ? <img className="explorer-image-thumbnail" src={url} alt={`${node.name} のサムネイル`} draggable={false} />
+    ? <img className="explorer-image-thumbnail" src={url} alt={`${node.name} ${t("プレビュー")}`} draggable={false} />
     : <FileImage />;
 }
 
@@ -186,6 +189,7 @@ function ExplorerVideoThumbnail({ node, playing }: { node: ExplorerNode; playing
 
 export function MediaPanel() {
   const { state, controller } = useEditor();
+  const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"tree" | "grid">(() => {
     try { return localStorage.getItem("gfxutl:media-view") === "grid" ? "grid" : "tree"; }
@@ -225,12 +229,12 @@ export function MediaPanel() {
         await saveMediaDirectory(handle).catch(() => { /* Some private contexts cannot persist handles. */ });
       } else {
         const files = await pickDirectoryFiles();
-        const nextRoot = buildFallbackTree(files);
+        const nextRoot = buildFallbackTree(files, t("選択フォルダ"));
         setRoot(nextRoot);
         setCurrentDirectoryId(nextRoot.id);
       }
     } catch (error) {
-      if ((error as DOMException).name !== "AbortError") setDirectoryError("フォルダを開けませんでした");
+      if ((error as DOMException).name !== "AbortError") setDirectoryError(t("フォルダを開けませんでした"));
     }
   };
 
@@ -326,36 +330,36 @@ export function MediaPanel() {
     controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "media", time: state.currentTime, timelineY: 32, positionX: 0, positionY: 0 });
   }}>
     <div className="panel-tabs">
-      <button className={state.leftPanelTab === "media" ? "active" : ""} onClick={() => controller.setLeftPanelTab("media")}>メディア</button>
-      <button className={state.leftPanelTab === "export" ? "active" : ""} onClick={() => controller.setLeftPanelTab("export")}>出力</button>
-      <button className={state.leftPanelTab === "settings" ? "active" : ""} onClick={() => controller.setLeftPanelTab("settings")}>設定</button>
-      <button className={state.leftPanelTab === "plugins" ? "active" : ""} onClick={() => controller.setLeftPanelTab("plugins")}>プラグイン</button>
+      <button className={state.leftPanelTab === "media" ? "active" : ""} onClick={() => controller.setLeftPanelTab("media")}>{t("メディア")}</button>
+      <button className={state.leftPanelTab === "export" ? "active" : ""} onClick={() => controller.setLeftPanelTab("export")}>{t("書き出し")}</button>
+      <button className={state.leftPanelTab === "settings" ? "active" : ""} onClick={() => controller.setLeftPanelTab("settings")}>{t("設定")}</button>
+      <button className={state.leftPanelTab === "plugins" ? "active" : ""} onClick={() => controller.setLeftPanelTab("plugins")}>{t("プラグイン")}</button>
     </div>
     {state.leftPanelTab === "plugins" ? <PluginPanel /> : state.leftPanelTab === "export" ? <ExportPanel /> : state.leftPanelTab === "settings" ? <SettingsPanel /> : <div className="media-explorer">
       <div className="media-toolbar">
-        <Button size="icon" onClick={() => void openDirectory()} aria-label="フォルダを開く" title="メディアフォルダを開く"><FolderOpen /></Button>
-        <Tooltip label="単体ファイルを読み込む"><Button size="icon" variant="ghost" onClick={controller.openMedia} aria-label="ファイルを読み込む"><Plus /></Button></Tooltip>
+        <Button size="icon" onClick={() => void openDirectory()} aria-label={t("フォルダーを開く")} title={t("メディアフォルダを開く")}><FolderOpen /></Button>
+        <Tooltip label={t("単体ファイルを読み込む")}><Button size="icon" variant="ghost" onClick={controller.openMedia} aria-label={t("ファイルを読み込む")}><Plus /></Button></Tooltip>
         <span className="spacer" />
-        <Tooltip label={view === "tree" ? "グリッド表示へ切り替え" : "階層表示へ切り替え"}><Button size="icon" variant="ghost" className="media-view-toggle active-soft" onClick={() => changeView(view === "tree" ? "grid" : "tree")} aria-label={view === "tree" ? "グリッド表示" : "階層表示"} role="switch" aria-checked={view === "grid"}><ListTree /><i /><Grid2X2 /></Button></Tooltip>
-        {root && <><Tooltip label="フォルダを更新"><Button size="icon" variant="ghost" onClick={() => void refreshDirectory()} aria-label="フォルダを更新"><RotateCcw /></Button></Tooltip><Tooltip label="フォルダを閉じる"><Button size="icon" variant="ghost" onClick={() => void closeDirectory()} aria-label="フォルダを閉じる"><X /></Button></Tooltip></>}
+        <Tooltip label={t(view === "tree" ? "グリッド表示へ切り替え" : "階層表示へ切り替え")}><Button size="icon" variant="ghost" className="media-view-toggle active-soft" onClick={() => changeView(view === "tree" ? "grid" : "tree")} aria-label={t(view === "tree" ? "グリッド表示" : "階層表示")} role="switch" aria-checked={view === "grid"}><ListTree /><i /><Grid2X2 /></Button></Tooltip>
+        {root && <><Tooltip label={t("フォルダを更新")}><Button size="icon" variant="ghost" onClick={() => void refreshDirectory()} aria-label={t("フォルダを更新")}><RotateCcw /></Button></Tooltip><Tooltip label={t("フォルダーを閉じる")}><Button size="icon" variant="ghost" onClick={() => void closeDirectory()} aria-label={t("フォルダーを閉じる")}><X /></Button></Tooltip></>}
       </div>
-      <label className="search-box"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="フォルダ内を検索" /></label>
-      {view === "tree" ? <div className="explorer-location"><HardDrive /><span>{root?.name ?? "メディアフォルダ未選択"}</span><small>{state.assets.length}</small></div> : <div className="explorer-location explorer-breadcrumbs">
-        <button aria-label="上のフォルダへ" disabled={directoryTrail.length <= 1} onClick={() => setCurrentDirectoryId(directoryTrail.at(-2)?.id ?? root?.id ?? null)}><ArrowLeft /></button>
+      <label className="search-box"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("フォルダ内を検索")} /></label>
+      {view === "tree" ? <div className="explorer-location"><HardDrive /><span>{root?.name ?? t("メディアフォルダ未選択")}</span><small>{state.assets.length}</small></div> : <div className="explorer-location explorer-breadcrumbs">
+        <button aria-label={t("上のフォルダへ")} disabled={directoryTrail.length <= 1} onClick={() => setCurrentDirectoryId(directoryTrail.at(-2)?.id ?? root?.id ?? null)}><ArrowLeft /></button>
         <HardDrive />{directoryTrail.map((node, index) => <button key={node.id} className={index === directoryTrail.length - 1 ? "current" : ""} onClick={() => setCurrentDirectoryId(node.id)}>{node.name}</button>)}
         <small>{gridChildren.length}</small>
       </div>}
-      {view === "tree" ? <div className="media-tree" role="tree" aria-label="メディアエクスプローラー">
-        {visibleRoot ? <ExplorerRow node={visibleRoot} depth={0} forceExpanded={Boolean(query)} assetsByPath={assetsByPath} selectedAssetId={state.selectedAssetId} onToggle={toggleDirectory} onImport={importNode} onStage={controller.stageExplorerFile} onSelect={controller.selectAsset} /> : <div className="empty-media"><FolderOpen /><strong>メディアフォルダを開く</strong><span>フォルダ階層を展開して素材を選択できます</span></div>}
-        {standaloneAssets.length > 0 && <div className="standalone-assets"><div className="media-tree-section"><File /> 単体ファイル</div>{standaloneAssets.map((asset) => <AssetRow key={asset.id} asset={asset} depth={1} selected={state.selectedAssetId === asset.id} onSelect={controller.selectAsset} onRestore={controller.restoreMediaAccess} />)}</div>}
+      {view === "tree" ? <div className="media-tree" role="tree" aria-label={t("メディアエクスプローラー")}>
+        {visibleRoot ? <ExplorerRow node={visibleRoot} depth={0} forceExpanded={Boolean(query)} assetsByPath={assetsByPath} selectedAssetId={state.selectedAssetId} onToggle={toggleDirectory} onImport={importNode} onStage={controller.stageExplorerFile} onSelect={controller.selectAsset} /> : <div className="empty-media"><FolderOpen /><strong>{t("メディアフォルダを開く")}</strong><span>{t("フォルダ階層を展開して素材を選択できます")}</span></div>}
+        {standaloneAssets.length > 0 && <div className="standalone-assets"><div className="media-tree-section"><File /> {t("単体ファイル")}</div>{standaloneAssets.map((asset) => <AssetRow key={asset.id} asset={asset} depth={1} selected={state.selectedAssetId === asset.id} onSelect={controller.selectAsset} onRestore={controller.restoreMediaAccess} />)}</div>}
         {directoryError && <div className="explorer-error">{directoryError}</div>}
-      </div> : <div className="media-grid-page" role="list" aria-label="メディアグリッド">
-        {currentDirectory ? gridChildren.map((node) => <ExplorerGridCard key={node.id} node={node} asset={assetsByPath.get(node.path)} selectedAssetId={state.selectedAssetId} playing={state.playing} onOpenDirectory={openGridDirectory} onImport={importNode} onStage={controller.stageExplorerFile} onSelect={controller.selectAsset} />) : <div className="empty-media"><FolderOpen /><strong>メディアフォルダを開く</strong><span>フォルダごとにページを移動して素材を表示できます</span></div>}
-        {currentDirectory && gridChildren.length === 0 && <div className="empty-grid-page">このフォルダに表示できる項目はありません</div>}
+      </div> : <div className="media-grid-page" role="list" aria-label={t("メディアグリッド")}>
+        {currentDirectory ? gridChildren.map((node) => <ExplorerGridCard key={node.id} node={node} asset={assetsByPath.get(node.path)} selectedAssetId={state.selectedAssetId} playing={state.playing} onOpenDirectory={openGridDirectory} onImport={importNode} onStage={controller.stageExplorerFile} onSelect={controller.selectAsset} />) : <div className="empty-media"><FolderOpen /><strong>{t("メディアフォルダを開く")}</strong><span>{t("フォルダごとにページを移動して素材を表示できます")}</span></div>}
+        {currentDirectory && gridChildren.length === 0 && <div className="empty-grid-page">{t("このフォルダに表示できる項目はありません")}</div>}
         {!root && standaloneAssets.map((asset) => <GridAssetCard key={asset.id} asset={asset} selected={state.selectedAssetId === asset.id} playing={state.playing} onSelect={controller.selectAsset} onRestore={controller.restoreMediaAccess} />)}
         {directoryError && <div className="explorer-error">{directoryError}</div>}
       </div>}
-      {selectedAsset && <div className="media-selection-preview"><MediaThumbnail asset={selectedAsset} playing={state.playing} /><div><strong>{selectedAsset.name}</strong><span>{selectedAsset.sourcePath ?? "単体ファイル"}</span><small>{selectedAsset.width ? `${selectedAsset.width} × ${selectedAsset.height}` : formatBytes(selectedAsset.size)}</small></div></div>}
+      {selectedAsset && <div className="media-selection-preview"><MediaThumbnail asset={selectedAsset} playing={state.playing} /><div><strong>{selectedAsset.name}</strong><span>{selectedAsset.sourcePath ?? t("単体ファイル")}</span><small>{selectedAsset.width ? `${selectedAsset.width} × ${selectedAsset.height}` : formatBytes(selectedAsset.size)}</small></div></div>}
     </div>}
   </section>;
 }
@@ -365,20 +369,21 @@ function ExplorerGridCard({ node, asset, selectedAssetId, playing, onOpenDirecto
   onOpenDirectory: (node: ExplorerNode) => Promise<void>; onImport: (node: ExplorerNode) => Promise<string | null>;
   onStage: (path: string, file?: File, handle?: FileSystemFileHandle) => void; onSelect: (id: string | null) => void;
 }) {
+  const { t } = useI18n();
   if (node.kind === "directory") {
     return <div className="explorer-grid-item" role="listitem">
-      <button className={`explorer-grid-card directory-card ${node.accessRequired ? "access-required" : ""}`} aria-label={`${node.name} フォルダを開く`} onClick={() => void onOpenDirectory(node)}>
+      <button className={`explorer-grid-card directory-card ${node.accessRequired ? "access-required" : ""}`} aria-label={`${t("フォルダーを開く")}: ${node.name}`} onClick={() => void onOpenDirectory(node)}>
         <span className="grid-card-visual">{node.loading ? <RefreshCw className="spin" /> : <FolderOpen />}</span>
         <span className="grid-card-name">{node.name}</span>
-        <small>{node.accessRequired ? "アクセス許可" : "フォルダ"}</small>
+        <small>{t(node.accessRequired ? "アクセス許可" : "フォルダ")}</small>
       </button>
     </div>;
   }
   const supported = isSupported(node.name);
   const unavailable = asset?.fileStatus === "permission-required" || asset?.fileStatus === "missing";
-  const status = asset?.fileStatus === "loading" ? "読込中" : unavailable ? "再接続" : asset?.width ? `${asset.width} × ${asset.height}` : extensionLabel(node.name);
+  const status = asset?.fileStatus === "loading" ? t("読込中") : unavailable ? t("再接続") : asset?.width ? `${asset.width} × ${asset.height}` : extensionLabel(node.name);
   return <div className="explorer-grid-item" role="listitem">
-      <button data-asset-id={asset?.id} className={`explorer-grid-card media-card ${asset?.id === selectedAssetId ? "selected" : ""} ${supported ? "" : "unsupported"}`} draggable={supported} disabled={!supported} aria-label={node.name} title={supported ? node.path : "未対応のファイル形式"} onClick={() => { if (asset?.fileStatus === "ready") onSelect(asset.id); else void onImport(node); }} onDragStart={(event) => {
+      <button data-asset-id={asset?.id} className={`explorer-grid-card media-card ${asset?.id === selectedAssetId ? "selected" : ""} ${supported ? "" : "unsupported"}`} draggable={supported} disabled={!supported} aria-label={node.name} title={supported ? node.path : t("未対応のファイル形式")} onClick={() => { if (asset?.fileStatus === "ready") onSelect(asset.id); else void onImport(node); }} onDragStart={(event) => {
       if (asset?.fileStatus === "ready") { setAssetDragData(event.dataTransfer, asset.id); return; }
       const handle = node.handle?.kind === "file" ? node.handle : undefined;
       onStage(node.path, node.file, handle);
@@ -400,8 +405,9 @@ function ExplorerGridCard({ node, asset, selectedAssetId, playing, onOpenDirecto
 function GridAssetCard({ asset, selected, playing, onSelect, onRestore }: {
   asset: MediaAsset; selected: boolean; playing: boolean; onSelect: (id: string | null) => void; onRestore: (id?: string) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const unavailable = asset.fileStatus === "permission-required" || asset.fileStatus === "missing";
-  const status = asset.fileStatus === "loading" ? "読込中" : unavailable ? "再接続" : asset.width ? `${asset.width} × ${asset.height}` : extensionLabel(asset.name);
+  const status = asset.fileStatus === "loading" ? t("読込中") : unavailable ? t("再接続") : asset.width ? `${asset.width} × ${asset.height}` : extensionLabel(asset.name);
   return <div className="explorer-grid-item" role="listitem">
     <button data-asset-id={asset.id} className={`explorer-grid-card media-card ${selected ? "selected" : ""} ${unavailable ? "media-unavailable" : ""}`} draggable={asset.fileStatus === "ready" || !asset.handle} aria-label={asset.name} onClick={() => { onSelect(asset.id); if (unavailable) void onRestore(asset.id); }} onDragStart={(event) => setAssetDragData(event.dataTransfer, asset.id)}>
       <span className="grid-card-visual"><MediaThumbnail asset={asset} playing={playing} /></span>
@@ -416,34 +422,36 @@ function ExplorerRow({ node, depth, forceExpanded, assetsByPath, selectedAssetId
   onToggle: (node: ExplorerNode) => void; onImport: (node: ExplorerNode) => Promise<string | null>;
   onStage: (path: string, file?: File, handle?: FileSystemFileHandle) => void; onSelect: (id: string | null) => void;
 }) {
+  const { t } = useI18n();
   if (node.kind === "directory") {
     const expanded = forceExpanded || node.expanded;
     return <div className="media-tree-branch">
-      <button role="treeitem" aria-expanded={expanded} className={`media-tree-row folder-row ${node.accessRequired ? "access-required" : ""}`} style={{ paddingLeft: 7 + depth * 15 }} aria-label={`${node.name} フォルダ`} onClick={() => void onToggle(node)}>
+      <button role="treeitem" aria-expanded={expanded} className={`media-tree-row folder-row ${node.accessRequired ? "access-required" : ""}`} style={{ paddingLeft: 7 + depth * 15 }} aria-label={`${node.name} ${t("フォルダ")}`} onClick={() => void onToggle(node)}>
         {node.loading ? <RefreshCw className="spin" /> : expanded ? <ChevronDown /> : <ChevronRight />}
         {expanded ? <FolderOpen className="folder-icon" /> : <Folder className="folder-icon" />}<span>{node.name}</span>
-        {node.accessRequired && <small>アクセス許可</small>}
+        {node.accessRequired && <small>{t("アクセス許可")}</small>}
       </button>
       {expanded && <div role="group">{node.children?.map((child) => <ExplorerRow key={child.id} node={child} depth={depth + 1} forceExpanded={forceExpanded} assetsByPath={assetsByPath} selectedAssetId={selectedAssetId} onToggle={onToggle} onImport={onImport} onStage={onStage} onSelect={onSelect} />)}
-      {node.children?.length === 0 && <div className="empty-directory" style={{ paddingLeft: 31 + depth * 15 }}>空のフォルダ</div>}</div>}
+      {node.children?.length === 0 && <div className="empty-directory" style={{ paddingLeft: 31 + depth * 15 }}>{t("空のフォルダ")}</div>}</div>}
     </div>;
   }
   const asset = assetsByPath.get(node.path);
   const supported = isSupported(node.name);
-  return <button data-asset-id={asset?.id} role="treeitem" className={`media-tree-row file-row media-card ${asset?.id === selectedAssetId ? "selected" : ""} ${supported ? "" : "unsupported"}`} style={{ paddingLeft: 25 + depth * 15 }} draggable={supported} aria-label={node.name} title={supported ? node.path : "未対応のファイル形式"} onClick={() => { if (asset?.fileStatus === "ready") onSelect(asset.id); else void onImport(node); }} onDragStart={(event) => {
+  return <button data-asset-id={asset?.id} role="treeitem" className={`media-tree-row file-row media-card ${asset?.id === selectedAssetId ? "selected" : ""} ${supported ? "" : "unsupported"}`} style={{ paddingLeft: 25 + depth * 15 }} draggable={supported} aria-label={node.name} title={supported ? node.path : t("未対応のファイル形式")} onClick={() => { if (asset?.fileStatus === "ready") onSelect(asset.id); else void onImport(node); }} onDragStart={(event) => {
     if (asset?.fileStatus === "ready") { setAssetDragData(event.dataTransfer, asset.id); return; }
     const handle = node.handle?.kind === "file" ? node.handle : undefined;
     onStage(node.path, node.file, handle);
     setExplorerDragData(event.dataTransfer, node.path);
   }}>
-    <FileKindIcon name={node.name} asset={asset} /><span>{node.name}</span><small className={asset?.fileStatus && asset.fileStatus !== "ready" ? "media-file-status" : ""}>{asset?.fileStatus === "loading" ? "読込中" : asset?.fileStatus === "permission-required" || asset?.fileStatus === "missing" ? "再接続" : asset?.width ? `${asset.width} × ${asset.height}` : extensionLabel(node.name)}</small>
+    <FileKindIcon name={node.name} asset={asset} /><span>{node.name}</span><small className={asset?.fileStatus && asset.fileStatus !== "ready" ? "media-file-status" : ""}>{asset?.fileStatus === "loading" ? t("読込中") : asset?.fileStatus === "permission-required" || asset?.fileStatus === "missing" ? t("再接続") : asset?.width ? `${asset.width} × ${asset.height}` : extensionLabel(node.name)}</small>
   </button>;
 }
 
 function AssetRow({ asset, depth, selected, onSelect, onRestore }: { asset: MediaAsset; depth: number; selected: boolean; onSelect: (id: string | null) => void; onRestore: (id?: string) => Promise<void> }) {
+  const { t } = useI18n();
   const unavailable = asset.fileStatus === "permission-required" || asset.fileStatus === "missing";
   return <button data-asset-id={asset.id} className={`media-tree-row file-row media-card ${selected ? "selected" : ""}`} style={{ paddingLeft: 25 + depth * 15 }} draggable={asset.fileStatus === "ready" || !asset.handle} onClick={() => { onSelect(asset.id); if (unavailable) void onRestore(asset.id); }} onDragStart={(event) => setAssetDragData(event.dataTransfer, asset.id)}>
-    <KindIcon kind={asset.kind} /><span>{asset.name}</span><small className={asset.fileStatus && asset.fileStatus !== "ready" ? "media-file-status" : ""}>{asset.fileStatus === "loading" ? "読込中" : unavailable ? "再接続" : asset.width ? `${asset.width} × ${asset.height}` : extensionLabel(asset.name)}</small>
+    <KindIcon kind={asset.kind} /><span>{asset.name}</span><small className={asset.fileStatus && asset.fileStatus !== "ready" ? "media-file-status" : ""}>{asset.fileStatus === "loading" ? t("読込中") : unavailable ? t("再接続") : asset.width ? `${asset.width} × ${asset.height}` : extensionLabel(asset.name)}</small>
   </button>;
 }
 
@@ -502,9 +510,9 @@ function filterTree(node: ExplorerNode, query: string): ExplorerNode | null {
   return null;
 }
 
-function buildFallbackTree(files: File[]) {
-  const firstPath = files[0]?.webkitRelativePath || files[0]?.name || "選択フォルダ";
-  const rootName = firstPath.split("/")[0] || "選択フォルダ";
+function buildFallbackTree(files: File[], fallbackName: string) {
+  const firstPath = files[0]?.webkitRelativePath || files[0]?.name || fallbackName;
+  const rootName = firstPath.split("/")[0] || fallbackName;
   const root: ExplorerNode = { id: `fallback:${rootName}`, name: rootName, path: rootName, kind: "directory", expanded: true, children: [] };
   for (const file of files) {
     const rawParts = (file.webkitRelativePath || `${rootName}/${file.name}`).split("/").filter(Boolean);
