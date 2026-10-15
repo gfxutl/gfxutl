@@ -97,7 +97,6 @@ const EN: Record<string, string> = {
   "書き出しが完了しました": "Export complete",
   "レンダリング中…": "Rendering…",
   "書き出しを開始": "Start export",
-  "現在フレームをPNGで保存": "Save current frame as PNG",
   "レンダラープラグイン": "Renderer plugins",
   "ESMパッケージをOxc/RolldownでWorker内バンドルし、レンダラースレッドで実行します。Workerからの外部接続は遮断されます。": "Bundle ESM packages inside the Worker with Oxc/Rolldown and run them on the renderer thread. External Worker connections are blocked.",
   "ディレクトリを選択": "Choose directory",

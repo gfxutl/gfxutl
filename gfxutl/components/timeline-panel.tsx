@@ -19,13 +19,19 @@ import {
 } from "@fluentui/react-icons";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { clampTimelineVerticalZoom, clampTimelineZoom, MIN_GROUP_HEIGHT, timelineClipHeight, timelineGroupDescendants, useEditor } from "../core/interface";
-import type { SceneKeyframe, TimelineClip } from "../core/interface";
+import type { MediaAsset, SceneKeyframe, TimelineClip } from "../core/interface";
 import { useI18n } from "../core/i18n";
 
 const MIN_WORKSPACE_HEIGHT = 720;
 const BASE_PX_PER_SECOND = 26;
 const MIN_CLIP_WIDTH = 34;
 const TIME_RULER_HEIGHT = 24;
+const TIMELINE_THUMBNAIL_WIDTH = 72;
+const TIMELINE_THUMBNAIL_CACHE_LIMIT = 160;
+const TIMELINE_THUMBNAIL_CONCURRENCY = 2;
+const timelineThumbnailCache = new Map<string, Promise<HTMLCanvasElement>>();
+const timelineThumbnailQueue: Array<() => Promise<void>> = [];
+let activeTimelineThumbnailRequests = 0;
 type GroupResizeEdge = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 type TimelineEdge = "start" | "end";
 interface AlignmentSuggestion {
@@ -64,7 +70,7 @@ export function TimelinePanel() {
   const [selectionBox, setSelectionBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const [cursorGuideX, setCursorGuideX] = useState<number | null>(null);
   const [alignmentSuggestion, setAlignmentSuggestion] = useState<AlignmentSuggestion | null>(null);
-  const [timelineViewport, setTimelineViewport] = useState({ scrollLeft: 0, width: 0 });
+  const [timelineViewport, setTimelineViewport] = useState({ scrollLeft: 0, scrollTop: 0, width: 0, height: 0 });
   const resizableAssetIds = useMemo(() => new Set(state.assets.filter((asset) => asset.kind === "image").map((asset) => asset.id)), [state.assets]);
   const logicalWorkspaceHeight = useMemo(() => Math.max(...state.clips.map((clip) => clip.y + timelineClipHeight(clip) + 48), MIN_WORKSPACE_HEIGHT), [state.clips]);
   const workspaceHeight = Math.max(MIN_WORKSPACE_HEIGHT, logicalWorkspaceHeight * state.timelineVerticalZoom);
@@ -74,6 +80,7 @@ export function TimelinePanel() {
     return (nestingDepths.get(a.id) ?? 0) - (nestingDepths.get(b.id) ?? 0);
   }), [nestingDepths, state.clips]);
   const cameraKeyframeGroups = useMemo(() => groupCameraKeyframes(state.background.scene.keyframes ?? [], state.fps), [state.background.scene.keyframes, state.fps]);
+  const assetsById = useMemo(() => new Map(state.assets.map((asset) => [asset.id, asset])), [state.assets]);
   const workspaceWidth = state.duration * pxPerSecond + 160;
 
   useLayoutEffect(() => {
@@ -100,8 +107,8 @@ export function TimelinePanel() {
     const update = () => {
       frame = 0;
       setTimelineViewport((current) => {
-        const next = { scrollLeft: scroll.scrollLeft, width: scroll.clientWidth };
-        return current.scrollLeft === next.scrollLeft && current.width === next.width ? current : next;
+        const next = { scrollLeft: scroll.scrollLeft, scrollTop: scroll.scrollTop, width: scroll.clientWidth, height: scroll.clientHeight };
+        return current.scrollLeft === next.scrollLeft && current.scrollTop === next.scrollTop && current.width === next.width && current.height === next.height ? current : next;
       });
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
@@ -307,7 +314,10 @@ export function TimelinePanel() {
               style={{ left: alignmentSuggestion.x, top: alignmentSuggestion.top * state.timelineVerticalZoom, height: alignmentSuggestion.height * state.timelineVerticalZoom }}
             ><span>{t("端を揃える")}</span></div>}
             {selectionBox && <div className="timeline-selection-box" style={selectionBox} />}
-            {orderedClips.map((clip) => <Clip key={clip.id} clip={clip} waveformPeaks={clip.assetId ? state.assets.find((asset) => asset.id === clip.assetId)?.waveformPeaks : undefined} pxPerSecond={pxPerSecond} verticalZoom={state.timelineVerticalZoom} selected={state.selectedClipIds.includes(clip.id)} durationResizable={clip.kind === "group" || clip.kind === "title" || clip.kind === "object" || Boolean(clip.assetId && resizableAssetIds.has(clip.assetId))} childCount={state.clips.filter((item) => item.groupId === clip.id).length} nestingDepth={nestingDepths.get(clip.id) ?? 0} fps={state.fps} snapEnabled={state.snapEnabled} onAlignmentSuggestion={setAlignmentSuggestion} controller={controller} />)}
+            {orderedClips.map((clip) => {
+              const asset = clip.assetId ? assetsById.get(clip.assetId) : undefined;
+              return <Clip key={clip.id} clip={clip} asset={asset} waveformPeaks={asset?.waveformPeaks} pxPerSecond={pxPerSecond} verticalZoom={state.timelineVerticalZoom} timelineViewport={timelineViewport} selected={state.selectedClipIds.includes(clip.id)} durationResizable={clip.kind === "group" || clip.kind === "title" || clip.kind === "object" || Boolean(clip.assetId && resizableAssetIds.has(clip.assetId))} childCount={state.clips.filter((item) => item.groupId === clip.id).length} nestingDepth={nestingDepths.get(clip.id) ?? 0} fps={state.fps} snapEnabled={state.snapEnabled} onAlignmentSuggestion={setAlignmentSuggestion} controller={controller} />;
+            })}
           </div>
           <div className="playhead free-playhead" style={{ left: state.currentTime * pxPerSecond }}><div className="playhead-cap" /><i /></div>
         </div>
@@ -476,13 +486,17 @@ function requestPreviewAction(action: "popout" | "fullscreen") {
   window.dispatchEvent(new CustomEvent("gfxutl:preview-action", { detail: action }));
 }
 
-const Clip = memo(function Clip({ clip, waveformPeaks, pxPerSecond, verticalZoom, selected, durationResizable, childCount, nestingDepth, fps, snapEnabled, onAlignmentSuggestion, controller }: { clip: TimelineClip; waveformPeaks?: number[]; pxPerSecond: number; verticalZoom: number; selected: boolean; durationResizable: boolean; childCount: number; nestingDepth: number; fps: number; snapEnabled: boolean; onAlignmentSuggestion: (suggestion: AlignmentSuggestion | null) => void; controller: typeof import("../core/interface").editorController }) {
+const Clip = memo(function Clip({ clip, asset, waveformPeaks, pxPerSecond, verticalZoom, timelineViewport, selected, durationResizable, childCount, nestingDepth, fps, snapEnabled, onAlignmentSuggestion, controller }: { clip: TimelineClip; asset?: MediaAsset; waveformPeaks?: number[]; pxPerSecond: number; verticalZoom: number; timelineViewport: { scrollLeft: number; scrollTop: number; width: number; height: number }; selected: boolean; durationResizable: boolean; childCount: number; nestingDepth: number; fps: number; snapEnabled: boolean; onAlignmentSuggestion: (suggestion: AlignmentSuggestion | null) => void; controller: typeof import("../core/interface").editorController }) {
   const { t } = useI18n();
   const [dragging, setDragging] = useState(false);
   const [resizing, setResizing] = useState(false);
   const drag = useRef<{ pointerId: number; startX: number; startY: number; originalStart: number; originalY: number; lastStart: number; lastY: number } | null>(null);
   const visual = isVisualClip(clip);
   const muted = (clip.kind === "video" || clip.kind === "audio") && (clip.volume ?? 0) <= -60;
+  const clipWidth = Math.max(MIN_CLIP_WIDTH, clip.duration * pxPerSecond);
+  const clipHeight = timelineClipHeight(clip) * verticalZoom;
+  const viewportTop = Math.max(0, timelineViewport.scrollTop - TIME_RULER_HEIGHT);
+  const verticallyVisible = clip.y * verticalZoom < viewportTop + timelineViewport.height && clip.y * verticalZoom + clipHeight > viewportTop;
 
   const beginDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return;
@@ -653,7 +667,7 @@ const Clip = memo(function Clip({ clip, waveformPeaks, pxPerSecond, verticalZoom
         const time = clip.start + Math.min(clip.duration, Math.max(0, (event.clientX - rect.left) / pxPerSecond));
         controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "clip", time, timelineY: clip.y, positionX: clip.positionX ?? 0, positionY: clip.positionY ?? 0 });
       }}
-      style={{ left: clip.start * pxPerSecond, top: clip.y * verticalZoom, width: Math.max(MIN_CLIP_WIDTH, clip.duration * pxPerSecond), height: timelineClipHeight(clip) * verticalZoom, zIndex: dragging ? 30_000 : clip.kind === "group" ? 100 + nestingDepth * 100 + (selected ? 1 : 0) : Math.max(1_000, 10_000 + nestingDepth * 100 - Math.round(clip.y)), "--clip-color": clip.color } as React.CSSProperties}
+      style={{ left: clip.start * pxPerSecond, top: clip.y * verticalZoom, width: clipWidth, height: clipHeight, zIndex: dragging ? 30_000 : clip.kind === "group" ? 100 + nestingDepth * 100 + (selected ? 1 : 0) : Math.max(1_000, 10_000 + nestingDepth * 100 - Math.round(clip.y)), "--clip-color": clip.color } as React.CSSProperties}
     >
       {(dragging || resizing) && <output className="clip-drag-readout">{resizing ? `${clip.duration.toFixed(2)}s` : `${clip.start.toFixed(2)}s · y ${Math.round(clip.y)}`}</output>}
       <span className="timeline-clip-kind">{clip.kind === "group" ? <FolderList16Regular /> : clip.kind === "title" ? <TextT12Regular /> : clip.kind === "audio" ? <MusicNote216Regular /> : clip.kind === "object" ? <Cube16Regular /> : <VideoClip16Regular />}</span><strong>{clip.name}{clip.kind === "group" ? ` · ${childCount}` : ""}</strong>
@@ -663,15 +677,20 @@ const Clip = memo(function Clip({ clip, waveformPeaks, pxPerSecond, verticalZoom
       </span>}
       {selected && (clip.keyframes ?? []).map((keyframe) => <i className="timeline-keyframe" key={keyframe.id} title={`${keyframe.property}: ${keyframe.value} · ${t("ドラッグで時刻変更")}`} style={{ left: `${Math.max(0, Math.min(100, keyframe.time / Math.max(0.001, clip.duration) * 100))}%` }} onPointerDown={(event) => beginKeyframeDrag(keyframe.id, keyframe.time, event)} onClick={(event) => { event.stopPropagation(); controller.setTime(clip.start + keyframe.time); controller.selectClip(clip.id); }} />)}
       {clip.kind === "audio" && <div className="waveform" data-waveform-source={waveformPeaks?.length ? "media" : "pending"}>{(waveformPeaks?.length ? waveformPeaks : Array.from({ length: 24 }, () => 0.08)).map((peak, i) => <i key={i} style={{ height: `${Math.max(4, Math.min(100, peak * 100))}%` }} />)}</div>}
-      {clip.kind === "video" && <div className="frame-strip">{Array.from({ length: Math.max(3, Math.floor(clip.duration / 3)) }, (_, i) => <i key={i} />)}</div>}
+      {verticallyVisible && clip.kind === "video" && asset && (asset.kind === "video" || asset.kind === "image") && <TimelineMediaStrip asset={asset} clip={clip} width={clipWidth} height={clipHeight} pxPerSecond={pxPerSecond} viewport={timelineViewport} controller={controller} />}
       {selected && durationResizable && clip.kind !== "group" && <><i className="clip-trim-handle trim-start" title={t("左端をドラッグして長さを変更")} onPointerDown={(event) => beginResize("start", event)} /><i className="clip-trim-handle trim-end" title={t("右端をドラッグして長さを変更")} onPointerDown={(event) => beginResize("end", event)} /></>}
       {selected && clip.kind === "group" && (["n", "s", "e", "w", "ne", "nw", "se", "sw"] as GroupResizeEdge[]).map((edge) => <i key={edge} className={`group-resize-handle group-resize-${edge}`} data-resize-edge={edge} title={t("グループ境界を伸縮")} onPointerDown={(event) => beginGroupResize(edge, event)} />)}
     </button>
   );
 }, (previous, next) => previous.clip === next.clip
+  && previous.asset === next.asset
   && previous.waveformPeaks === next.waveformPeaks
   && previous.pxPerSecond === next.pxPerSecond
   && previous.verticalZoom === next.verticalZoom
+  && previous.timelineViewport.scrollLeft === next.timelineViewport.scrollLeft
+  && previous.timelineViewport.scrollTop === next.timelineViewport.scrollTop
+  && previous.timelineViewport.width === next.timelineViewport.width
+  && previous.timelineViewport.height === next.timelineViewport.height
   && previous.selected === next.selected
   && previous.durationResizable === next.durationResizable
   && previous.childCount === next.childCount
@@ -679,6 +698,168 @@ const Clip = memo(function Clip({ clip, waveformPeaks, pxPerSecond, verticalZoom
   && previous.fps === next.fps
   && previous.snapEnabled === next.snapEnabled
   && previous.onAlignmentSuggestion === next.onAlignmentSuggestion);
+
+function TimelineMediaStrip({ asset, clip, width, height, pxPerSecond, viewport, controller }: {
+  asset: MediaAsset;
+  clip: TimelineClip;
+  width: number;
+  height: number;
+  pxPerSecond: number;
+  viewport: { scrollLeft: number; width: number };
+  controller: typeof import("../core/interface").editorController;
+}) {
+  const clipLeft = clip.start * pxPerSecond;
+  const visibleStart = Math.max(0, viewport.scrollLeft - clipLeft);
+  const visibleEnd = Math.min(width, viewport.scrollLeft + viewport.width - clipLeft);
+  if (visibleEnd <= visibleStart || viewport.width <= 0) return <div className="frame-strip timeline-media-strip" data-thumbnail-source={asset.kind} />;
+
+  const first = Math.max(0, Math.floor(visibleStart / TIMELINE_THUMBNAIL_WIDTH) - 1);
+  const last = Math.min(Math.ceil(width / TIMELINE_THUMBNAIL_WIDTH), Math.ceil(visibleEnd / TIMELINE_THUMBNAIL_WIDTH) + 1);
+  const tiles = Array.from({ length: Math.max(0, last - first) }, (_, index) => {
+    const tileIndex = first + index;
+    const left = tileIndex * TIMELINE_THUMBNAIL_WIDTH;
+    const tileWidth = Math.min(TIMELINE_THUMBNAIL_WIDTH, width - left);
+    // Derive the sampled frame from the cell's actual ruler position so the
+    // visible image stays aligned with the time represented at that point.
+    const localTime = Math.max(0, Math.min(clip.duration, (left + tileWidth / 2) / Math.max(0.001, pxPerSecond)));
+    const speed = Math.max(0.01, Math.min(10, evaluateTimelineSpeed(clip, localTime) / 100));
+    const sourceTime = asset.kind === "image"
+      ? 0
+      : Math.max(0, Math.min(Math.max(0, asset.duration - 0.001), clip.offset + localTime * speed));
+    return { tileIndex, left, width: tileWidth, sourceTime };
+  });
+
+  return <div className="frame-strip timeline-media-strip" data-thumbnail-source={asset.kind}>
+    {tiles.map((tile) => <TimelineThumbnailCanvas
+      key={`${tile.tileIndex}:${tile.sourceTime.toFixed(6)}`}
+      assetId={asset.id}
+      sourceTime={tile.sourceTime}
+      left={tile.left}
+      width={tile.width}
+      height={height}
+      enabled={!asset.fileStatus || asset.fileStatus === "ready"}
+      controller={controller}
+    />)}
+  </div>;
+}
+
+function TimelineThumbnailCanvas({ assetId, sourceTime, left, width, height, enabled, controller }: {
+  assetId: string;
+  sourceTime: number;
+  left: number;
+  width: number;
+  height: number;
+  enabled: boolean;
+  controller: typeof import("../core/interface").editorController;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    void getTimelineThumbnailCanvas(controller, assetId, sourceTime, width, height).then((source) => {
+      if (cancelled) return;
+      const canvas = canvasRef.current;
+      const context = canvas?.getContext("2d");
+      if (!canvas || !context) return;
+      canvas.width = source.width;
+      canvas.height = source.height;
+      context.drawImage(source, 0, 0);
+      canvas.dataset.thumbnailReady = "true";
+    }).catch(() => { /* The clip color remains visible while its media is unavailable. */ });
+    return () => { cancelled = true; };
+  }, [assetId, controller, enabled, height, sourceTime, width]);
+
+  return <canvas ref={canvasRef} style={{ left, width }} data-source-time={sourceTime.toFixed(6)} aria-hidden="true" />;
+}
+
+function getTimelineThumbnailCanvas(controller: typeof import("../core/interface").editorController, assetId: string, time: number, cssWidth: number, cssHeight: number) {
+  const scale = Math.min(2, window.devicePixelRatio || 1, 512 / Math.max(1, cssWidth), 256 / Math.max(1, cssHeight));
+  const width = Math.max(1, Math.round(cssWidth * scale));
+  const height = Math.max(1, Math.round(cssHeight * scale));
+  const key = `${assetId}:${time.toFixed(6)}:${width}x${height}`;
+  const cached = timelineThumbnailCache.get(key);
+  if (cached) {
+    timelineThumbnailCache.delete(key);
+    timelineThumbnailCache.set(key, cached);
+    return cached;
+  }
+
+  const request = scheduleTimelineThumbnail(() => controller.getMediaThumbnail(assetId, time)).then((thumbnail) => {
+    const raster = thumbnail.frame ?? thumbnail.bitmap;
+    if (!raster) throw new Error("Timeline thumbnail has no raster image");
+    const sourceWidth = raster instanceof VideoFrame ? raster.displayWidth : raster.width;
+    const sourceHeight = raster instanceof VideoFrame ? raster.displayHeight : raster.height;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      raster.close();
+      throw new Error("Timeline thumbnail canvas is unavailable");
+    }
+    const coverScale = Math.max(width / Math.max(1, sourceWidth), height / Math.max(1, sourceHeight));
+    const targetWidth = sourceWidth * coverScale;
+    const targetHeight = sourceHeight * coverScale;
+    try {
+      context.drawImage(raster, (width - targetWidth) / 2, (height - targetHeight) / 2, targetWidth, targetHeight);
+    } finally {
+      raster.close();
+    }
+    return canvas;
+  }).catch((error) => {
+    if (timelineThumbnailCache.get(key) === request) timelineThumbnailCache.delete(key);
+    throw error;
+  });
+  timelineThumbnailCache.set(key, request);
+  while (timelineThumbnailCache.size > TIMELINE_THUMBNAIL_CACHE_LIMIT) timelineThumbnailCache.delete(timelineThumbnailCache.keys().next().value!);
+  return request;
+}
+
+function scheduleTimelineThumbnail<T>(request: () => Promise<T>) {
+  return new Promise<T>((resolve, reject) => {
+    timelineThumbnailQueue.push(async () => {
+      try { resolve(await request()); } catch (error) { reject(error); }
+    });
+    drainTimelineThumbnailQueue();
+  });
+}
+
+function drainTimelineThumbnailQueue() {
+  while (activeTimelineThumbnailRequests < TIMELINE_THUMBNAIL_CONCURRENCY && timelineThumbnailQueue.length) {
+    const request = timelineThumbnailQueue.shift()!;
+    activeTimelineThumbnailRequests++;
+    void request().finally(() => {
+      activeTimelineThumbnailRequests--;
+      drainTimelineThumbnailQueue();
+    });
+  }
+}
+
+function evaluateTimelineSpeed(clip: TimelineClip, localTime: number) {
+  const keys = (clip.keyframes ?? []).filter((keyframe) => keyframe.property === "speed").sort((left, right) => left.time - right.time);
+  if (!keys.length) return clip.speed ?? 100;
+  const left = [...keys].reverse().find((keyframe) => keyframe.time <= localTime) ?? keys[0];
+  const right = keys.find((keyframe) => keyframe.time >= localTime) ?? keys.at(-1)!;
+  if (left === right || left.interpolation === "step") return left.value;
+  let alpha = Math.max(0, Math.min(1, (localTime - left.time) / Math.max(0.000001, right.time - left.time)));
+  if (left.interpolation === "smooth") alpha = alpha * alpha * (3 - 2 * alpha);
+  else if (left.interpolation === "bezier") alpha = timelineCubicBezierAt(left.easing, alpha);
+  return left.value + (right.value - left.value) * alpha;
+}
+
+function timelineCubicBezierAt(easing: NonNullable<TimelineClip["keyframes"]>[number]["easing"], x: number) {
+  const { x1, y1, x2, y2 } = easing ?? { x1: 0.33, y1: 0, x2: 0.67, y2: 1 };
+  let time = x;
+  for (let index = 0; index < 6; index++) {
+    const inverse = 1 - time;
+    const estimate = 3 * inverse * inverse * time * x1 + 3 * inverse * time * time * x2 + time * time * time;
+    const derivative = 3 * inverse * inverse * x1 + 6 * inverse * time * (x2 - x1) + 3 * time * time * (1 - x2);
+    if (Math.abs(derivative) < 0.000001) break;
+    time = Math.max(0, Math.min(1, time - (estimate - x) / derivative));
+  }
+  const inverse = 1 - time;
+  return 3 * inverse * inverse * time * y1 + 3 * inverse * time * time * y2 + time * time * time;
+}
 
 function findTimelineAlignment(candidate: { start: number; duration: number; y: number; height: number }, clips: readonly TimelineClip[], excludedIds: ReadonlySet<string>, pxPerSecond: number, movingEdges: readonly TimelineEdge[] = ["start", "end"]) {
   const movingWidth = Math.max(MIN_CLIP_WIDTH, candidate.duration * pxPerSecond);

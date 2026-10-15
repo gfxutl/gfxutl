@@ -761,8 +761,8 @@ svg { width: 16px; height: 16px; }
 .timeline-clip .clip-trim-handle.trim-end { right: 0; }
 .timeline-clip .clip-trim-handle.trim-end::after { right: 2px; }
 .clip-title { top: 13px; bottom: 13px; background: #3e4144; border-color: #aeb1b4; }
-.frame-strip { position: absolute; inset: 0; display: flex; opacity: .38; }
-.frame-strip i { min-width: 44px; flex: 1; border-right: 1px solid #222; background: linear-gradient(145deg, #777765 0 35%, #485347 36% 65%, #918268 66%); }
+.frame-strip { position: absolute; inset: 0; overflow: hidden; opacity: .62; pointer-events: none; }
+.timeline-media-strip canvas { position: absolute; top: 0; bottom: 0; height: 100%; border-right: 1px solid #111a; background: color-mix(in srgb, var(--clip-color) 70%, #151719); object-fit: cover; }
 .waveform { position: absolute; inset: 15px 3px 3px; display: flex; align-items: center; gap: 1px; opacity: .75; }
 .waveform i { min-width: 1px; flex: 1; max-width: 3px; background: #c3ddd2; border-radius: 1px; }
 .playhead { position: absolute; z-index: 21000; top: -27px; bottom: 0; width: 1px; pointer-events: none; }

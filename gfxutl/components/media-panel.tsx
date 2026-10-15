@@ -331,9 +331,9 @@ export function MediaPanel() {
   }}>
     <div className="panel-tabs">
       <button className={state.leftPanelTab === "media" ? "active" : ""} onClick={() => controller.setLeftPanelTab("media")}>{t("メディア")}</button>
+      <button className={state.leftPanelTab === "plugins" ? "active" : ""} onClick={() => controller.setLeftPanelTab("plugins")}>{t("プラグイン")}</button>
       <button className={state.leftPanelTab === "export" ? "active" : ""} onClick={() => controller.setLeftPanelTab("export")}>{t("書き出し")}</button>
       <button className={state.leftPanelTab === "settings" ? "active" : ""} onClick={() => controller.setLeftPanelTab("settings")}>{t("設定")}</button>
-      <button className={state.leftPanelTab === "plugins" ? "active" : ""} onClick={() => controller.setLeftPanelTab("plugins")}>{t("プラグイン")}</button>
     </div>
     {state.leftPanelTab === "plugins" ? <PluginPanel /> : state.leftPanelTab === "export" ? <ExportPanel /> : state.leftPanelTab === "settings" ? <SettingsPanel /> : <div className="media-explorer">
       <div className="media-toolbar">
