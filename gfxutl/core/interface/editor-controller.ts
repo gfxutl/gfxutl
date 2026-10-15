@@ -71,7 +71,7 @@ const initialState: EditorState = {
   previewClipTabs: [],
   activePreviewClipId: null,
   selectedAssetId: null,
-  backgroundSelected: false,
+  backgroundSelected: true,
   background: { id: "background", name: "背景オブジェクト", color: 0xffffff, ...DEFAULT_COMPOSITION_SIZE, scene: structuredClone(defaultSceneSettings) },
   assets: [],
   clips: [],
@@ -198,7 +198,11 @@ export class EditorController {
       if (currentTime > duration) patch.currentTime = duration;
     }
     this.recordHistory(patch);
-    this.state = { ...this.state, ...patch };
+    const nextState = { ...this.state, ...patch };
+    if (!nextState.selectedClipId && nextState.selectedClipIds.length === 0 && !nextState.selectedAssetId) {
+      nextState.backgroundSelected = true;
+    }
+    this.state = nextState;
     this.listeners.forEach((listener) => listener());
   }
 
@@ -237,6 +241,10 @@ export class EditorController {
 
   private restoreHistory(snapshot: HistorySnapshot, canUndo: boolean, canRedo: boolean) {
     const duration = sequenceEnd(snapshot.clips, snapshot.fps);
+    const selectedClipIds = this.state.selectedClipIds.filter((id) => snapshot.clips.some((clip) => clip.id === id));
+    const selectedClipId = snapshot.clips.some((clip) => clip.id === this.state.selectedClipId) ? this.state.selectedClipId : selectedClipIds.at(-1) ?? null;
+    const selectionWasClip = this.state.selectedClipId !== null || this.state.selectedClipIds.length > 0;
+    const selectedAssetId = selectionWasClip ? snapshot.clips.find((clip) => clip.id === selectedClipId)?.assetId ?? null : this.state.selectedAssetId;
     this.historySuspended = true;
     this.state = {
       ...this.state,
@@ -245,8 +253,10 @@ export class EditorController {
       currentTime: Math.min(this.state.currentTime, duration),
       canUndo,
       canRedo,
-      selectedClipId: snapshot.clips.some((clip) => clip.id === this.state.selectedClipId) ? this.state.selectedClipId : null,
-      selectedClipIds: this.state.selectedClipIds.filter((id) => snapshot.clips.some((clip) => clip.id === id)),
+      selectedClipId,
+      selectedClipIds,
+      selectedAssetId,
+      backgroundSelected: !selectedClipId && selectedClipIds.length === 0 && !selectedAssetId ? true : this.state.backgroundSelected,
     };
     this.historySuspended = false;
     this.renderClipSource = null;
@@ -399,7 +409,7 @@ export class EditorController {
         previewClipTabs: [],
         activePreviewClipId: null,
         selectedAssetId: null,
-        backgroundSelected: false,
+        backgroundSelected: true,
       });
       this.renderClipSource = null;
       this.engine.configurePreviewCache(project.settings.ramPreviewEnabled, project.settings.ramPreviewMaxBytes);
@@ -431,7 +441,7 @@ export class EditorController {
       previewClipTabs: [],
       activePreviewClipId: null,
       selectedAssetId: null,
-      backgroundSelected: false,
+      backgroundSelected: true,
       exportSettings: { ...initialState.exportSettings },
     });
     this.stopAudioPreview();
@@ -929,11 +939,13 @@ export class EditorController {
     const selectedClipIds = additive
       ? this.state.selectedClipIds.includes(id) ? this.state.selectedClipIds.filter((item) => item !== id) : [...this.state.selectedClipIds, id]
       : [id];
+    const selectedClipId = selectedClipIds.includes(id) ? id : selectedClipIds.at(-1) ?? null;
+    const selectedClip = this.state.clips.find((item) => item.id === selectedClipId);
     const previewable = clip && clip.kind !== "group";
     this.update({
-      selectedClipId: selectedClipIds.includes(id) ? id : selectedClipIds.at(-1) ?? null,
+      selectedClipId,
       selectedClipIds,
-      selectedAssetId: clip?.assetId ?? null,
+      selectedAssetId: selectedClip?.assetId ?? null,
       backgroundSelected: false,
       ...(previewable ? {
         previewClipTabs: this.state.previewClipTabs.includes(id) ? this.state.previewClipTabs : [...this.state.previewClipTabs, id],
@@ -1358,10 +1370,12 @@ export class EditorController {
   removeClip = (id: string) => {
     const selectedClipIds = this.state.selectedClipIds.filter((item) => item !== id);
     const clips = assignTimelineGroups(this.state.clips.filter((clip) => clip.id !== id));
+    const selectedClipId = this.state.selectedClipId === id ? selectedClipIds.at(-1) ?? null : this.state.selectedClipId;
     this.update({
       clips,
-      selectedClipId: this.state.selectedClipId === id ? selectedClipIds.at(-1) ?? null : this.state.selectedClipId,
+      selectedClipId,
       selectedClipIds,
+      ...(this.state.selectedClipId === id ? { selectedAssetId: clips.find((clip) => clip.id === selectedClipId)?.assetId ?? null } : {}),
       previewClipTabs: this.state.previewClipTabs.filter((clipId) => clipId !== id),
       activePreviewClipId: this.state.activePreviewClipId === id ? null : this.state.activePreviewClipId,
     });
@@ -1533,6 +1547,7 @@ export class EditorController {
       clips: assignTimelineGroups(this.state.clips.filter((clip) => !ids.includes(clip.id))),
       selectedClipId: null,
       selectedClipIds: [],
+      selectedAssetId: null,
       previewClipTabs: this.state.previewClipTabs.filter((id) => !ids.includes(id)),
       activePreviewClipId: this.state.activePreviewClipId && ids.includes(this.state.activePreviewClipId) ? null : this.state.activePreviewClipId,
     });

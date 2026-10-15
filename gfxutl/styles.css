@@ -564,7 +564,14 @@ svg { width: 16px; height: 16px; }
 .font-picker-trigger:focus-visible, .font-picker-trigger[aria-expanded="true"] { border-color: #fff; }
 .font-picker-trigger > span { min-width: 0; flex: 1; overflow: hidden; font-size: 9px; line-height: 1.5; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .font-picker-trigger > svg { width: 11px; height: 11px; color: #70757a; }
-.font-picker-list { position: absolute; z-index: 40; top: calc(100% + 3px); right: 0; width: max(100%, 205px); max-height: 204px; overflow-y: auto; padding: 4px; border: 1px solid #393d41; border-radius: 5px; background: #17191cfa; box-shadow: 0 14px 34px #000b; scrollbar-color: #3d4247 #17191c; scrollbar-width: thin; }
+.font-picker-list { position: absolute; z-index: 40; top: calc(100% + 3px); right: 0; width: max(100%, 205px); overflow: hidden; padding: 4px; border: 1px solid #393d41; border-radius: 5px; background: #17191cfa; box-shadow: 0 14px 34px #000b; }
+.font-picker-search { height: 29px; display: flex; align-items: center; gap: 6px; margin-bottom: 4px; padding: 0 7px; border: 1px solid #34383d; border-radius: 3px; background: #0d0f10; color: #74797e; }
+.font-picker-search:focus-within { border-color: #777c81; color: #aeb2b5; }
+.font-picker-search > svg { width: 11px; height: 11px; flex: none; }
+.font-picker-search > input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: #d4d6d8; font-size: 10px; }
+.font-picker-search > input::placeholder { color: #61666b; }
+.font-picker-search > input::-webkit-search-cancel-button { opacity: .55; }
+.font-picker-options { max-height: 204px; overflow-y: auto; scrollbar-color: #3d4247 #17191c; scrollbar-width: thin; }
 .font-load-marker { display: block; width: 1px; height: 1px; margin-bottom: -1px; opacity: 0; pointer-events: none; }
 .font-picker-list button { width: 100%; height: 29px; min-width: 0; display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 6px; padding: 0 6px; border: 0; border-radius: 3px; background: transparent; color: #bfc2c4; cursor: pointer; }
 .font-picker-list button:hover, .font-picker-list button:focus-visible { outline: 0; background: #303337; color: #fff; }
@@ -573,6 +580,7 @@ svg { width: 16px; height: 16px; }
 .font-picker-list button > span { min-width: 0; overflow: hidden; font-size: 11px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .font-picker-list button > small { color: #676c71; font: 7px "IBM Plex Mono", monospace; white-space: nowrap; }
 .font-picker-list button.builtin > span { font-family: "DM Sans", "Noto Sans JP", sans-serif; font-size: 9px; }
+.font-picker-empty { padding: 18px 8px; color: #676c71; font-size: 9px; text-align: center; }
 .font-access-row { display: flex; min-height: 28px; margin: -4px 0 7px 59px; align-items: center; justify-content: space-between; gap: 4px; }
 .font-access-row small { min-width: 0; overflow: hidden; color: #686d71; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .font-access-row .ui-button { flex: none; font-size: 8px; }
