@@ -8,6 +8,8 @@ import { createProjectDocument, parseProjectDocument, type ProjectDocument } fro
 import { clampTimelineZoom } from "./timeline-zoom";
 import { MediaReadPlanner } from "./media-read-graph";
 import { resolveAudioProcessing } from "./audio-processing";
+import { DEFAULT_COMPOSITION_SIZE, normalizeBackgroundSize, normalizeCompositionDimension } from "./composition-size";
+import { DEFAULT_SEQUENCE_DURATION, sequenceEnd } from "./sequence-duration";
 
 type Listener = () => void;
 
@@ -59,7 +61,7 @@ const initialState: EditorState = {
   markers: [],
   loopPlayback: false,
   fps: 30,
-  duration: 32,
+  duration: DEFAULT_SEQUENCE_DURATION,
   currentTime: 0,
   playing: false,
   zoom: 1,
@@ -70,7 +72,7 @@ const initialState: EditorState = {
   activePreviewClipId: null,
   selectedAssetId: null,
   backgroundSelected: false,
-  background: { id: "background", name: "背景オブジェクト", color: 0xffffff, scene: structuredClone(defaultSceneSettings) },
+  background: { id: "background", name: "背景オブジェクト", color: 0xffffff, ...DEFAULT_COMPOSITION_SIZE, scene: structuredClone(defaultSceneSettings) },
   assets: [],
   clips: [],
   fonts: [],
@@ -189,6 +191,12 @@ export class EditorController {
   };
 
   private update(patch: Partial<EditorState>) {
+    if (patch.clips) {
+      const duration = sequenceEnd(patch.clips, patch.fps ?? this.state.fps);
+      patch.duration = duration;
+      const currentTime = patch.currentTime ?? this.state.currentTime;
+      if (currentTime > duration) patch.currentTime = duration;
+    }
     this.recordHistory(patch);
     this.state = { ...this.state, ...patch };
     this.listeners.forEach((listener) => listener());
@@ -228,10 +236,13 @@ export class EditorController {
   }
 
   private restoreHistory(snapshot: HistorySnapshot, canUndo: boolean, canRedo: boolean) {
+    const duration = sequenceEnd(snapshot.clips, snapshot.fps);
     this.historySuspended = true;
     this.state = {
       ...this.state,
       ...snapshot,
+      duration,
+      currentTime: Math.min(this.state.currentTime, duration),
       canUndo,
       canRedo,
       selectedClipId: snapshot.clips.some((clip) => clip.id === this.state.selectedClipId) ? this.state.selectedClipId : null,
@@ -310,8 +321,7 @@ export class EditorController {
         loopPlayback: project?.loopPlayback ?? false,
         projectName: project?.name ?? this.state.projectName,
         fps: project?.fps ?? this.state.fps,
-        duration: project?.duration ?? Math.max(32, ...clips.map((clip) => clip.start + clip.duration + 2)),
-        background: project?.background ?? this.state.background,
+        background: project?.background ? normalizeBackgroundSize(project.background, project.exportSettings) : this.state.background,
         settings: project?.settings ?? this.state.settings,
         exportSettings: project?.exportSettings ?? this.state.exportSettings,
       });
@@ -377,8 +387,7 @@ export class EditorController {
       this.update({
         projectName: project.name,
         fps: project.fps,
-        duration: project.duration,
-        background: project.background,
+        background: normalizeBackgroundSize(project.background),
         assets,
         clips: project.clips,
         markers: project.markers,
@@ -409,10 +418,10 @@ export class EditorController {
     this.update({
       projectName: "Untitled Project",
       fps: 30,
-      duration: 32,
+      duration: DEFAULT_SEQUENCE_DURATION,
       currentTime: 0,
       playing: false,
-      background: { id: "background", name: "背景オブジェクト", color: 0xffffff, scene: structuredClone(defaultSceneSettings) },
+      background: { id: "background", name: "背景オブジェクト", color: 0xffffff, ...DEFAULT_COMPOSITION_SIZE, scene: structuredClone(defaultSceneSettings) },
       assets: [],
       clips: [],
       markers: [],
@@ -974,11 +983,21 @@ export class EditorController {
   selectAsset = (id: string | null) => this.update({ selectedAssetId: id, selectedClipId: null, selectedClipIds: [], backgroundSelected: false });
   selectBackground = () => this.update({ backgroundSelected: true, selectedAssetId: null, selectedClipId: null, selectedClipIds: [] });
   updateBackground = (patch: Partial<EditorState["background"]>) => {
-    const next = { ...this.state.background, ...patch };
+    const next = normalizeBackgroundSize({ ...this.state.background, ...patch });
     if (patch.color !== undefined) next.scene = { ...next.scene, background: { ...next.scene.background, color: patch.color } };
-    this.update({ background: next, backgroundSelected: true });
+    const sizeChanged = next.width !== this.state.background.width || next.height !== this.state.background.height;
+    this.update({
+      background: next,
+      backgroundSelected: true,
+      ...(sizeChanged ? { exportSettings: { ...this.state.exportSettings, width: next.width, height: next.height } } : {}),
+    });
+    if (sizeChanged) this.engine.clearCache();
     this.renderPreview(true);
   };
+  updateBackgroundSize = (width: number, height: number) => this.updateBackground({
+    width: normalizeCompositionDimension(width, this.state.background.width),
+    height: normalizeCompositionDimension(height, this.state.background.height),
+  });
   updateSceneSettings = (patch: Partial<SceneSettings>) => {
     const scene = {
       ...this.state.background.scene,
@@ -1080,17 +1099,15 @@ export class EditorController {
     const minimumY = Math.min(...this.state.clips.filter((clip) => movingIds.has(clip.id)).map((clip) => clip.y));
     const safeDeltaStart = Math.max(deltaStart, -minimumStart);
     const safeDeltaY = Math.max(deltaY, -minimumY);
-    let end = this.state.duration;
     const proposed = this.state.clips.map((clip) => {
       if (!movingIds.has(clip.id)) return clip;
       const nextStart = clip.start + safeDeltaStart;
       const nextY = clip.y + safeDeltaY;
-      end = Math.max(end, nextStart + clip.duration + 2);
       return { ...clip, start: nextStart, y: nextY };
     });
     if (hasGroupBoundaryCrossing(proposed)) return;
     const clips = assignTimelineGroups(proposed);
-    this.update({ clips, duration: end, selectedClipId: id, selectedClipIds: selectedIds });
+    this.update({ clips, selectedClipId: id, selectedClipIds: selectedIds });
     this.invalidatePreviewCache();
     this.schedulePersistence();
     this.renderPreview(false);
@@ -1108,16 +1125,14 @@ export class EditorController {
     const requestedDelta = frames / this.state.fps;
     const safeDelta = Math.max(requestedDelta, -Math.min(...selected.map((clip) => clip.start)));
     if (!safeDelta) return;
-    let end = this.state.duration;
     const proposed = this.state.clips.map((clip) => {
       if (!movingIds.has(clip.id)) return clip;
       const start = Math.max(0, clip.start + safeDelta);
-      end = Math.max(end, start + clip.duration + 2);
       return { ...clip, start };
     });
     if (hasGroupBoundaryCrossing(proposed)) return;
     const clips = assignTimelineGroups(proposed);
-    this.update({ clips, duration: end });
+    this.update({ clips });
     this.invalidatePreviewCache();
     this.schedulePersistence();
     this.renderPreview(false);
@@ -1136,7 +1151,6 @@ export class EditorController {
     if (hasGroupBoundaryCrossing(proposed)) return;
     this.update({
       clips: assignTimelineGroups(proposed),
-      duration: Math.max(this.state.duration, nextStart + nextDuration + 2),
     });
     this.invalidatePreviewCache();
     this.schedulePersistence();
@@ -1156,7 +1170,6 @@ export class EditorController {
     if (hasGroupBoundaryCrossing(proposed)) return;
     this.update({
       clips: assignTimelineGroups(proposed),
-      duration: Math.max(this.state.duration, nextStart + nextDuration + 2),
     });
     this.schedulePersistence();
   };
@@ -1404,7 +1417,6 @@ export class EditorController {
       selectedClipIds: [id],
       selectedAssetId: null,
       currentTime: start,
-      duration: Math.max(this.state.duration, group.start + group.duration + 2),
       contextMenu: null,
     });
     this.schedulePersistence();
@@ -1458,7 +1470,7 @@ export class EditorController {
       clips: assignTimelineGroups([...this.state.clips, clip]), selectedClipId: clip.id, selectedClipIds: [clip.id], selectedAssetId: null,
       previewClipTabs: this.state.previewClipTabs.includes(clip.id) ? this.state.previewClipTabs : [...this.state.previewClipTabs, clip.id],
       activePreviewClipId: clip.id,
-      currentTime: clip.start, duration: Math.max(this.state.duration, clip.start + clip.duration + 2), contextMenu: null,
+      currentTime: clip.start, contextMenu: null,
     });
     this.invalidatePreviewCache();
     this.schedulePersistence();
@@ -1570,7 +1582,6 @@ export class EditorController {
     const clips = assignTimelineGroups([...this.state.clips, ...pasted]);
     this.update({
       clips, selectedClipId: pasted.at(-1)?.id ?? null, selectedClipIds: pasted.map((clip) => clip.id), contextMenu: null,
-      duration: Math.max(this.state.duration, ...pasted.map((clip) => clip.start + clip.duration + 2)),
     });
     this.invalidatePreviewCache();
     this.schedulePersistence();
@@ -1693,7 +1704,6 @@ export class EditorController {
       previewClipTabs: this.state.previewClipTabs.includes(id) ? this.state.previewClipTabs : [...this.state.previewClipTabs, id],
       activePreviewClipId: id,
       currentTime: clip.start,
-      duration: Math.max(this.state.duration, clip.start + duration + 2),
     });
     this.invalidatePreviewCache();
     this.schedulePersistence();

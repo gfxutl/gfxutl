@@ -1,5 +1,5 @@
 import { Dismiss16Regular as X, Layer20Regular as Layers3, Open16Regular as ExternalLink } from "@fluentui/react-icons";
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useEditor } from "../core/interface";
 import type { TimelineClip } from "../core/interface";
 import type { MediaAsset } from "../core/interface";
@@ -24,6 +24,13 @@ export function PreviewPanel() {
     .filter((clip): clip is TimelineClip => Boolean(clip)), [state.clips, state.previewClipTabs]);
   const activePreviewClip = state.clips.find((clip) => clip.id === state.activePreviewClipId);
   const activeAudioClip = activePreviewClip?.kind === "audio" ? activePreviewClip : undefined;
+  const compositionAspect = state.background.width / state.background.height;
+  const previewWorldHeight = 9;
+  const previewWorldWidth = previewWorldHeight * compositionAspect;
+  const previewStyle = {
+    "--preview-aspect": `${state.background.width} / ${state.background.height}`,
+    "--preview-aspect-ratio": compositionAspect,
+  } as CSSProperties;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -56,8 +63,10 @@ export function PreviewPanel() {
     popup.document.title = "GfxUtl プレビュー";
     popup.document.body.innerHTML = `<main><canvas></canvas><button type="button" aria-label="プレビューを戻す">GfxUtlへ戻す</button></main>`;
     const style = popup.document.createElement("style");
-    style.textContent = "html,body,main{margin:0;width:100%;height:100%;overflow:hidden;background:#111}canvas{display:block;width:100%;height:100%}button{position:fixed;right:12px;top:12px;border:1px solid #777;background:#202225;color:#fff;padding:8px 12px;border-radius:4px;cursor:pointer}";
+    style.textContent = "html,body,main{margin:0;width:100%;height:100%;overflow:hidden;background:#111}main{display:grid;place-items:center}canvas{display:block;width:min(100vw,calc(100vh * var(--preview-aspect-ratio)));height:min(100vh,calc(100vw * var(--preview-aspect-inverse)))}button{position:fixed;right:12px;top:12px;border:1px solid #777;background:#202225;color:#fff;padding:8px 12px;border-radius:4px;cursor:pointer}";
     popup.document.head.append(style);
+    popup.document.documentElement.style.setProperty("--preview-aspect-ratio", String(compositionAspect));
+    popup.document.documentElement.style.setProperty("--preview-aspect-inverse", String(1 / compositionAspect));
     const popupCanvas = popup.document.querySelector("canvas") as HTMLCanvasElement | null;
     const returnButton = popup.document.querySelector("button") as HTMLButtonElement | null;
     if (!popupCanvas || !returnButton) { popup.close(); return; }
@@ -87,6 +96,13 @@ export function PreviewPanel() {
     return () => window.removeEventListener("gfxutl:preview-action", handlePreviewAction);
   }, [poppedOut]);
 
+  useEffect(() => {
+    const popup = popoutRef.current;
+    if (!poppedOut || !popup || popup.closed) return;
+    popup.document.documentElement.style.setProperty("--preview-aspect-ratio", String(compositionAspect));
+    popup.document.documentElement.style.setProperty("--preview-aspect-inverse", String(1 / compositionAspect));
+  }, [poppedOut, compositionAspect]);
+
   useEffect(() => { if (state.playing) setHoveredClipId(null); }, [state.playing]);
 
   const previewObjects = useMemo(() => state.clips
@@ -104,8 +120,11 @@ export function PreviewPanel() {
   };
 
   const hoverObject = (event: ReactMouseEvent<HTMLDivElement>) => {
-    if (state.playing) return;
-    if ((event.target as HTMLElement).closest(".preview-transform-box")) return;
+    if (state.playing || draggingClipId) return;
+    // Keep the resize/rotation controls stable under the pointer, but continue
+    // picking through the transform box itself. Otherwise a large background
+    // clip's box prevents contained foreground objects from ever being hovered.
+    if ((event.target as HTMLElement).closest("[data-handle]")) return;
     pendingPickRef.current = { x: event.clientX, y: event.clientY };
     if (pickFrameRef.current !== null) return;
     const element = event.currentTarget;
@@ -147,14 +166,14 @@ export function PreviewPanel() {
     const radians = THREE_DEGREES * object.rotation;
     const cosine = Math.cos(radians);
     const sine = Math.sin(radians);
-    const startPoint = previewWorldPoint(stage, event.clientX, event.clientY);
+    const startPoint = previewWorldPoint(stage, event.clientX, event.clientY, previewWorldWidth, previewWorldHeight);
     const startDx = startPoint.x - object.x;
     const startDy = startPoint.y - object.y;
     const grabOffsetX = cosine * startDx - sine * startDy - directionX * startWidth / 2;
     const grabOffsetY = sine * startDx + cosine * startDy - directionY * startHeight / 2;
     const move = (pointer: PointerEvent) => {
       if (pointer.pointerId !== pointerId) return;
-      const point = previewWorldPoint(stage, pointer.clientX, pointer.clientY);
+      const point = previewWorldPoint(stage, pointer.clientX, pointer.clientY, previewWorldWidth, previewWorldHeight);
       const dx = point.x - object.x;
       const dy = point.y - object.y;
       const localX = cosine * dx - sine * dy - grabOffsetX;
@@ -195,7 +214,7 @@ export function PreviewPanel() {
     const stage = stageRef.current;
     if (!stage) return;
     const pointerId = event.pointerId;
-    let previous = previewWorldPoint(stage, event.clientX, event.clientY);
+    let previous = previewWorldPoint(stage, event.clientX, event.clientY, previewWorldWidth, previewWorldHeight);
     let deltaX = 0;
     let deltaY = 0;
     let moveFrame = 0;
@@ -209,7 +228,7 @@ export function PreviewPanel() {
     };
     const move = (pointer: PointerEvent) => {
       if (pointer.pointerId !== pointerId) return;
-      const point = previewWorldPoint(stage, pointer.clientX, pointer.clientY);
+      const point = previewWorldPoint(stage, pointer.clientX, pointer.clientY, previewWorldWidth, previewWorldHeight);
       deltaX += (point.x - previous.x) * 100;
       deltaY -= (point.y - previous.y) * 100;
       previous = point;
@@ -237,8 +256,8 @@ export function PreviewPanel() {
     const stage = stageRef.current;
     if (!stage) return;
     const rect = stage.getBoundingClientRect();
-    const centerX = rect.left + (0.5 + object.x / 16) * rect.width;
-    const centerY = rect.top + (0.5 - object.y / 9) * rect.height;
+    const centerX = rect.left + (0.5 + object.x / previewWorldWidth) * rect.width;
+    const centerY = rect.top + (0.5 - object.y / previewWorldHeight) * rect.height;
     const startAngle = Math.atan2(event.clientY - centerY, event.clientX - centerX);
     const startRotation = object.rotation;
     const move = (pointer: PointerEvent) => {
@@ -262,18 +281,18 @@ export function PreviewPanel() {
         {previewTabs.map((clip) => <div key={clip.id} className={`preview-tab preview-tab-object ${state.activePreviewClipId === clip.id ? "active" : ""}`} role="tab" tabIndex={0} aria-selected={state.activePreviewClipId === clip.id} title={`${clip.name}のみをプレビュー`} onClick={() => controller.setPreviewTab(clip.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); controller.setPreviewTab(clip.id); } }}><span>{clip.name}</span><button type="button" aria-label={`${clip.name}のプレビューを閉じる`} onClick={(event) => { event.stopPropagation(); controller.closePreviewTab(clip.id); }}><X /></button></div>)}
       </div>
       {activeAudioClip && <AudioWaveformEditor clip={activeAudioClip} asset={state.assets.find((asset) => asset.id === activeAudioClip.assetId)} />}
-      <div className={`preview-stage ${activeAudioClip ? "audio-preview-hidden" : ""} ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""}`} ref={stageRef} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; if (!draggingClipId) setHoveredClipId(null); }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
+      <div className={`preview-stage ${activeAudioClip ? "audio-preview-hidden" : ""} ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""}`} ref={stageRef} style={previewStyle} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; if (!draggingClipId) setHoveredClipId(null); }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
         event.preventDefault();
         const rect = event.currentTarget.getBoundingClientRect();
         controller.openContextMenu({
           x: event.clientX, y: event.clientY, scope: "preview", time: state.currentTime, timelineY: 32,
-          positionX: ((event.clientX - rect.left) / rect.width - 0.5) * 1600,
-          positionY: ((event.clientY - rect.top) / rect.height - 0.5) * 900,
+          positionX: ((event.clientX - rect.left) / rect.width - 0.5) * previewWorldWidth * 100,
+          positionY: ((event.clientY - rect.top) / rect.height - 0.5) * previewWorldHeight * 100,
         });
       }}>
         {!poppedOut ? <canvas key={surfaceKey} ref={canvasRef} data-preview-tab={state.activePreviewClipId ?? "composite"} data-camera-projection={state.cameraProjection} data-video-frames={state.videoFramesRendered} data-geometry-objects={state.geometryObjectsReady} data-active-scene-objects={state.activeSceneObjects} data-active-image-objects={state.activeImageObjects} data-playing-audio-objects={state.playingAudioObjects} data-preview-source={state.previewSource} data-cache-frames={state.cachedFramesDisplayed} data-preview-frames={state.previewFramesRendered} /> : <div className="preview-popout-placeholder"><ExternalLink /><span>プレビューは別ウィンドウで表示中です</span><button type="button" onClick={(event) => { event.stopPropagation(); popoutRef.current?.close(); }}>この画面に戻す</button></div>}
         <div className="safe-area" />
-        {!state.playing && hoveredObject && <TransformHandles object={hoveredObject} dragging={draggingClipId === hoveredObject.clip.id} onMove={beginMove} onResize={beginResize} onRotate={beginRotate} />}
+        {!state.playing && hoveredObject && <TransformHandles object={hoveredObject} worldWidth={previewWorldWidth} worldHeight={previewWorldHeight} dragging={draggingClipId === hoveredObject.clip.id} onMove={beginMove} onResize={beginResize} onRotate={beginRotate} />}
       </div>
     </section>
   );
@@ -351,21 +370,23 @@ function previewBounds(clip: TimelineClip, asset?: MediaAsset): PreviewObjectBou
 const THREE_DEGREES = Math.PI / 180;
 const HANDLE_POSITIONS = ["nw", "n", "ne", "e", "se", "s", "sw", "w"] as const;
 
-function previewWorldPoint(stage: HTMLElement, clientX: number, clientY: number) {
+function previewWorldPoint(stage: HTMLElement, clientX: number, clientY: number, worldWidth: number, worldHeight: number) {
   const rect = stage.getBoundingClientRect();
-  return { x: ((clientX - rect.left) / rect.width - 0.5) * 16, y: (0.5 - (clientY - rect.top) / rect.height) * 9 };
+  return { x: ((clientX - rect.left) / rect.width - 0.5) * worldWidth, y: (0.5 - (clientY - rect.top) / rect.height) * worldHeight };
 }
 
-function TransformHandles({ object, dragging, onMove, onResize, onRotate }: {
+function TransformHandles({ object, worldWidth, worldHeight, dragging, onMove, onResize, onRotate }: {
   object: PreviewObjectBounds;
+  worldWidth: number;
+  worldHeight: number;
   dragging: boolean;
   onMove: (event: ReactPointerEvent<HTMLElement>, object: PreviewObjectBounds) => void;
   onResize: (event: ReactPointerEvent<HTMLElement>, object: PreviewObjectBounds, handle: string) => void;
   onRotate: (event: ReactPointerEvent<HTMLElement>, object: PreviewObjectBounds) => void;
 }) {
   return <div className={`preview-transform-box ${dragging ? "dragging" : ""}`} data-clip-id={object.clip.id} onPointerDown={(event) => onMove(event, object)} style={{
-    left: `${50 + object.x / 16 * 100}%`, top: `${50 - object.y / 9 * 100}%`,
-    width: `${object.width / 16 * 100}%`, height: `${object.height / 9 * 100}%`,
+    left: `${50 + object.x / worldWidth * 100}%`, top: `${50 - object.y / worldHeight * 100}%`,
+    width: `${object.width / worldWidth * 100}%`, height: `${object.height / worldHeight * 100}%`,
     transform: `translate(-50%, -50%) rotate(${object.rotation}deg)`,
   }}>
     {HANDLE_POSITIONS.map((position) => <i key={position} className={`dimension-handle handle-${position}`} data-handle={position} onPointerDown={(event) => onResize(event, object, position)} />)}

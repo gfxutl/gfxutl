@@ -139,6 +139,8 @@ export interface BackgroundObject {
   id: "background";
   name: string;
   color: number;
+  width: number;
+  height: number;
   scene: SceneSettings;
 }
 

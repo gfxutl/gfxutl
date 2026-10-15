@@ -6,19 +6,15 @@ import {
   VideoClip16Regular as FileVideo2,
 } from "@fluentui/react-icons";
 import { useEditor } from "../core/interface";
+import { COMPOSITION_SIZE_PRESETS } from "../core/interface/composition-size";
 import { Button } from "./ui/button";
-
-const presets = [
-  { label: "HD 720p", width: 1280, height: 720 },
-  { label: "Full HD 1080p", width: 1920, height: 1080 },
-  { label: "Ultra HD 4K", width: 3840, height: 2160 },
-];
 
 export function ExportPanel() {
   const { state, controller } = useEditor();
   const settings = state.exportSettings;
   const estimatedMb = (settings.bitrate + (settings.audioCodec === "none" ? 0 : settings.audioBitrate)) * Math.max(0, settings.endTime - settings.startTime) / 8 / 1024 / 1024;
   const presetValue = `${settings.width}x${settings.height}`;
+  const hasPreset = COMPOSITION_SIZE_PRESETS.some(({ width, height }) => width === settings.width && height === settings.height);
   const busy = state.exportStatus === "exporting";
 
   return (
@@ -35,11 +31,11 @@ export function ExportPanel() {
           {settings.format === "mp4" ? <><option value="avc">H.264 / AVC</option><option value="hevc">H.265 / HEVC</option><option value="av1">AV1</option></> : <><option value="vp9">VP9</option><option value="vp8">VP8</option><option value="av1">AV1</option></>}
         </select></label>
         <div className="export-field"><span>範囲（秒）</span><div className="export-range"><input aria-label="開始時間" type="number" min={0} max={settings.endTime} step={0.1} value={settings.startTime} onChange={(event) => controller.updateExportSettings({ startTime: Number(event.target.value) })} /><i>–</i><input aria-label="終了時間" type="number" min={settings.startTime} step={0.1} value={settings.endTime} onChange={(event) => controller.updateExportSettings({ endTime: Number(event.target.value) })} /></div></div>
-        <label className="export-field"><span>解像度</span><select value={presetValue} onChange={(event) => {
+        <label className="export-field"><span>解像度</span><select value={hasPreset ? presetValue : "custom"} onChange={(event) => {
           const [width, height] = event.target.value.split("x").map(Number);
-          controller.updateExportSettings({ width, height });
-        }}>{presets.map((preset) => <option key={preset.label} value={`${preset.width}x${preset.height}`}>{preset.label}</option>)}</select></label>
-        <div className="export-dimensions"><input type="number" min={2} max={7680} step={2} value={settings.width} onChange={(event) => controller.updateExportSettings({ width: Number(event.target.value) })} /><span>×</span><input type="number" min={2} max={4320} step={2} value={settings.height} onChange={(event) => controller.updateExportSettings({ height: Number(event.target.value) })} /></div>
+          if (Number.isFinite(width) && Number.isFinite(height)) controller.updateExportSettings({ width, height });
+        }}>{COMPOSITION_SIZE_PRESETS.map((preset) => <option key={`${preset.width}x${preset.height}`} value={`${preset.width}x${preset.height}`}>{preset.width} × {preset.height}</option>)}{!hasPreset && <option value="custom">カスタム</option>}</select></label>
+        <div className="export-dimensions"><input type="number" min={2} max={7680} step={2} value={settings.width} onChange={(event) => controller.updateExportSettings({ width: Number(event.target.value) })} /><span>×</span><input type="number" min={2} max={7680} step={2} value={settings.height} onChange={(event) => controller.updateExportSettings({ height: Number(event.target.value) })} /></div>
         <label className="export-field"><span>フレームレート</span><select value={settings.fps} onChange={(event) => controller.updateExportSettings({ fps: Number(event.target.value) })}>{[24, 25, 30, 50, 60].map((fps) => <option key={fps} value={fps}>{fps} fps</option>)}</select></label>
         <label className="export-field"><span>ビットレート</span><div className="bitrate-input"><input type="number" min={1} max={100} value={settings.bitrate / 1_000_000} onChange={(event) => controller.updateExportSettings({ bitrate: Number(event.target.value) * 1_000_000 })} /><small>Mbps</small></div></label>
       </div>

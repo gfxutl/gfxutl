@@ -974,7 +974,7 @@ function pickSceneObject(ndcX: number, ndcY: number) {
   previewRaycaster.setFromCamera(previewPointer, graphics.camera);
   const intersections = previewRaycaster.intersectObjects(graphics.scene.children, true)
     .filter((hit) => hit.object.visible && worldVisible(hit.object) && hit.object !== cachedPreviewSurface?.mesh)
-    .sort((a, b) => pickRenderOrder(b.object) - pickRenderOrder(a.object) || a.distance - b.distance);
+    .sort(comparePickIntersections);
   for (const hit of intersections) {
     let object: THREE.Object3D | null = hit.object;
     while (object) {
@@ -984,6 +984,16 @@ function pickSceneObject(ndcX: number, ndcY: number) {
     }
   }
   return undefined;
+}
+
+const PICK_COPLANAR_EPSILON = 0.0001;
+
+function comparePickIntersections(a: THREE.Intersection, b: THREE.Intersection) {
+  const distanceDelta = a.distance - b.distance;
+  // Depth testing decides which genuinely separated surface is visible. The
+  // explicit render order is only authoritative for coplanar timeline planes.
+  if (Math.abs(distanceDelta) > PICK_COPLANAR_EPSILON) return distanceDelta;
+  return pickRenderOrder(b.object) - pickRenderOrder(a.object) || distanceDelta;
 }
 
 function unregisterTimelineRoot(root: THREE.Object3D) {

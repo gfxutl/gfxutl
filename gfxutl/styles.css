@@ -383,7 +383,7 @@ svg { width: 16px; height: 16px; }
 .engine-light { display: inline-block; flex: none; width: 5px; height: 5px; border-radius: 50%; background: #fff; }
 .engine-light.webgpu, .engine-light.webgl2 { background: #6fa18d; box-shadow: 0 0 5px #5e947e88; }
 .engine-light.unsupported { background: #a65c4e; }
-.preview-stage { position: relative; min-width: 0; min-height: 0; margin: 13px auto; width: min(calc(100% - 32px), calc((100vh - var(--title-h) - var(--status-h) - var(--timeline-h) - 26px) * 1.7778)); aspect-ratio: 16/9; align-self: center; overflow: hidden; background: #fff; box-shadow: 0 10px 35px #0008; }
+.preview-stage { position: relative; min-width: 0; min-height: 0; margin: 13px auto; width: min(calc(100% - 32px), calc((100vh - var(--title-h) - var(--status-h) - var(--timeline-h) - 26px) * var(--preview-aspect-ratio, 1.7778))); aspect-ratio: var(--preview-aspect, 16/9); align-self: center; overflow: hidden; background: #fff; box-shadow: 0 10px 35px #0008; }
 .preview-stage.audio-preview-hidden { display: none; }
 .preview-stage canvas { position: absolute; width: 100%; height: 100%; inset: 0; }
 .safe-area { position: absolute; inset: 6%; border: 1px solid #fff0; pointer-events: none; }

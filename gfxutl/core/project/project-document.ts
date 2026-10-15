@@ -1,5 +1,7 @@
 import type { BackgroundObject, EditorSettings, MediaAsset, TimelineClip, TimelineMarker } from "../interface/types";
 import type { ExportSettings } from "../protocol/engine-protocol";
+import { normalizeBackgroundSize } from "../interface/composition-size";
+import { sequenceEnd } from "../interface/sequence-duration";
 
 export const PROJECT_DOCUMENT_VERSION = 2 as const;
 
@@ -33,14 +35,15 @@ export interface ProjectDocumentSource {
 }
 
 export function createProjectDocument(source: ProjectDocumentSource): ProjectDocument {
+  const fps = clampNumber(source.fps, 1, 240, 30);
   return {
     application: "GfxUtl",
     version: PROJECT_DOCUMENT_VERSION,
     name: source.name.trim() || "Untitled Project",
     savedAt: new Date().toISOString(),
-    fps: clampNumber(source.fps, 1, 240, 30),
-    duration: Math.max(1 / Math.max(1, source.fps), finite(source.duration, 32)),
-    background: structuredClone(source.background),
+    fps,
+    duration: sequenceEnd(source.clips, fps, finite(source.duration, 32)),
+    background: structuredClone(normalizeBackgroundSize(source.background)),
     assets: source.assets.map(({ handle: _handle, ...asset }) => ({ ...asset })),
     clips: structuredClone(source.clips),
     markers: structuredClone(source.markers ?? []),
@@ -65,8 +68,8 @@ export function parseProjectDocument(text: string): ProjectDocument {
     name: typeof value.name === "string" && value.name.trim() ? value.name.trim() : "Untitled Project",
     savedAt: typeof value.savedAt === "string" ? value.savedAt : new Date(0).toISOString(),
     fps,
-    duration: Math.max(1 / fps, finite(value.duration, 32)),
-    background: structuredClone(value.background),
+    duration: sequenceEnd(value.clips, fps, finite(value.duration, 32)),
+    background: structuredClone(normalizeBackgroundSize(value.background, value.exportSettings)),
     assets: value.assets.map((asset) => ({ ...asset, handle: undefined, fileStatus: "missing" as const })),
     clips: structuredClone(value.clips),
     markers: Array.isArray(value.markers) ? structuredClone(value.markers) : [],

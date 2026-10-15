@@ -21,6 +21,7 @@ import { useEffect, useRef, useState } from "react";
 import { useEditor } from "../core/interface";
 import type { ClipEffect, ClipEffectKind, ClipMask, ClipPropertyAction, ClipPropertyActionKind, GeometryKind, GeometrySpec, KeyframeProperty, MaterialKind, MediaAsset, SceneSettings, TimelineClip } from "../core/interface";
 import { applicableClipActionKinds, CLIP_ACTION_LABELS, DEFAULT_POST_PROCESS_GLSL, resolveClipPropertyActions } from "../core/interface/clip-actions";
+import { COMPOSITION_SIZE_PRESETS } from "../core/interface/composition-size";
 import { Button } from "./ui/button";
 import { Slider } from "./ui/slider";
 import { FontPicker } from "./font-picker";
@@ -181,6 +182,14 @@ export function InspectorPanel() {
       {tab === "inspector" ? <RealtimeLayerInspector clips={state.clips} currentTime={state.currentTime} fps={state.fps} selectedClipId={state.selectedClipId} onSelect={controller.selectClip} /> : tab === "metadata" ? background ? <div className="metadata-view"><div className="metadata-row"><span>名前</span><strong>背景オブジェクト</strong></div><div className="metadata-row"><span>種類</span><strong>SCENE BACKGROUND</strong></div><div className="metadata-row"><span>表示範囲</span><strong>プロジェクト全体</strong></div></div> : <MetadataView clip={selected} asset={asset} fps={state.fps} /> : background ? <div className="inspector-section background-inspector">
         <div className="section-title"><span>背景</span><small>THREE.SCENE</small></div>
         <div className="section-body">
+          <label className="select-field"><span>サイズ</span><select aria-label="サイズプリセット" value={COMPOSITION_SIZE_PRESETS.some(({ width, height }) => width === background.width && height === background.height) ? `${background.width}x${background.height}` : "custom"} onChange={(event) => {
+            const [width, height] = event.target.value.split("x").map(Number);
+            if (Number.isFinite(width) && Number.isFinite(height)) controller.updateBackgroundSize(width, height);
+          }}>
+            {COMPOSITION_SIZE_PRESETS.map(({ width, height }) => <option key={`${width}x${height}`} value={`${width}x${height}`}>{width} × {height}</option>)}
+            {!COMPOSITION_SIZE_PRESETS.some(({ width, height }) => width === background.width && height === background.height) && <option value="custom">カスタム</option>}
+          </select></label>
+          <div className="field-grid composition-size-fields"><NumberField label="幅" value={background.width} suffix="px" onChange={(width) => controller.updateBackgroundSize(width, background.height)} /><NumberField label="高さ" value={background.height} suffix="px" onChange={(height) => controller.updateBackgroundSize(background.width, height)} /></div>
           <label className="color-field"><span>背景色</span><input aria-label="背景色" type="color" value={`#${background.color.toString(16).padStart(6, "0")}`} onChange={(event) => controller.updateBackground({ color: Number.parseInt(event.target.value.slice(1), 16) })} /></label>
           <TextureField label="背景テクスチャ" assets={state.assets} value={background.scene.background.backgroundAssetId} onChange={(backgroundAssetId) => controller.updateSceneSettings({ background: { ...background.scene.background, backgroundAssetId } })} />
           <TextureField label="環境マップ" assets={state.assets} value={background.scene.background.environmentAssetId} onChange={(environmentAssetId) => controller.updateSceneSettings({ background: { ...background.scene.background, environmentAssetId } })} />
