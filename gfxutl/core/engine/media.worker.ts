@@ -170,6 +170,12 @@ const videoSurfaces = new Map<string, VideoSurface>();
 const imageSurfaces = new Map<string, ImageSurface>();
 const modelSurfaces = new Map<string, ModelSurface>();
 const particleSurfaces = new Map<string, ParticleSurface>();
+const TIMELINE_THUMBNAIL_WEBP_QUALITY = 0.6;
+const TIMELINE_THUMBNAIL_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+const timelineThumbnailCache = new Map<string, { assetId: string; blob: Blob }>();
+const pendingTimelineThumbnails = new Map<string, Promise<Blob>>();
+const timelineThumbnailAssetRevisions = new Map<string, number>();
+let timelineThumbnailCacheBytes = 0;
 /** THREE-OPT: O(1) timeline root lookup replaces recursive Scene.getObjectByName scans. */
 const timelineRoots = new Map<string, THREE.Object3D>();
 /** THREE-OPT: picking is high-frequency; retain Three.js math objects instead of allocating per pointer event. */
@@ -1511,6 +1517,7 @@ async function render(time: number, shouldCache: boolean, mode: "realtime" | "pl
 }
 
 function detachAssetInstances(assetId: string) {
+  evictTimelineThumbnails(assetId);
   mediaRuntimes.delete(assetId);
   for (const [clipId, surface] of videoSurfaces) if (surface.assetId === assetId) removeVideoSurface(clipId);
 
@@ -1625,6 +1632,12 @@ async function decodeAudioPreview(message: Extract<EngineRequest, { type: "decod
 }
 
 async function createMediaThumbnail(message: Extract<EngineRequest, { type: "media-thumbnail" }>) {
+  if (message.timeline) {
+    const blob = await getTimelineThumbnailBlob(message.assetId, message.time, message.timeline.width, message.timeline.height);
+    const bitmap = await createImageBitmap(blob);
+    send({ type: "media-thumbnail", requestId: message.requestId, bitmap }, [bitmap]);
+    return;
+  }
   const image = imageRuntimes.get(message.assetId);
   if (image) {
     const bitmap = await createImageBitmap(image.bitmap);
@@ -1680,6 +1693,87 @@ async function createMediaThumbnail(message: Extract<EngineRequest, { type: "med
     return;
   }
   throw new Error("サムネイルを生成できるトラックがありません");
+}
+
+async function getTimelineThumbnailBlob(assetId: string, requestedTime: number, requestedWidth: number, requestedHeight: number) {
+  const image = imageRuntimes.get(assetId);
+  const runtime = mediaRuntimes.get(assetId);
+  if (!image && !runtime?.videoSink) throw new Error("タイムライン用サムネイルを生成できる映像がありません");
+  const time = image ? 0 : Math.max(0, Math.min(requestedTime, Math.max(0, (runtime?.duration ?? 0) - 0.001)));
+  const width = Math.max(1, Math.min(512, Math.round(requestedWidth)));
+  const height = Math.max(1, Math.min(256, Math.round(requestedHeight)));
+  const revision = timelineThumbnailAssetRevisions.get(assetId) ?? 0;
+  const key = `${assetId}:${revision}:${time.toFixed(6)}:${width}x${height}`;
+  const cached = timelineThumbnailCache.get(key);
+  if (cached) {
+    timelineThumbnailCache.delete(key);
+    timelineThumbnailCache.set(key, cached);
+    return cached.blob;
+  }
+  const pending = pendingTimelineThumbnails.get(key);
+  if (pending) return pending;
+  const request = encodeTimelineThumbnail(image?.bitmap, runtime, time, width, height).then((blob) => {
+    if ((timelineThumbnailAssetRevisions.get(assetId) ?? 0) === revision) {
+      timelineThumbnailCache.set(key, { assetId, blob });
+      timelineThumbnailCacheBytes += blob.size;
+      trimTimelineThumbnailCache();
+    }
+    return blob;
+  }).finally(() => pendingTimelineThumbnails.delete(key));
+  pendingTimelineThumbnails.set(key, request);
+  return request;
+}
+
+async function encodeTimelineThumbnail(image: ImageBitmap | undefined, runtime: MediaRuntime | undefined, time: number, width: number, height: number) {
+  let raster: ImageBitmap | VideoFrame | undefined = image;
+  let sample: Awaited<ReturnType<VideoSampleSink["getSample"]>> | null = null;
+  if (!raster && runtime?.videoSink) {
+    sample = await runtime.videoSink.getSample(time);
+    if (!sample) {
+      const samples = runtime.videoSink.samples();
+      const first = await samples.next();
+      sample = first.done ? null : first.value;
+      await samples.return(undefined);
+    }
+    if (!sample) throw new Error("動画フレームを取得できませんでした");
+    raster = sample.toVideoFrame();
+  }
+  if (!raster) throw new Error("タイムライン用サムネイルを生成できませんでした");
+  try {
+    const sourceWidth = raster instanceof VideoFrame ? raster.displayWidth : raster.width;
+    const sourceHeight = raster instanceof VideoFrame ? raster.displayHeight : raster.height;
+    const canvas = new OffscreenCanvas(width, height);
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("タイムライン用OffscreenCanvasを作成できませんでした");
+    const scale = Math.max(width / Math.max(1, sourceWidth), height / Math.max(1, sourceHeight));
+    const targetWidth = sourceWidth * scale;
+    const targetHeight = sourceHeight * scale;
+    context.drawImage(raster, (width - targetWidth) / 2, (height - targetHeight) / 2, targetWidth, targetHeight);
+    const blob = await canvas.convertToBlob({ type: "image/webp", quality: TIMELINE_THUMBNAIL_WEBP_QUALITY });
+    if (blob.type !== "image/webp") throw new Error("WebPエンコーダーを利用できません");
+    return blob;
+  } finally {
+    if (raster instanceof VideoFrame) raster.close();
+    sample?.close();
+  }
+}
+
+function trimTimelineThumbnailCache() {
+  while (timelineThumbnailCacheBytes > TIMELINE_THUMBNAIL_CACHE_MAX_BYTES && timelineThumbnailCache.size) {
+    const oldestKey = timelineThumbnailCache.keys().next().value!;
+    const oldest = timelineThumbnailCache.get(oldestKey)!;
+    timelineThumbnailCacheBytes -= oldest.blob.size;
+    timelineThumbnailCache.delete(oldestKey);
+  }
+}
+
+function evictTimelineThumbnails(assetId: string) {
+  timelineThumbnailAssetRevisions.set(assetId, (timelineThumbnailAssetRevisions.get(assetId) ?? 0) + 1);
+  for (const [key, entry] of timelineThumbnailCache) {
+    if (entry.assetId !== assetId) continue;
+    timelineThumbnailCacheBytes -= entry.blob.size;
+    timelineThumbnailCache.delete(key);
+  }
 }
 
 async function encodeCanvasAsWebp(canvas: OffscreenCanvas) {

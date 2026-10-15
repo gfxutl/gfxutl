@@ -238,11 +238,11 @@ export class EngineClient {
     });
   }
 
-  getMediaThumbnail(assetId: string, time = 0) {
+  getMediaThumbnail(assetId: string, time = 0, timeline?: { width: number; height: number }) {
     const requestId = crypto.randomUUID();
     return new Promise<MediaThumbnail>((resolve, reject) => {
       this.pendingThumbnails.set(requestId, { resolve, reject });
-      this.post({ type: "media-thumbnail", requestId, assetId, time });
+      this.post({ type: "media-thumbnail", requestId, assetId, time, ...(timeline ? { timeline } : {}) });
     });
   }
 

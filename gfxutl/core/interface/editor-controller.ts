@@ -1261,7 +1261,7 @@ export class EditorController {
     this.update({ exportSettings: next });
   };
 
-  getMediaThumbnail = (assetId: string, time = 0) => this.engine.getMediaThumbnail(assetId, time);
+  getMediaThumbnail = (assetId: string, time = 0, timeline?: { width: number; height: number }) => this.engine.getMediaThumbnail(assetId, time, timeline);
   prepareMediaPreview = (file: File, previewId: string, handle?: FileSystemFileHandle) => this.engine.inspectMedia(file, previewId, handle);
   releaseMediaPreview = (previewId: string) => this.engine.releaseMedia(previewId);
   pickPreview = async (ndcX: number, ndcY: number, coalesce = false) => (await this.engine.pick(ndcX, ndcY, coalesce)).clipId;

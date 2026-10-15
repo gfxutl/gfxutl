@@ -431,7 +431,7 @@ export type EngineRequest =
   | { type: "media-buffer-load"; assetId: string; source: MediaFileSource; stream: ReadableStream<Uint8Array> }
   | { type: "release-media"; assetId: string }
   | { type: "decode-audio-preview"; requestId: string; assetId: string; startTime: number; endTime: number }
-  | { type: "media-thumbnail"; requestId: string; assetId: string; time: number }
+  | { type: "media-thumbnail"; requestId: string; assetId: string; time: number; timeline?: { width: number; height: number } }
   | { type: "geometry-upsert"; object: SceneObjectSpec }
   | { type: "geometry-remove"; id: string }
   | { type: "font-register"; fontId: string; buffer: ArrayBuffer }

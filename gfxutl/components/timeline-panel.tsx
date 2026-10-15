@@ -27,6 +27,7 @@ const BASE_PX_PER_SECOND = 26;
 const MIN_CLIP_WIDTH = 34;
 const TIME_RULER_HEIGHT = 24;
 const TIMELINE_THUMBNAIL_WIDTH = 72;
+const TIMELINE_THUMBNAIL_RASTER_WIDTH = 144;
 const TIMELINE_THUMBNAIL_CACHE_LIMIT = 160;
 const TIMELINE_THUMBNAIL_CONCURRENCY = 2;
 const timelineThumbnailCache = new Map<string, Promise<HTMLCanvasElement>>();
@@ -677,7 +678,7 @@ const Clip = memo(function Clip({ clip, asset, waveformPeaks, pxPerSecond, verti
       </span>}
       {selected && (clip.keyframes ?? []).map((keyframe) => <i className="timeline-keyframe" key={keyframe.id} title={`${keyframe.property}: ${keyframe.value} · ${t("ドラッグで時刻変更")}`} style={{ left: `${Math.max(0, Math.min(100, keyframe.time / Math.max(0.001, clip.duration) * 100))}%` }} onPointerDown={(event) => beginKeyframeDrag(keyframe.id, keyframe.time, event)} onClick={(event) => { event.stopPropagation(); controller.setTime(clip.start + keyframe.time); controller.selectClip(clip.id); }} />)}
       {clip.kind === "audio" && <div className="waveform" data-waveform-source={waveformPeaks?.length ? "media" : "pending"}>{(waveformPeaks?.length ? waveformPeaks : Array.from({ length: 24 }, () => 0.08)).map((peak, i) => <i key={i} style={{ height: `${Math.max(4, Math.min(100, peak * 100))}%` }} />)}</div>}
-      {verticallyVisible && clip.kind === "video" && asset && (asset.kind === "video" || asset.kind === "image") && <TimelineMediaStrip asset={asset} clip={clip} width={clipWidth} height={clipHeight} pxPerSecond={pxPerSecond} viewport={timelineViewport} controller={controller} />}
+      {verticallyVisible && clip.kind === "video" && asset && (asset.kind === "video" || asset.kind === "image") && <TimelineMediaStrip asset={asset} clip={clip} width={clipWidth} height={clipHeight} pxPerSecond={pxPerSecond} fps={fps} viewport={timelineViewport} controller={controller} />}
       {selected && durationResizable && clip.kind !== "group" && <><i className="clip-trim-handle trim-start" title={t("左端をドラッグして長さを変更")} onPointerDown={(event) => beginResize("start", event)} /><i className="clip-trim-handle trim-end" title={t("右端をドラッグして長さを変更")} onPointerDown={(event) => beginResize("end", event)} /></>}
       {selected && clip.kind === "group" && (["n", "s", "e", "w", "ne", "nw", "se", "sw"] as GroupResizeEdge[]).map((edge) => <i key={edge} className={`group-resize-handle group-resize-${edge}`} data-resize-edge={edge} title={t("グループ境界を伸縮")} onPointerDown={(event) => beginGroupResize(edge, event)} />)}
     </button>
@@ -699,12 +700,13 @@ const Clip = memo(function Clip({ clip, asset, waveformPeaks, pxPerSecond, verti
   && previous.snapEnabled === next.snapEnabled
   && previous.onAlignmentSuggestion === next.onAlignmentSuggestion);
 
-function TimelineMediaStrip({ asset, clip, width, height, pxPerSecond, viewport, controller }: {
+function TimelineMediaStrip({ asset, clip, width, height, pxPerSecond, fps, viewport, controller }: {
   asset: MediaAsset;
   clip: TimelineClip;
   width: number;
   height: number;
   pxPerSecond: number;
+  fps: number;
   viewport: { scrollLeft: number; width: number };
   controller: typeof import("../core/interface").editorController;
 }) {
@@ -713,25 +715,28 @@ function TimelineMediaStrip({ asset, clip, width, height, pxPerSecond, viewport,
   const visibleEnd = Math.min(width, viewport.scrollLeft + viewport.width - clipLeft);
   if (visibleEnd <= visibleStart || viewport.width <= 0) return <div className="frame-strip timeline-media-strip" data-thumbnail-source={asset.kind} />;
 
-  const first = Math.max(0, Math.floor(visibleStart / TIMELINE_THUMBNAIL_WIDTH) - 1);
-  const last = Math.min(Math.ceil(width / TIMELINE_THUMBNAIL_WIDTH), Math.ceil(visibleEnd / TIMELINE_THUMBNAIL_WIDTH) + 1);
+  // Power-of-two time steps form a nested sampling grid. Increasing zoom keeps
+  // every existing even sample and requests only the newly exposed odd samples.
+  const stripPxPerSecond = width / Math.max(0.000001, clip.duration);
+  const sampleStep = timelineThumbnailSampleStep(stripPxPerSecond, fps);
+  const first = Math.max(0, Math.floor(visibleStart / stripPxPerSecond / sampleStep) - 1);
+  const sampleCount = Math.max(1, Math.ceil(clip.duration / sampleStep));
+  const last = Math.min(sampleCount, Math.ceil(visibleEnd / stripPxPerSecond / sampleStep) + 1);
   const tiles = Array.from({ length: Math.max(0, last - first) }, (_, index) => {
-    const tileIndex = first + index;
-    const left = tileIndex * TIMELINE_THUMBNAIL_WIDTH;
-    const tileWidth = Math.min(TIMELINE_THUMBNAIL_WIDTH, width - left);
-    // Derive the sampled frame from the cell's actual ruler position so the
-    // visible image stays aligned with the time represented at that point.
-    const localTime = Math.max(0, Math.min(clip.duration, (left + tileWidth / 2) / Math.max(0.001, pxPerSecond)));
+    const sampleIndex = first + index;
+    const localTime = Math.min(clip.duration, sampleIndex * sampleStep);
+    const left = localTime * stripPxPerSecond;
+    const tileWidth = Math.max(1, Math.min(sampleStep * stripPxPerSecond, width - left));
     const speed = Math.max(0.01, Math.min(10, evaluateTimelineSpeed(clip, localTime) / 100));
     const sourceTime = asset.kind === "image"
       ? 0
       : Math.max(0, Math.min(Math.max(0, asset.duration - 0.001), clip.offset + localTime * speed));
-    return { tileIndex, left, width: tileWidth, sourceTime };
+    return { localTime, left, width: tileWidth, sourceTime };
   });
 
   return <div className="frame-strip timeline-media-strip" data-thumbnail-source={asset.kind}>
     {tiles.map((tile) => <TimelineThumbnailCanvas
-      key={`${tile.tileIndex}:${tile.sourceTime.toFixed(6)}`}
+      key={tile.localTime.toFixed(9)}
       assetId={asset.id}
       sourceTime={tile.sourceTime}
       left={tile.left}
@@ -756,7 +761,7 @@ function TimelineThumbnailCanvas({ assetId, sourceTime, left, width, height, ena
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    void getTimelineThumbnailCanvas(controller, assetId, sourceTime, width, height).then((source) => {
+    void getTimelineThumbnailCanvas(controller, assetId, sourceTime, height).then((source) => {
       if (cancelled) return;
       const canvas = canvasRef.current;
       const context = canvas?.getContext("2d");
@@ -767,14 +772,14 @@ function TimelineThumbnailCanvas({ assetId, sourceTime, left, width, height, ena
       canvas.dataset.thumbnailReady = "true";
     }).catch(() => { /* The clip color remains visible while its media is unavailable. */ });
     return () => { cancelled = true; };
-  }, [assetId, controller, enabled, height, sourceTime, width]);
+  }, [assetId, controller, enabled, height, sourceTime]);
 
   return <canvas ref={canvasRef} style={{ left, width }} data-source-time={sourceTime.toFixed(6)} aria-hidden="true" />;
 }
 
-function getTimelineThumbnailCanvas(controller: typeof import("../core/interface").editorController, assetId: string, time: number, cssWidth: number, cssHeight: number) {
-  const scale = Math.min(2, window.devicePixelRatio || 1, 512 / Math.max(1, cssWidth), 256 / Math.max(1, cssHeight));
-  const width = Math.max(1, Math.round(cssWidth * scale));
+function getTimelineThumbnailCanvas(controller: typeof import("../core/interface").editorController, assetId: string, time: number, cssHeight: number) {
+  const scale = Math.min(2, window.devicePixelRatio || 1, 256 / Math.max(1, cssHeight));
+  const width = Math.max(1, Math.round(TIMELINE_THUMBNAIL_RASTER_WIDTH * scale));
   const height = Math.max(1, Math.round(cssHeight * scale));
   const key = `${assetId}:${time.toFixed(6)}:${width}x${height}`;
   const cached = timelineThumbnailCache.get(key);
@@ -784,11 +789,9 @@ function getTimelineThumbnailCanvas(controller: typeof import("../core/interface
     return cached;
   }
 
-  const request = scheduleTimelineThumbnail(() => controller.getMediaThumbnail(assetId, time)).then((thumbnail) => {
+  const request = scheduleTimelineThumbnail(() => controller.getMediaThumbnail(assetId, time, { width, height })).then((thumbnail) => {
     const raster = thumbnail.frame ?? thumbnail.bitmap;
     if (!raster) throw new Error("Timeline thumbnail has no raster image");
-    const sourceWidth = raster instanceof VideoFrame ? raster.displayWidth : raster.width;
-    const sourceHeight = raster instanceof VideoFrame ? raster.displayHeight : raster.height;
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
@@ -797,11 +800,8 @@ function getTimelineThumbnailCanvas(controller: typeof import("../core/interface
       raster.close();
       throw new Error("Timeline thumbnail canvas is unavailable");
     }
-    const coverScale = Math.max(width / Math.max(1, sourceWidth), height / Math.max(1, sourceHeight));
-    const targetWidth = sourceWidth * coverScale;
-    const targetHeight = sourceHeight * coverScale;
     try {
-      context.drawImage(raster, (width - targetWidth) / 2, (height - targetHeight) / 2, targetWidth, targetHeight);
+      context.drawImage(raster, 0, 0, width, height);
     } finally {
       raster.close();
     }
@@ -833,6 +833,13 @@ function drainTimelineThumbnailQueue() {
       drainTimelineThumbnailQueue();
     });
   }
+}
+
+function timelineThumbnailSampleStep(pxPerSecond: number, fps: number) {
+  const baseStep = 1 / Math.max(1, Math.min(120, fps));
+  const idealStep = TIMELINE_THUMBNAIL_WIDTH / Math.max(0.001, pxPerSecond);
+  const level = Math.max(0, Math.round(Math.log2(Math.max(1, idealStep / baseStep))));
+  return baseStep * 2 ** level;
 }
 
 function evaluateTimelineSpeed(clip: TimelineClip, localTime: number) {
