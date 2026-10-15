@@ -20,9 +20,18 @@ export function normalizeCompositionDimension(value: unknown, fallback: number) 
 export function normalizeBackgroundSize(background: BackgroundObject, fallback: { width?: unknown; height?: unknown } = DEFAULT_COMPOSITION_SIZE): BackgroundObject {
   const fallbackWidth = normalizeCompositionDimension(fallback.width, DEFAULT_COMPOSITION_SIZE.width);
   const fallbackHeight = normalizeCompositionDimension(fallback.height, DEFAULT_COMPOSITION_SIZE.height);
+  const camera = background.scene.camera as Partial<BackgroundObject["scene"]["camera"]>;
   return {
     ...background,
     width: normalizeCompositionDimension(background.width, fallbackWidth),
     height: normalizeCompositionDimension(background.height, fallbackHeight),
+    scene: {
+      ...background.scene,
+      camera: {
+        ...background.scene.camera,
+        id: camera.id || "camera-1",
+        name: camera.name || "Camera 1",
+      },
+    },
   };
 }

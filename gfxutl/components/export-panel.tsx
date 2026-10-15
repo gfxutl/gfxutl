@@ -1,6 +1,5 @@
 import {
   CheckmarkCircle16Regular as CheckCircle2,
-  ArrowExportUp20Regular as MonitorUp,
   Gauge16Regular as Gauge,
   Settings16Regular as Settings2,
   VideoClip16Regular as FileVideo2,
@@ -21,7 +20,6 @@ export function ExportPanel() {
 
   return (
     <div className="export-panel">
-      <div className="export-heading"><MonitorUp /><div><strong>{t("映像を書き出す")}</strong><small>{t("タイムラインを1本の映像ファイルにレンダリングします")}</small></div></div>
       <div className="export-group">
         <div className="export-group-title"><FileVideo2 /> {t("ファイル")}</div>
         <label className="export-field"><span>{t("ファイル名")}</span><input value={settings.filename} onChange={(event) => controller.updateExportSettings({ filename: event.target.value })} /></label>

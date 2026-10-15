@@ -10,7 +10,7 @@ export interface ClipPropertyAction {
 }
 
 import type { AudioProcessingSpec, ClipEffect, ClipKeyframe, ClipMask, ClipPostProcess, ColorGradingSpec, ExportSettings, GeometrySpec, SceneMaterialSpec, SceneSettings, SourceIoProfile } from "../protocol/engine-protocol";
-export type { AudioProcessingSpec, BackgroundSettings, BlendMode, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ColorGradingSpec, EngineRequest, EngineResponse, ExportSettings, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, RendererSettings, RendererStats, RenderClip, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, SceneSettingsPatch, SourceIoProfile, TimelinePatch, ToneMappingKind } from "../protocol/engine-protocol";
+export type { AudioProcessingSpec, BackgroundSettings, BlendMode, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ColorGradingSpec, EngineRequest, EngineResponse, ExportSettings, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, PreviewView, RendererSettings, RendererStats, RenderClip, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, SceneSettingsPatch, SourceIoProfile, TimelinePatch, ToneMappingKind } from "../protocol/engine-protocol";
 
 export interface MediaAsset {
   id: string;
@@ -176,6 +176,8 @@ export interface EditorState {
   selectedClipIds: string[];
   previewClipTabs: string[];
   activePreviewClipId: string | null;
+  activePreviewView: "camera" | "inspector";
+  cameraPreviewOpen: boolean;
   selectedAssetId: string | null;
   backgroundSelected: boolean;
   background: BackgroundObject;

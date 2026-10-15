@@ -1,4 +1,4 @@
-import type { EngineRequest, EngineResponse, ExportSettings, MediaFileSource, MediaReadGraph, RenderClip, SceneObjectSpec, SceneSettings, SceneSettingsPatch, TimelinePatch } from "../protocol/engine-protocol";
+import type { EngineRequest, EngineResponse, ExportSettings, MediaFileSource, MediaReadGraph, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, SceneSettingsPatch, TimelinePatch } from "../protocol/engine-protocol";
 import type { RendererPluginBundle, RendererPluginInfo } from "../plugins/plugin-types";
 import nagaWasmUrl from "../naga-wasm/pkg/naga_wasm_bg.wasm?url";
 
@@ -21,7 +21,7 @@ export class EngineClient {
   private pickQueue: Array<{ ndcX: number; ndcY: number; coalescible: boolean; resolves: Array<(clipId: string | undefined) => void> }> = [];
   private renderSequence = 0;
   private renderInFlight = false;
-  private pendingRender: { time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; sceneSettings: SceneSettings; focusClipId?: string } | null = null;
+  private pendingRender: { time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; sceneSettings: SceneSettings; previewView: PreviewView; focusClipId?: string } | null = null;
   private pendingTimelinePatch: TimelinePatch | null = null;
   private lastSceneSettings: SceneSettings | null = null;
   private lastResize = "";
@@ -134,10 +134,10 @@ export class EngineClient {
     this.post({ type: "resize", width, height, dpr });
   }
   patchTimeline(patch: TimelinePatch) { this.pendingTimelinePatch = mergeTimelinePatches(this.pendingTimelinePatch, patch); }
-  render(time: number, cache: boolean, mode: "realtime" | "playback", fps: number, sceneSettings: SceneSettings, focusClipId?: string) {
+  render(time: number, cache: boolean, mode: "realtime" | "playback", fps: number, sceneSettings: SceneSettings, previewView: PreviewView, focusClipId?: string) {
     // Keep at most one GPU/decode operation in flight. During a slow frame the
     // newest playhead position supersedes every intermediate request.
-    this.pendingRender = { time, cache, mode, fps, sceneSettings, focusClipId };
+    this.pendingRender = { time, cache, mode, fps, sceneSettings, previewView, focusClipId };
     this.flushPendingRender();
   }
 
@@ -153,7 +153,7 @@ export class EngineClient {
     this.renderInFlight = true;
     this.post({
       type: "render", sequence, time: next.time, cache: next.cache,
-      mode: next.mode, fps: next.fps,
+      mode: next.mode, fps: next.fps, previewView: next.previewView,
       ...(next.focusClipId ? { focusClipId: next.focusClipId } : {}),
       ...(patch ? { timelinePatch: patch } : {}),
       ...(sceneSettingsPatch ? { sceneSettingsPatch } : {}),
@@ -239,6 +239,10 @@ export class EngineClient {
       }
       this.flushPendingPick();
     });
+  }
+
+  moveInspectorCamera(operation: "orbit" | "pan", deltaX: number, deltaY: number) {
+    this.post({ type: "inspector-camera", operation, deltaX, deltaY });
   }
 
   compileGlsl(source: string) {

@@ -23,8 +23,6 @@ export function SettingsPanel() {
   const usedMb = state.cache.usedBytes / MiB;
 
   return <div className="settings-panel">
-    <div className="settings-heading"><Settings2 /><div><strong>{t("エディター設定")}</strong><small>{t("プレビューとオーディオの動作を設定します")}</small></div></div>
-
     <section className="settings-group" aria-labelledby="language-settings">
       <div className="settings-group-title" id="language-settings"><Settings2 /> {t("言語")}</div>
       <label className="settings-field"><span>{t("表示言語")}</span><select aria-label={t("表示言語")} value={locale} onChange={(event) => setLocale(event.target.value as "ja" | "en")}><option value="ja">{t("日本語")}</option><option value="en">{t("英語")}</option></select></label>
@@ -44,7 +42,7 @@ export function SettingsPanel() {
     <section className="settings-group" aria-labelledby="ram-preview-settings">
       <div className="settings-group-title" id="ram-preview-settings"><Database /> {t("RAMプレビュー")}</div>
       <label className="settings-switch">
-        <span><strong>{t("RAMプレビューを使用")}</strong><small>{t("停止中のフレームをH.264でメモリへキャッシュします")}</small></span>
+        <span><strong>{t("RAMプレビューを使用")}</strong></span>
         <input type="checkbox" aria-label={t("RAMプレビューを有効化")} checked={settings.ramPreviewEnabled} onChange={(event) => controller.updateSettings({ ramPreviewEnabled: event.target.checked })} />
         <i aria-hidden="true" />
       </label>
@@ -67,7 +65,6 @@ export function SettingsPanel() {
         <label className={settings.audioChannels === "stereo" ? "active" : ""}><input type="radio" name="audio-channels" value="stereo" checked={settings.audioChannels === "stereo"} onChange={() => controller.updateSettings({ audioChannels: "stereo" })} /><span>{t("ステレオ")}</span><small>{t("左右 2チャンネル")}</small></label>
         <label className={settings.audioChannels === "mono" ? "active" : ""}><input type="radio" name="audio-channels" value="mono" checked={settings.audioChannels === "mono"} onChange={() => controller.updateSettings({ audioChannels: "mono" })} /><span>{t("モノラル")}</span><small>{t("1チャンネルへミックス")}</small></label>
       </fieldset>
-      <p className="settings-note">{t("プレビュー再生と書き出しの両方に適用されます。")}</p>
     </section>
   </div>;
 }

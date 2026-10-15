@@ -3,6 +3,7 @@ import {
   ArrowDown16Regular as ArrowDown,
   ArrowHookDownRight16Regular,
   ArrowUp16Regular as ArrowUp,
+  Camera16Regular as Camera,
   ChevronDown16Regular as ChevronDown,
   ChevronRight12Regular,
   ChevronRight16Regular as ChevronRight,
@@ -142,6 +143,8 @@ function sceneKeyframeProperties(scene: SceneSettings) {
     { property: "camera.fov", label: "カメラ画角", value: scene.camera.fov },
     { property: "camera.zoom", label: "カメラズーム", value: scene.camera.zoom },
     { property: "camera.orthographicHeight", label: "平行投影の高さ", value: scene.camera.orthographicHeight },
+    { property: "camera.near", label: "カメラ Near", value: scene.camera.near },
+    { property: "camera.far", label: "カメラ Far", value: scene.camera.far },
     { property: "renderer.exposure", label: "露出", value: scene.renderer.exposure },
     { property: "renderer.bloomStrength", label: "Bloom 強度", value: scene.renderer.bloomStrength },
     { property: "renderer.bloomRadius", label: "Bloom 半径", value: scene.renderer.bloomRadius },
@@ -227,7 +230,8 @@ export function InspectorPanel() {
           <TextureField label="環境マップ" assets={state.assets} value={background.scene.background.environmentAssetId} onChange={(environmentAssetId) => controller.updateSceneSettings({ background: { ...background.scene.background, environmentAssetId } })} />
           <div className="field-grid"><NumberField label="環境強度" value={background.scene.background.environmentIntensity} onChange={(environmentIntensity) => controller.updateSceneSettings({ background: { ...background.scene.background, environmentIntensity } })} /><NumberField label="環境回転" value={background.scene.background.environmentRotation} suffix="°" onChange={(environmentRotation) => controller.updateSceneSettings({ background: { ...background.scene.background, environmentRotation } })} /></div>
           <NumberField label="背景ぼかし" value={background.scene.background.backgroundBlurriness} onChange={(backgroundBlurriness) => controller.updateSceneSettings({ background: { ...background.scene.background, backgroundBlurriness } })} />
-          <label className="select-field"><span>{t("カメラ")}</span><select aria-label={t("カメラ投影")} value={background.scene.camera.projection} onChange={(event) => controller.updateSceneSettings({ camera: { ...background.scene.camera, projection: event.target.value as "orthographic" | "perspective" } })}><option value="orthographic">Orthographic</option><option value="perspective">Perspective</option></select></label>
+          <div className="text-decoration-title camera-object-heading"><span>{background.scene.camera.name}</span><Button size="sm" variant="ghost" onClick={() => controller.setPreviewView("camera")}><Camera /> {t("プレビューを開く")}</Button></div>
+          <label className="select-field"><span>{t("投影")}</span><select aria-label={t("カメラ投影")} value={background.scene.camera.projection} onChange={(event) => controller.updateSceneSettings({ camera: { ...background.scene.camera, projection: event.target.value as "orthographic" | "perspective" } })}><option value="orthographic">Orthographic</option><option value="perspective">Perspective</option></select></label>
           <div className="field-grid"><NumberField label="画角" value={background.scene.camera.fov} suffix="°" onChange={(fov) => controller.updateSceneSettings({ camera: { ...background.scene.camera, fov } })} /><NumberField label="ズーム" value={background.scene.camera.zoom} onChange={(zoom) => controller.updateSceneSettings({ camera: { ...background.scene.camera, zoom } })} /></div>
           <NumberField label="平行投影の高さ" value={background.scene.camera.orthographicHeight} onChange={(orthographicHeight) => controller.updateSceneSettings({ camera: { ...background.scene.camera, orthographicHeight } })} />
           <div className="field-grid"><NumberField label="Near" value={background.scene.camera.near} onChange={(near) => controller.updateSceneSettings({ camera: { ...background.scene.camera, near } })} /><NumberField label="Far" value={background.scene.camera.far} onChange={(far) => controller.updateSceneSettings({ camera: { ...background.scene.camera, far } })} /></div>

@@ -23,7 +23,7 @@ const defaultSettings: EditorSettings = { ramPreviewEnabled: true, ramPreviewMax
 
 const defaultSceneSettings: SceneSettings = {
   background: { color: 0xffffff, alpha: 1, fogEnabled: false, fogColor: 0xffffff, fogNear: 5, fogFar: 30, environmentIntensity: 1, environmentRotation: 0, backgroundBlurriness: 0 },
-  camera: { projection: "orthographic", position: [0, 0, 10], target: [0, 0, 0], near: 0.01, far: 1_000, fov: 50, zoom: 1, orthographicHeight: 9 },
+  camera: { id: "camera-1", name: "Camera 1", projection: "orthographic", position: [0, 0, 10], target: [0, 0, 0], near: 0.01, far: 1_000, fov: 50, zoom: 1, orthographicHeight: 9 },
   renderer: { previewScale: 0.75, toneMapping: "aces", exposure: 1, outputBuffer: "uint8", antialias: true, samples: 2, shadows: true, shadowType: "pcf", transparentBackground: false, postProcessing: false, fxaa: false, bloomStrength: 0, bloomRadius: 0.25, bloomThreshold: 0.8 },
   lights: [
     { id: "ambient", kind: "ambient", color: 0xffffff, intensity: 1.2, position: [0, 0, 0] },
@@ -80,6 +80,8 @@ const initialState: EditorState = {
   selectedClipIds: [],
   previewClipTabs: [],
   activePreviewClipId: null,
+  activePreviewView: "camera",
+  cameraPreviewOpen: true,
   selectedAssetId: null,
   backgroundSelected: true,
   background: { id: "background", name: t("背景オブジェクト"), color: 0xffffff, ...DEFAULT_COMPOSITION_SIZE, scene: structuredClone(defaultSceneSettings) },
@@ -421,6 +423,8 @@ export class EditorController {
         selectedClipIds: [],
         previewClipTabs: [],
         activePreviewClipId: null,
+        activePreviewView: "camera",
+        cameraPreviewOpen: true,
         selectedAssetId: null,
         backgroundSelected: true,
       });
@@ -453,6 +457,8 @@ export class EditorController {
       selectedClipIds: [],
       previewClipTabs: [],
       activePreviewClipId: null,
+      activePreviewView: "camera",
+      cameraPreviewOpen: true,
       selectedAssetId: null,
       backgroundSelected: true,
       exportSettings: { ...initialState.exportSettings },
@@ -721,9 +727,9 @@ export class EditorController {
   }
 
   private previewDpr() {
-    // Retina displays otherwise multiply fill-rate by 4–9x. Export resolution is
-    // unaffected; this only caps the interactive proxy surface.
-    return Math.min(window.devicePixelRatio || 1, 1.5);
+    // Inspector View renders at the device's native backing resolution. Camera
+    // previews apply their own scale and fill-rate cap inside the renderer.
+    return window.devicePixelRatio || 1;
   }
 
   connectPreview(canvas: HTMLCanvasElement, width: number, height: number) {
@@ -749,6 +755,12 @@ export class EditorController {
   renderPreview(cache = false) {
     if (!this.canvasReady) return;
     this.engine.setMediaReadGraph(this.mediaReadPlanner.build(this.state.clips, this.state.assets, this.state.currentTime));
+    const activePreviewClip = this.state.activePreviewClipId
+      ? this.state.clips.find((clip) => clip.id === this.state.activePreviewClipId)
+      : undefined;
+    // Audio tabs replace the visual surface with the waveform editor. Do not
+    // spend decode/GPU work on the canvas hidden behind that active tab.
+    if (activePreviewClip?.kind === "audio") return;
     if (this.state.playing) {
       const frame = Math.floor(this.state.currentTime * this.state.fps);
       if (frame === this.lastPlaybackFrame) return;
@@ -759,7 +771,8 @@ export class EditorController {
     const renderClips = this.getRenderClips();
     const patch = this.virtualTimeline.reconcile(renderClips);
     if (patch) this.engine.patchTimeline(patch);
-    this.engine.render(this.state.currentTime, cache && this.state.settings.ramPreviewEnabled && !this.state.activePreviewClipId, this.state.playing ? "playback" : "realtime", this.state.fps, this.state.background.scene, this.state.activePreviewClipId ?? undefined);
+    const previewView = this.state.activePreviewClipId ? "camera" : this.state.activePreviewView;
+    this.engine.render(this.state.currentTime, cache && this.state.settings.ramPreviewEnabled && !this.state.activePreviewClipId && previewView === "camera", this.state.playing ? "playback" : "realtime", this.state.fps, this.state.background.scene, previewView, this.state.activePreviewClipId ?? undefined);
   }
 
   private getRenderClips(): RenderClip[] {
@@ -998,7 +1011,7 @@ export class EditorController {
   };
   setPreviewTab = (clipId: string | null) => {
     if (clipId === null) {
-      this.update({ activePreviewClipId: null });
+      this.update({ activePreviewClipId: null, activePreviewView: "inspector" });
       this.renderPreview(false);
       return;
     }
@@ -1014,10 +1027,23 @@ export class EditorController {
     });
     this.renderPreview(false);
   };
+  setPreviewView = (view: "camera" | "inspector") => {
+    this.update({
+      activePreviewClipId: null,
+      activePreviewView: view,
+      ...(view === "camera" ? { cameraPreviewOpen: true } : {}),
+    });
+    this.renderPreview(false);
+  };
+  closeCameraPreview = () => {
+    const wasActive = this.state.activePreviewClipId === null && this.state.activePreviewView === "camera";
+    this.update({ cameraPreviewOpen: false, ...(wasActive ? { activePreviewView: "inspector" as const } : {}) });
+    if (wasActive) this.renderPreview(false);
+  };
   closePreviewTab = (clipId: string) => {
     const previewClipTabs = this.state.previewClipTabs.filter((id) => id !== clipId);
     const activePreviewClipId = this.state.activePreviewClipId === clipId ? null : this.state.activePreviewClipId;
-    this.update({ previewClipTabs, activePreviewClipId });
+    this.update({ previewClipTabs, activePreviewClipId, ...(this.state.activePreviewClipId === clipId ? { activePreviewView: "inspector" as const } : {}) });
     if (activePreviewClipId !== this.state.activePreviewClipId) this.renderPreview(false);
   };
   selectAsset = (id: string | null) => this.update({ selectedAssetId: id, selectedClipId: null, selectedClipIds: [], backgroundSelected: false });
@@ -1069,6 +1095,48 @@ export class EditorController {
     this.updateSceneSettings({ keyframes: (this.state.background.scene.keyframes ?? []).filter((keyframe) => keyframe.id !== id) });
     this.schedulePersistence();
   };
+  addCameraKeyframe = (requestedTime = this.state.currentTime, interpolation: SceneKeyframe["interpolation"] = "smooth") => {
+    const time = Math.max(0, Math.min(this.state.duration, requestedTime));
+    const camera = this.state.background.scene.camera;
+    const keys = (this.state.background.scene.keyframes ?? []).map((keyframe) => ({ ...keyframe, easing: keyframe.easing ? { ...keyframe.easing } : undefined }));
+    const values: Array<[string, number]> = [
+      ...camera.position.map((value, axis) => [`camera.position.${axis}`, value] as [string, number]),
+      ...camera.target.map((value, axis) => [`camera.target.${axis}`, value] as [string, number]),
+      ["camera.near", camera.near],
+      ["camera.far", camera.far],
+      ["camera.fov", camera.fov],
+      ["camera.zoom", camera.zoom],
+      ["camera.orthographicHeight", camera.orthographicHeight],
+    ];
+    const tolerance = 0.5 / this.state.fps;
+    const keyframes: SceneKeyframe[] = [...keys];
+    for (const [property, fallback] of values) {
+      const value = evaluateSceneNumber(keys, property, time, fallback);
+      const existingIndex = keyframes.findIndex((keyframe) => keyframe.property === property && Math.abs(keyframe.time - time) <= tolerance);
+      if (existingIndex >= 0) keyframes[existingIndex] = { ...keyframes[existingIndex], time, value, interpolation };
+      else keyframes.push({ id: crypto.randomUUID(), property, time, value, interpolation });
+    }
+    keyframes.sort((a, b) => a.time - b.time || a.property.localeCompare(b.property));
+    this.updateSceneSettings({ keyframes });
+    this.setTime(time);
+    this.schedulePersistence();
+  };
+  moveCameraKeyframes = (ids: readonly string[], requestedTime: number) => {
+    const time = Math.max(0, Math.min(this.state.duration, requestedTime));
+    const selected = new Set(ids);
+    this.updateSceneSettings({
+      keyframes: (this.state.background.scene.keyframes ?? [])
+        .map((keyframe) => selected.has(keyframe.id) ? { ...keyframe, time } : keyframe)
+        .sort((a, b) => a.time - b.time || a.property.localeCompare(b.property)),
+    });
+    this.setTime(time);
+    this.schedulePersistence();
+  };
+  removeCameraKeyframes = (ids: readonly string[]) => {
+    const selected = new Set(ids);
+    this.updateSceneSettings({ keyframes: (this.state.background.scene.keyframes ?? []).filter((keyframe) => !selected.has(keyframe.id)) });
+    this.schedulePersistence();
+  };
   openContextMenu = (menu: ContextMenuState) => this.update({ contextMenu: menu });
   closeContextMenu = () => this.update({ contextMenu: null });
   setLeftPanelTab = (tab: EditorState["leftPanelTab"]) => this.update({ leftPanelTab: tab });
@@ -1113,6 +1181,7 @@ export class EditorController {
   prepareMediaPreview = (file: File, previewId: string, handle?: FileSystemFileHandle) => this.engine.inspectMedia(file, previewId, handle);
   releaseMediaPreview = (previewId: string) => this.engine.releaseMedia(previewId);
   pickPreview = (ndcX: number, ndcY: number, coalesce = false) => this.engine.pick(ndcX, ndcY, coalesce);
+  moveInspectorCamera = (operation: "orbit" | "pan", deltaX: number, deltaY: number) => this.engine.moveInspectorCamera(operation, deltaX, deltaY);
 
   setLayout = (patch: Partial<EditorLayout>, persist = false) => {
     const layout = { ...this.state.layout, ...patch };
@@ -2034,6 +2103,18 @@ function evaluateClipNumber(clip: TimelineClip, property: KeyframeProperty, time
   const right = keys.find((keyframe) => keyframe.time >= localTime) ?? keys.at(-1)!;
   if (left === right || left.interpolation === "step") return left.value;
   let alpha = Math.max(0, Math.min(1, (localTime - left.time) / Math.max(0.000001, right.time - left.time)));
+  if (left.interpolation === "smooth") alpha = alpha * alpha * (3 - 2 * alpha);
+  else if (left.interpolation === "bezier") alpha = cubicBezierAt(left.easing, alpha);
+  return left.value + (right.value - left.value) * alpha;
+}
+
+function evaluateSceneNumber(keyframes: readonly SceneKeyframe[], property: string, time: number, fallback: number) {
+  const keys = keyframes.filter((keyframe) => keyframe.property === property).sort((a, b) => a.time - b.time);
+  if (!keys.length) return fallback;
+  const left = [...keys].reverse().find((keyframe) => keyframe.time <= time) ?? keys[0];
+  const right = keys.find((keyframe) => keyframe.time >= time) ?? keys.at(-1)!;
+  if (left === right || left.interpolation === "step") return left.value;
+  let alpha = Math.max(0, Math.min(1, (time - left.time) / Math.max(0.000001, right.time - left.time)));
   if (left.interpolation === "smooth") alpha = alpha * alpha * (3 - 2 * alpha);
   else if (left.interpolation === "bezier") alpha = cubicBezierAt(left.easing, alpha);
   return left.value + (right.value - left.value) * alpha;

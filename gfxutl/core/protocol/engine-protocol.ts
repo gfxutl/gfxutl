@@ -237,6 +237,8 @@ export interface ParticleSystemSpec {
 }
 
 export interface CameraSettings {
+  id: string;
+  name: string;
   projection: "orthographic" | "perspective";
   position: [number, number, number];
   target: [number, number, number];
@@ -246,6 +248,8 @@ export interface CameraSettings {
   zoom: number;
   orthographicHeight: number;
 }
+
+export type PreviewView = "camera" | "inspector";
 
 export interface RendererSettings {
   previewScale: number;
@@ -408,7 +412,7 @@ export type EngineRequest =
   | { type: "init"; canvas: OffscreenCanvas; port: MessagePort; width: number; height: number; dpr: number; nagaWasm: ArrayBuffer; previewCache?: { enabled: boolean; maxBytes: number } }
   | { type: "attach-canvas"; canvas: OffscreenCanvas; width: number; height: number; dpr: number }
   | { type: "resize"; width: number; height: number; dpr: number }
-  | { type: "render"; sequence: number; time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; focusClipId?: string; timelinePatch?: TimelinePatch; sceneSettingsPatch?: SceneSettingsPatch }
+  | { type: "render"; sequence: number; time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; previewView: PreviewView; focusClipId?: string; timelinePatch?: TimelinePatch; sceneSettingsPatch?: SceneSettingsPatch }
   | { type: "inspect-media"; requestId: string; assetId: string; source: MediaFileSource; stream: ReadableStream<Uint8Array> }
   | { type: "inspect-image"; requestId: string; assetId: string; source: MediaFileSource; stream: ReadableStream<Uint8Array> }
   | { type: "inspect-model"; requestId: string; assetId: string; source: MediaFileSource; stream: ReadableStream<Uint8Array> }
@@ -420,6 +424,7 @@ export type EngineRequest =
   | { type: "geometry-upsert"; object: SceneObjectSpec }
   | { type: "geometry-remove"; id: string }
   | { type: "font-register"; fontId: string; buffer: ArrayBuffer }
+  | { type: "inspector-camera"; operation: "orbit" | "pan"; deltaX: number; deltaY: number }
   | { type: "pick"; requestId: string; ndcX: number; ndcY: number }
   | { type: "compile-glsl"; requestId: string; source: string }
   | { type: "plugin-load"; requestId: string; plugin: RendererPluginBundle }

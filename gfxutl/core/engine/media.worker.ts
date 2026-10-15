@@ -7,7 +7,7 @@ import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { clone as cloneSkinned } from "three/addons/utils/SkeletonUtils.js";
 import { ALL_FORMATS, AudioSample, AudioSampleSink, AudioSampleSource, BufferTarget, CanvasSource, Input, Mp4OutputFormat, Output, VideoSampleSink, WebMOutputFormat } from "mediabunny";
-import type { AudioProcessingSpec, ClipKeyframe, EngineRequest, EngineResponse, MediaFileSource, RenderClip, SceneObjectSpec, SceneSettings } from "../protocol/engine-protocol";
+import type { AudioProcessingSpec, ClipKeyframe, EngineRequest, EngineResponse, MediaFileSource, PreviewView, RenderClip, SceneObjectSpec, SceneSettings } from "../protocol/engine-protocol";
 import { RamPreviewCache } from "./ram-preview-cache";
 import { createRenderPipeline, shadowTypeFrom, ThreeRendererCore, toneMappingFrom } from "./three-renderer-core";
 import { ThreeSceneCore } from "./three-scene-core";
@@ -54,6 +54,7 @@ let recoveringGraphics = false;
 let previewFps = 30;
 let lastTimelineTime = 0;
 let previewFocusClipId: string | undefined;
+let previewView: PreviewView = "camera";
 let lastRendererStatsAt = -Infinity;
 let playbackActive = false;
 let cacheStatusTimer = 0;
@@ -64,7 +65,7 @@ let nagaWasm: ArrayBuffer | null = null;
 const postProcessTime = uniform(0);
 let sceneSettings: SceneSettings = {
   background: { color: 0xffffff, alpha: 1, fogEnabled: false, fogColor: 0xffffff, fogNear: 5, fogFar: 30, environmentIntensity: 1, environmentRotation: 0, backgroundBlurriness: 0 },
-  camera: { projection: "orthographic", position: [0, 0, 10], target: [0, 0, 0], near: 0.01, far: 1_000, fov: 50, zoom: 1, orthographicHeight: 9 },
+  camera: { id: "camera-1", name: "Camera 1", projection: "orthographic", position: [0, 0, 10], target: [0, 0, 0], near: 0.01, far: 1_000, fov: 50, zoom: 1, orthographicHeight: 9 },
   renderer: { previewScale: 0.75, toneMapping: "aces", exposure: 1, outputBuffer: "uint8", antialias: true, samples: 2, shadows: true, shadowType: "pcf", transparentBackground: false, postProcessing: false, fxaa: false, bloomStrength: 0, bloomRadius: 0.25, bloomThreshold: 0.8 },
   lights: [
     { id: "ambient", kind: "ambient", color: 0xffffff, intensity: 1.2, position: [0, 0, 0] },
@@ -429,7 +430,7 @@ async function renderCachedPreview(time: number, fps: number) {
   surface.frame = frame;
   surface.texture.setFrame(frame);
   surface.mesh.visible = true;
-  graphics.render();
+  graphics.render("camera");
   retired?.close();
   return true;
 }
@@ -1040,7 +1041,7 @@ function pickSceneObject(ndcX: number, ndcY: number) {
   if (!graphics) return undefined;
   previewRaycaster.layers.enableAll();
   previewPointer.set(THREE.MathUtils.clamp(ndcX, -1, 1), THREE.MathUtils.clamp(ndcY, -1, 1));
-  previewRaycaster.setFromCamera(previewPointer, graphics.camera);
+  previewRaycaster.setFromCamera(previewPointer, graphics.previewCamera);
   const intersections = previewRaycaster.intersectObjects(graphics.scene.children, true)
     .filter((hit) => hit.object.visible && worldVisible(hit.object) && hit.object !== cachedPreviewSurface?.mesh)
     .sort(comparePickIntersections);
@@ -1345,7 +1346,7 @@ async function renderRealtime(time: number, _shouldCache: boolean, clips: Render
   applyTimelineHierarchy(frame.activeClips);
   await pluginRuntime.runFrame({ time, fps: previewFps, mode: playbackActive ? "playback" : "realtime" });
   const renderStartedAt = performance.now();
-  graphics.render();
+  graphics.render(previewView);
   const renderedAt = performance.now();
   retiredFrames.forEach((frame) => frame.close());
   samplesToClose.forEach((sample) => sample?.close());
@@ -1365,7 +1366,7 @@ async function render(time: number, shouldCache: boolean, mode: "realtime" | "pl
   previewFps = Math.max(1, Math.min(120, fps));
   playbackActive = mode === "playback";
   postProcessTime.value = renderTime;
-  if (!focusClipId && mode === "playback" && ramPreviewEnabled && await renderCachedPreview(renderTime, previewFps)) {
+  if (previewView === "camera" && !focusClipId && mode === "playback" && ramPreviewEnabled && await renderCachedPreview(renderTime, previewFps)) {
     return { previewSource: "cache" as const };
   }
   if (sceneSettings.keyframes?.length) graphics?.applySettings(evaluateSceneSettingsAtTime(sceneSettings, renderTime));
@@ -1374,7 +1375,7 @@ async function render(time: number, shouldCache: boolean, mode: "realtime" | "pl
   // Populate the RAM cache from the frame already on screen. The old prefetcher
   // rendered a future frame and then rendered the current frame again, doubling
   // GPU work and video seeks precisely while the user was interacting.
-  if (!focusClipId && ramPreviewEnabled && shouldCache && !playbackActive && canvas) encodePreviewFrame(canvas, renderTime, previewFps);
+  if (previewView === "camera" && !focusClipId && ramPreviewEnabled && shouldCache && !playbackActive && canvas) encodePreviewFrame(canvas, renderTime, previewFps);
   const statsTime = performance.now();
   let rendererStats;
   if (graphics && statsTime - lastRendererStatsAt >= 500) {
@@ -2089,6 +2090,7 @@ async function handleMessage(message: EngineRequest) {
       if (message.timelinePatch) applyTimelinePatch(message.timelinePatch);
       if (message.sceneSettingsPatch) applySceneSettingsPatch(message.sceneSettingsPatch);
       previewFocusClipId = message.focusClipId;
+      previewView = message.previewView;
       renderCompletion = await render(message.time, message.cache, message.mode, message.fps);
     }
     if (message.type === "media-buffer-plan") sendMediaBufferState(mediaBuffer.setGraph(message.graph));
@@ -2129,6 +2131,10 @@ async function handleMessage(message: EngineRequest) {
     if (message.type === "font-register") {
       await registerLocalFont(message.fontId, message.buffer);
       send({ type: "font-ready", fontId: message.fontId });
+    }
+    if (message.type === "inspector-camera" && graphics) {
+      graphics.moveInspectorCamera(message.operation, message.deltaX, message.deltaY);
+      graphics.render("inspector");
     }
     if (message.type === "pick") send({ type: "pick-result", requestId: message.requestId, clipId: pickSceneObject(message.ndcX, message.ndcY) });
     if (message.type === "compile-glsl") send({ type: "glsl-compiled", requestId: message.requestId, wgsl: await compileGlslWithNaga(message.source) });
