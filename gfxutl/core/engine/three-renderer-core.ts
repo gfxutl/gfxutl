@@ -242,7 +242,7 @@ export class ThreeRendererCore {
     this.inspectorCameraInitialized = true;
   }
 
-  moveInspectorCamera(operation: "orbit" | "pan", deltaX: number, deltaY: number) {
+  moveInspectorCamera(operation: "orbit" | "pan" | "walk", deltaX: number, deltaY: number) {
     if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return;
     this.updateInspectorCamera();
     const offset = this.inspectorCamera.position.clone().sub(this.inspectorTarget);
@@ -257,7 +257,9 @@ export class ThreeRendererCore {
       const right = new THREE.Vector3().crossVectors(forward, this.inspectorCamera.up).normalize();
       const up = new THREE.Vector3().crossVectors(right, forward).normalize();
       const worldUnitsPerPixel = 2 * distance * Math.tan(THREE.MathUtils.degToRad(this.inspectorCamera.fov / 2)) / Math.max(1, this.height);
-      const translation = right.multiplyScalar(-deltaX * worldUnitsPerPixel).addScaledVector(up, deltaY * worldUnitsPerPixel);
+      const translation = operation === "pan"
+        ? right.multiplyScalar(-deltaX * worldUnitsPerPixel).addScaledVector(up, deltaY * worldUnitsPerPixel)
+        : right.multiplyScalar(-deltaX * worldUnitsPerPixel).addScaledVector(forward, -deltaY * worldUnitsPerPixel);
       this.inspectorTarget.add(translation);
       this.inspectorCamera.position.add(translation);
     }

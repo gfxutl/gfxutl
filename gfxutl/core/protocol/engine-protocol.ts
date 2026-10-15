@@ -435,7 +435,7 @@ export type EngineRequest =
   | { type: "geometry-upsert"; object: SceneObjectSpec }
   | { type: "geometry-remove"; id: string }
   | { type: "font-register"; fontId: string; buffer: ArrayBuffer }
-  | { type: "inspector-camera"; operation: "orbit" | "pan"; deltaX: number; deltaY: number }
+  | { type: "inspector-camera"; operation: "orbit" | "pan" | "walk"; deltaX: number; deltaY: number }
   | { type: "transform-handles"; clipId?: string }
   | { type: "camera-handles"; visible: boolean }
   | { type: "camera-handle-drag"; requestId: string; phase: "start"; handle: CameraHandleKind; ndcX: number; ndcY: number }

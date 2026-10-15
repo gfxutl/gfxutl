@@ -278,6 +278,7 @@ const EN: Record<string, string> = {
   "カメラを含むシーン全体を俯瞰": "Overview of the complete scene, including the camera",
   "ドラッグでカメラ回転 / Shift+ドラッグでカメラ移動 / ホイールでズーム / Ctrl+ドラッグでビュー操作": "Drag to orbit camera / Shift-drag to pan / wheel to zoom / Ctrl-drag to navigate view",
   "カメラギズモをドラッグして軸操作 / ドラッグでカメラ回転 / Shift+ドラッグでカメラ移動 / ホイールでズーム / Ctrl+ドラッグでビュー操作": "Drag camera gizmo for axis controls / drag to orbit camera / Shift-drag to pan / wheel to zoom / Ctrl-drag to navigate view",
+  "ギズモ: 軸操作 / ドラッグ: 周回 / Ctrl+ドラッグ: 上下左右 / Shift+ドラッグ: 前後左右 / ホイール: カメラズーム": "Gizmo: axis controls / drag: orbit / Ctrl-drag: up, down, left, right / Shift-drag: forward, back, left, right / wheel: camera zoom",
   "{name}の視点をプレビュー": "Preview the {name} viewpoint",
   "プレビューを開く": "Open preview",
   "{name}のみをプレビュー": "Preview {name} only",

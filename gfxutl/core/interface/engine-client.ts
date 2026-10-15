@@ -260,7 +260,7 @@ export class EngineClient {
     });
   }
 
-  moveInspectorCamera(operation: "orbit" | "pan", deltaX: number, deltaY: number) {
+  moveInspectorCamera(operation: "orbit" | "pan" | "walk", deltaX: number, deltaY: number) {
     this.post({ type: "inspector-camera", operation, deltaX, deltaY });
   }
 

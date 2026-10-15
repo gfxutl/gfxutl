@@ -1266,7 +1266,7 @@ export class EditorController {
   releaseMediaPreview = (previewId: string) => this.engine.releaseMedia(previewId);
   pickPreview = async (ndcX: number, ndcY: number, coalesce = false) => (await this.engine.pick(ndcX, ndcY, coalesce)).clipId;
   pickPreviewTarget = (ndcX: number, ndcY: number, coalesce = false) => this.engine.pick(ndcX, ndcY, coalesce);
-  moveInspectorCamera = (operation: "orbit" | "pan", deltaX: number, deltaY: number) => this.engine.moveInspectorCamera(operation, deltaX, deltaY);
+  moveInspectorCamera = (operation: "orbit" | "pan" | "walk", deltaX: number, deltaY: number) => this.engine.moveInspectorCamera(operation, deltaX, deltaY);
   moveCameraAtPlayhead = (operation: "orbit" | "pan" | "dolly", deltaX: number, deltaY: number, viewportHeight: number) => {
     if (this.state.playing || (!deltaX && !deltaY) || !Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return;
     const time = this.state.currentTime;
