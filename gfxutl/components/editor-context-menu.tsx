@@ -16,6 +16,7 @@ import {
   Cut16Regular as Scissors,
   Delete16Regular as Trash2,
   Flag16Regular as Flag,
+  Filter16Regular as Filter,
   FolderList16Regular as FolderTree,
   LayerDiagonal16Regular as Layers,
   Pentagon20Regular as Pentagon,
@@ -56,7 +57,7 @@ export function EditorContextMenu() {
   if (!menu) return null;
   const targetMarker = menu.markerId ? state.markers.find((marker) => marker.id === menu.markerId) : undefined;
   const placement = { time: menu.time, timelineY: menu.timelineY, positionX: menu.positionX, positionY: menu.positionY };
-  const hasPreviewSelection = state.clips.some((clip) => state.selectedClipIds.includes(clip.id) && clip.kind !== "audio" && clip.kind !== "group");
+  const hasPreviewSelection = state.clips.some((clip) => state.selectedClipIds.includes(clip.id) && clip.kind !== "audio" && clip.kind !== "filter" && clip.kind !== "group");
   const menuLeft = Math.min(menu.x, window.innerWidth - 224);
   const submenuOpensLeft = menuLeft + 440 > window.innerWidth;
   const run = (event: MouseEvent, action: () => void | Promise<unknown>) => {
@@ -95,6 +96,7 @@ export function EditorContextMenu() {
       <button role="menuitem" aria-haspopup="menu"><Sparkles /><span>{t("新規")}</span><ChevronRight className="context-menu-chevron" /></button>
       <div className="context-menu-submenu-panel" role="menu" aria-label={t("新規オブジェクト")}>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addGroupObject(placement))}><FolderTree />{t("グループ")}</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.addFilterObject(placement))}><Filter />{t("フィルター")}</button>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addText2DObject(placement))}><Type />2D Text</button>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addText3DObject(placement))}><Type />3D Text</button>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("shape", placement))}><Pentagon />{t("シェイプ")}</button>

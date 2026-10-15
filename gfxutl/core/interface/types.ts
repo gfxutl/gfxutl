@@ -1,6 +1,6 @@
 import type { RendererPluginInfo } from "../plugins/plugin-types";
 
-export type TrackKind = "video" | "audio" | "title" | "object" | "group";
+export type TrackKind = "video" | "audio" | "title" | "object" | "filter" | "group";
 
 export type ClipPropertyActionKind = "transform" | "sceneGraph" | "keyframes" | "crop" | "colorGrading" | "effects" | "postProcess" | "masks" | "audio" | "speed";
 
@@ -10,7 +10,7 @@ export interface ClipPropertyAction {
 }
 
 import type { AudioProcessingSpec, ClipEffect, ClipKeyframe, ClipMask, ClipPostProcess, ColorGradingSpec, ExportSettings, GeometrySpec, SceneMaterialSpec, SceneSettings, SourceIoProfile } from "../protocol/engine-protocol";
-export type { AudioProcessingSpec, BackgroundSettings, BlendMode, CameraHandleKind, CameraHandleTransform, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ColorGradingSpec, EngineRequest, EngineResponse, ExportSettings, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, PreviewPickResult, PreviewView, RendererSettings, RendererStats, RenderClip, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, SceneSettingsPatch, SourceIoProfile, TimelinePatch, TimelineSnapshot, ToneMappingKind, TransformHandleKind } from "../protocol/engine-protocol";
+export type { AudioProcessingSpec, BackgroundSettings, BlendMode, CameraHandleKind, CameraHandleTransform, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ColorGradingSpec, EngineRequest, EngineResponse, ExportSettings, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, PreviewPickResult, PreviewView, RendererSettings, RendererStats, RenderClip, RenderFilter, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, SceneSettingsPatch, SourceIoProfile, TimelinePatch, TimelineSnapshot, ToneMappingKind, TransformHandleKind } from "../protocol/engine-protocol";
 
 export interface MediaAsset {
   id: string;

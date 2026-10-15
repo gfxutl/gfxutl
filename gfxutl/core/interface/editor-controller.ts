@@ -825,7 +825,10 @@ export class EditorController {
       this.state.background.scene.camera.zoom,
     ].join(":");
     if (this.renderClipSource === this.state.clips && this.renderClipContextSignature === renderClipContextSignature) return this.renderClipCache;
-    const visualClips = this.state.clips.filter((clip) => clip.kind !== "group");
+    const visualClips = this.state.clips.filter((clip) => clip.kind !== "group" && clip.kind !== "filter");
+    const filters = this.state.clips
+      .filter((clip) => clip.kind === "filter")
+      .sort((a, b) => b.y - a.y);
     const depth = new Map(orderedVisualClips(visualClips)
       .map((clip, index) => [clip.id, 1_000 + index]));
     this.renderClipSource = this.state.clips;
@@ -860,6 +863,17 @@ export class EditorController {
       effects: clip.effects ?? [],
       colorGrading: resolveColorGrading(clip.colorGrading),
       postProcess: clip.postProcess,
+      filterStack: clip.kind === "audio" ? [] : filters
+        .filter((filter) => filter.y < clip.y && filter.start < clip.start + clip.duration && filter.start + filter.duration > clip.start)
+        .map((filter) => ({
+          id: filter.id,
+          start: filter.start,
+          duration: filter.duration,
+          enabled: filter.visible !== false,
+          effects: filter.effects ?? [],
+          postProcess: filter.postProcess,
+          keyframes: filter.keyframes ?? [],
+        })),
       masks: clip.masks ?? [],
       keyframes: clip.keyframes ?? [],
       particleSystem: clip.particleSystem,
@@ -1026,7 +1040,7 @@ export class EditorController {
       : [id];
     const selectedClipId = selectedClipIds.includes(id) ? id : selectedClipIds.at(-1) ?? null;
     const selectedClip = this.state.clips.find((item) => item.id === selectedClipId);
-    const previewable = clip && clip.kind !== "group";
+    const previewable = clip && clip.kind !== "group" && clip.kind !== "filter";
     this.update({
       selectedClipId,
       selectedClipIds,
@@ -1036,23 +1050,23 @@ export class EditorController {
       ...(previewable ? {
         previewClipTabs: this.state.previewClipTabs.includes(id) ? this.state.previewClipTabs : [...this.state.previewClipTabs, id],
         activePreviewClipId: id,
-      } : {}),
+      } : clip?.kind === "filter" ? { activePreviewClipId: null, activePreviewView: "camera" as const } : {}),
     });
-    if (previewable) this.renderPreview(false);
+    if (previewable || clip?.kind === "filter") this.renderPreview(false);
   };
   selectClips = (ids: string[], additive = false) => {
     const selectedClipIds = additive ? [...new Set([...this.state.selectedClipIds, ...ids])] : ids;
     const selectedClipId = selectedClipIds.at(-1) ?? null;
     const clip = this.state.clips.find((item) => item.id === selectedClipId);
-    const previewable = clip && clip.kind !== "group";
+    const previewable = clip && clip.kind !== "group" && clip.kind !== "filter";
     this.update({
       selectedClipIds, selectedClipId, selectedCameraKeyframeIds: [], selectedAssetId: clip?.assetId ?? null, backgroundSelected: false,
       ...(previewable ? {
         previewClipTabs: this.state.previewClipTabs.includes(clip.id) ? this.state.previewClipTabs : [...this.state.previewClipTabs, clip.id],
         activePreviewClipId: clip.id,
-      } : {}),
+      } : clip?.kind === "filter" ? { activePreviewClipId: null, activePreviewView: "camera" as const } : {}),
     });
-    if (previewable) this.renderPreview(false);
+    if (previewable || clip?.kind === "filter") this.renderPreview(false);
   };
   setPreviewTab = (clipId: string | null) => {
     if (clipId === null) {
@@ -1409,7 +1423,7 @@ export class EditorController {
     const clip = this.state.clips.find((item) => item.id === id);
     if (!clip) return;
     const asset = clip.assetId ? this.state.assets.find((item) => item.id === clip.assetId) : undefined;
-    if (clip.kind !== "title" && clip.kind !== "object" && clip.kind !== "group" && asset?.kind !== "image") return;
+    if (clip.kind !== "title" && clip.kind !== "object" && clip.kind !== "filter" && clip.kind !== "group" && asset?.kind !== "image") return;
     const minimumDuration = 1 / this.state.fps;
     const nextStart = Math.max(0, start);
     const nextDuration = Math.max(minimumDuration, duration);
@@ -1585,6 +1599,7 @@ export class EditorController {
     this.updateClip(id, {
       ...resetPatchForClipAction(action.kind),
       ...(action.kind === "colorGrading" ? { keyframes: (clip.keyframes ?? []).filter((keyframe) => !keyframe.property.startsWith("colorGrading.")) } : {}),
+      ...(action.kind === "effects" ? { keyframes: (clip.keyframes ?? []).filter((keyframe) => !keyframe.property.startsWith("effect.")) } : {}),
       propertyActions: actions.filter((item) => item.id !== actionId),
     });
   };
@@ -1690,6 +1705,40 @@ export class EditorController {
       contextMenu: null,
     });
     this.schedulePersistence();
+  };
+
+  addFilterObject = (placement?: Partial<Pick<ContextMenuState, "time" | "timelineY">>) => {
+    const id = crypto.randomUUID();
+    const start = this.snapTime(placement?.time ?? this.state.currentTime);
+    let clip: TimelineClip = {
+      id,
+      name: t("フィルター"),
+      kind: "filter",
+      color: "#8b65a5",
+      start,
+      y: Math.max(0, placement?.timelineY ?? 32),
+      duration: 5,
+      offset: 0,
+      visible: true,
+      effects: [],
+      keyframes: [],
+      propertyActions: [{ id: crypto.randomUUID(), kind: "effects" }],
+    };
+    clip = placeTimelineClip(this.state.clips, clip);
+    this.update({
+      clips: assignTimelineGroups([...this.state.clips, clip]),
+      selectedClipId: id,
+      selectedClipIds: [id],
+      selectedAssetId: null,
+      activePreviewClipId: null,
+      activePreviewView: "camera",
+      currentTime: start,
+      contextMenu: null,
+      backgroundSelected: false,
+    });
+    this.invalidatePreviewCache();
+    this.schedulePersistence();
+    this.renderPreview(false);
   };
 
   addParticleObject = (placement?: Partial<Pick<ContextMenuState, "time" | "timelineY" | "positionX" | "positionY">>) => {
@@ -1973,7 +2022,11 @@ export class EditorController {
   };
 
   removeEffect = (clipId: string, effectId: string) => {
-    this.update({ clips: this.state.clips.map((clip) => clip.id === clipId ? { ...clip, effects: (clip.effects ?? []).filter((effect) => effect.id !== effectId) } : clip) });
+    this.update({ clips: this.state.clips.map((clip) => clip.id === clipId ? {
+      ...clip,
+      effects: (clip.effects ?? []).filter((effect) => effect.id !== effectId),
+      keyframes: (clip.keyframes ?? []).filter((keyframe) => !keyframe.property.startsWith(`effect.${effectId}.`)),
+    } : clip) });
     this.invalidatePreviewCache();
     this.schedulePersistence();
     this.renderPreview(false);
@@ -2433,7 +2486,7 @@ function normalizeVector(vector: Vector3): Vector3 {
 }
 
 function orderedVisualClips(clips: readonly TimelineClip[]) {
-  const visualClips = clips.filter((clip) => clip.kind !== "group");
+  const visualClips = clips.filter((clip) => clip.kind !== "group" && clip.kind !== "filter");
   const legacyOrder = new Map([...visualClips]
     .sort((a, b) => (a.positionZ ?? 0) - (b.positionZ ?? 0) || b.y - a.y)
     .map((clip, index) => [clip.id, index]));

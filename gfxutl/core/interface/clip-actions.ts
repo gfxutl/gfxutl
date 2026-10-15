@@ -51,6 +51,7 @@ export function resolveColorGrading(value?: Partial<ColorGradingSpec>): ColorGra
 
 export function applicableClipActionKinds(clip: TimelineClip): ClipPropertyActionKind[] {
   if (clip.kind === "group") return [];
+  if (clip.kind === "filter") return ["effects", "postProcess", "keyframes"];
   return DEFAULT_ORDER.filter((kind) => {
     if (kind === "transform") return true;
     if (kind === "sceneGraph") return clip.kind === "title" || clip.kind === "object";

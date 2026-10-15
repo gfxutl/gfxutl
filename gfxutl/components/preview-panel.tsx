@@ -138,7 +138,7 @@ export function PreviewPanel() {
 
   const previewObjects = useMemo(() => inspectorView ? [] : state.clips
     .filter((clip) => !state.activePreviewClipId || clip.id === state.activePreviewClipId)
-    .filter((clip) => clip.kind !== "audio" && (state.activePreviewClipId === clip.id || state.currentTime >= clip.start && state.currentTime < clip.start + clip.duration))
+    .filter((clip) => clip.kind !== "audio" && clip.kind !== "filter" && clip.kind !== "group" && (state.activePreviewClipId === clip.id || state.currentTime >= clip.start && state.currentTime < clip.start + clip.duration))
     .map((clip) => previewBounds(animatedClip(clip, state.activePreviewClipId === clip.id ? Math.max(clip.start, Math.min(state.currentTime, clip.start + clip.duration - 1 / state.fps)) : state.currentTime), state.assets.find((asset) => asset.id === clip.assetId)))
     .sort((a, b) => (b.clip.positionZ ?? 0) - (a.clip.positionZ ?? 0) || a.clip.y - b.clip.y), [inspectorView, state.clips, state.assets, state.currentTime, state.activePreviewClipId, state.fps]);
   const hoveredObject = previewObjects.find((object) => object.clip.id === hoveredClipId);

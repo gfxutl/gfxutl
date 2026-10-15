@@ -361,6 +361,10 @@ export interface RenderClip {
   effects: ClipEffect[];
   colorGrading: ColorGradingSpec;
   postProcess?: ClipPostProcess;
+  /** Timeline filters above this clip, ordered from nearest to topmost. */
+  filterStack: RenderFilter[];
+  /** Active filter shaders composed after this clip's own shader. Worker-only. */
+  filterPostProcesses?: ClipPostProcess[];
   masks: ClipMask[];
   keyframes: ClipKeyframe[];
   particleSystem?: ParticleSystemSpec;
@@ -368,6 +372,16 @@ export interface RenderClip {
   instanceSpacing: number;
   sceneObject?: SceneObjectSpec;
   renderOrder: number;
+}
+
+export interface RenderFilter {
+  id: string;
+  start: number;
+  duration: number;
+  enabled: boolean;
+  effects: ClipEffect[];
+  postProcess?: ClipPostProcess;
+  keyframes: ClipKeyframe[];
 }
 
 export interface TimelinePatch {

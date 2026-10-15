@@ -42,7 +42,7 @@ function translateCompositeLabel(label: string, t: (key: string) => string) {
 }
 
 function keyframeProperties(clip: TimelineClip): Array<[KeyframeProperty, string]> {
-  const properties = [...BASE_KEYFRAME_PROPERTIES];
+  const properties = clip.kind === "filter" ? [] : [...BASE_KEYFRAME_PROPERTIES];
   if (clip.kind === "video") properties.push(["cropLeft", "クロップ 左"], ["cropRight", "クロップ 右"], ["cropTop", "クロップ 上"], ["cropBottom", "クロップ 下"]);
   if (clip.kind === "video" || clip.kind === "audio") properties.push(["volume", "音量"], ["pan", "パン"], ["speed", "速度"]);
   if (clip.kind === "video" && resolveClipPropertyActions(clip).some((action) => action.kind === "colorGrading")) {
@@ -96,7 +96,7 @@ function defaultGeometry(id: string, kind: GeometryKind): GeometrySpec {
 }
 
 function isVisualClip(clip: TimelineClip) {
-  return clip.kind === "video" || clip.kind === "title" || clip.kind === "object";
+  return clip.kind === "video" || clip.kind === "title" || clip.kind === "object" || clip.kind === "filter";
 }
 
 function ShapePathEditor({ points, onChange }: { points: Array<[number, number]>; onChange: (points: Array<[number, number]>) => void }) {
@@ -357,6 +357,14 @@ export function InspectorPanel() {
           <small>{selected.kind.toUpperCase()} OBJECT</small>
         </div>
       </div>
+      {selected.kind === "filter" && <div className="inspector-section filter-inspector">
+        <div className="section-title"><span>{t("フィルター")}</span><small>STACK OVERLAY</small></div>
+        <div className="section-body">
+          <label className="text-editor-field"><span>{t("名前")}</span><input aria-label={t("フィルター名")} value={selected.name} onChange={(event) => controller.updateClip(selected.id, { name: event.target.value || t("フィルター") })} /></label>
+          <div className="field-grid"><NumberField label="開始" value={selected.start} suffix="s" onChange={(start) => controller.resizeStaticClip(selected.id, start, selected.duration)} /><NumberField label="長さ" value={selected.duration} suffix="s" onChange={(duration) => controller.resizeStaticClip(selected.id, selected.start, duration)} /></div>
+          <small>{t("時間が重なる下段のビジュアルオブジェクトへ、効果とシェーダーを上から順に適用します。")}</small>
+        </div>
+      </div>}
       {selected.kind === "title" && <div className="inspector-section text-inspector">
         <div className="section-title"><span>{selected.textMode === "2d" ? "2D Text" : "3D Text"}</span><small>{selected.textMode === "2d" ? "CANVAS 2D" : "THREE.TEXT"}</small></div>
         <div className="section-body">
@@ -468,6 +476,7 @@ function ClipPropertyActionBody({ action, clip, allClips }: { action: ClipProper
   const { t } = useI18n();
   const [keyframeProperty, setKeyframeProperty] = useState<KeyframeProperty>("positionX");
   const animatedProperties = keyframeProperties(clip);
+  const activeKeyframeProperty = animatedProperties.some(([property]) => property === keyframeProperty) ? keyframeProperty : animatedProperties[0]?.[0];
   switch (action.kind) {
     case "transform": return <>
       <div className="field-grid transform-position-grid"><NumberField label="位置 X" value={clip.positionX ?? 0} onChange={(positionX) => controller.updateClip(clip.id, { positionX })} /><NumberField label="Y" value={clip.positionY ?? 0} onChange={(positionY) => controller.updateClip(clip.id, { positionY })} /><NumberField label="位置 Z" value={clip.positionZ ?? 0} onChange={(positionZ) => controller.updateClip(clip.id, { positionZ })} /></div>
@@ -481,8 +490,8 @@ function ClipPropertyActionBody({ action, clip, allClips }: { action: ClipProper
       <NumberField label="レイヤー" value={clip.layer ?? 0} onChange={(layer) => controller.updateClip(clip.id, { layer: Math.max(0, Math.min(31, Math.floor(layer))) })} />
     </>;
     case "keyframes": return <>
-      <label className="select-field"><span>{t("プロパティ")}</span><select value={keyframeProperty} onChange={(event) => setKeyframeProperty(event.target.value as KeyframeProperty)}>{animatedProperties.map(([property, label]) => <option value={property} key={property}>{translateCompositeLabel(label, t)}</option>)}</select></label>
-      <Button size="sm" onClick={() => controller.addKeyframe(clip.id, keyframeProperty, keyframeValue(clip, keyframeProperty), "smooth")}>{t("現在位置にキーを追加")}</Button>
+      <label className="select-field"><span>{t("プロパティ")}</span><select disabled={!activeKeyframeProperty} value={activeKeyframeProperty ?? ""} onChange={(event) => setKeyframeProperty(event.target.value as KeyframeProperty)}>{animatedProperties.length ? animatedProperties.map(([property, label]) => <option value={property} key={property}>{translateCompositeLabel(label, t)}</option>) : <option value="">{t("先に効果を追加してください")}</option>}</select></label>
+      <Button size="sm" disabled={!activeKeyframeProperty} onClick={() => activeKeyframeProperty && controller.addKeyframe(clip.id, activeKeyframeProperty, keyframeValue(clip, activeKeyframeProperty), "smooth")}>{t("現在位置にキーを追加")}</Button>
       <div className="keyframe-list">{(clip.keyframes ?? []).map((keyframe) => <div className="effect-item" key={keyframe.id}>
         <div className="effect-header"><strong>{translateCompositeLabel(animatedProperties.find(([property]) => property === keyframe.property)?.[1] ?? keyframe.property, t)}</strong><small>{keyframe.time.toFixed(2)}s</small><Button variant="ghost" size="icon" onClick={() => controller.removeKeyframe(clip.id, keyframe.id)}><Trash2 /></Button></div>
         <div className="field-grid"><NumberField label="時刻" value={keyframe.time} suffix="s" onChange={(time) => controller.updateKeyframe(clip.id, keyframe.id, { time: Math.max(0, Math.min(clip.duration, time)) })} /><NumberField label="値" value={keyframe.value} onChange={(value) => controller.updateKeyframe(clip.id, keyframe.id, { value })} /></div>
@@ -655,7 +664,7 @@ function RealtimeLayerInspector({ clips, currentTime, fps, selectedClipId, onSel
     .filter((clip) => clip.kind !== "group" && currentTime >= clip.start && currentTime < clip.start + clip.duration)
     .sort((a, b) => (b.positionZ ?? 0) - (a.positionZ ?? 0) || a.y - b.y || a.start - b.start);
   const frame = Math.max(0, Math.floor(currentTime * fps));
-  const kindLabel: Record<TimelineClip["kind"], string> = { video: t("映像"), audio: t("音声"), title: t("テキスト"), object: "3D", group: t("グループ") };
+  const kindLabel: Record<TimelineClip["kind"], string> = { video: t("映像"), audio: t("音声"), title: t("テキスト"), object: "3D", filter: t("フィルター"), group: t("グループ") };
   return <div className="realtime-layer-inspector" data-active-layers={activeLayers.length}>
     <div className="layer-inspector-head">
       <div><span className="layer-live"><i />LIVE</span><time dateTime={`PT${currentTime}S`}>{formatLayerTime(currentTime, fps)}</time></div>

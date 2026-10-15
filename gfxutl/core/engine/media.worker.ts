@@ -7,7 +7,7 @@ import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { clone as cloneSkinned } from "three/addons/utils/SkeletonUtils.js";
 import { ALL_FORMATS, AudioSample, AudioSampleSink, AudioSampleSource, BufferTarget, CanvasSource, Input, Mp4OutputFormat, Output, VideoSampleSink, WebMOutputFormat } from "mediabunny";
-import type { AudioProcessingSpec, CameraHandleKind, ClipKeyframe, EngineRequest, EngineResponse, MediaFileSource, PreviewPickResult, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, TimelinePatch, TimelineSnapshot, TransformHandleKind } from "../protocol/engine-protocol";
+import type { AudioProcessingSpec, CameraHandleKind, ClipEffect, ClipKeyframe, EngineRequest, EngineResponse, MediaFileSource, PreviewPickResult, PreviewView, RenderClip, RenderFilter, SceneObjectSpec, SceneSettings, TimelinePatch, TimelineSnapshot, TransformHandleKind } from "../protocol/engine-protocol";
 import { RamPreviewCache } from "./ram-preview-cache";
 import { createRenderPipeline, shadowTypeFrom, ThreeRendererCore, toneMappingFrom } from "./three-renderer-core";
 import { ThreeSceneCore } from "./three-scene-core";
@@ -185,7 +185,7 @@ const previewPointer = new THREE.Vector2();
 const modelTintScratch = new THREE.Color();
 const modelEffectColorScratch = new THREE.Color();
 /** THREE-OPT: keyframe grouping/sorting is immutable for the lifetime of a RenderClip snapshot. */
-const clipKeyframeTrackCache = new WeakMap<RenderClip, Map<string, ClipKeyframe[]>>();
+const clipKeyframeTrackCache = new WeakMap<object, Map<string, ClipKeyframe[]>>();
 const reportedVideoClips = new Set<string>();
 const sceneClipSignatures = new Map<string, SceneObjectSpec>();
 const renderTimeline = new Map<string, RenderClip>();
@@ -495,7 +495,7 @@ function fittedPlaneSize(aspect: number) {
 }
 
 function visualEffectSignature(clip: RenderClip) {
-  return JSON.stringify([clip.colorGrading, clip.effects.filter((effect) => effect.enabled && effect.kind !== "transform" && effect.kind !== "opacity"), clip.masks, clip.postProcess]);
+  return JSON.stringify([clip.colorGrading, clip.effects.filter((effect) => effect.enabled && effect.kind !== "transform" && effect.kind !== "opacity"), clip.masks, clip.postProcess, clip.filterPostProcesses]);
 }
 
 function applyColorGrading(input: any, grading: RenderClip["colorGrading"]) {
@@ -602,8 +602,9 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
   }
   const alphaMasked = clip.masks.some((mask) => mask.enabled) || clip.effects.some((effect) => effect.enabled && effect.kind === "chromaKey");
   let outputColor: any = vec4(rgb, alpha);
-  const shader = clip.postProcess;
-  if (shader?.enabled && shader.compileStatus === "ready" && shader.wgsl) {
+  const shaders = [clip.postProcess, ...(clip.filterPostProcesses ?? [])];
+  for (const shader of shaders) {
+    if (!shader?.enabled || shader.compileStatus !== "ready" || !shader.wgsl) continue;
     try {
       const shaderFunction = graphics?.backend === "webgpu" ? wgslFn(shader.wgsl) : glslFn(shader.glsl);
       outputColor = shaderFunction({ color: outputColor, uv: uv(), time: postProcessTime });
@@ -1187,28 +1188,31 @@ function evaluateClipsAtTime(clips: RenderClip[], time: number) {
   let evaluated: RenderClip[] | undefined;
   for (let index = 0; index < clips.length; index++) {
     const clip = clips[index];
-    if (!clip.keyframes.length || time < clip.start || time >= clip.start + clip.duration) {
+    const active = time >= clip.start && time < clip.start + clip.duration;
+    const hasActiveFilter = active && clip.filterStack.some((filter) => filter.enabled && time >= filter.start && time < filter.start + filter.duration);
+    if ((!clip.keyframes.length || !active) && !hasActiveFilter) {
       evaluated?.push(clip);
       continue;
     }
     // THREE-OPT: preserve the original array until the first animated clip; avoid a scan + map.
     evaluated ??= clips.slice(0, index);
-    evaluated.push(evaluateClipAtTime(clip, time));
+    const animated = clip.keyframes.length && active ? evaluateClipAtTime(clip, time) : clip;
+    evaluated.push(hasActiveFilter ? applyRenderFilters(animated, time) : animated);
   }
   return evaluated ?? clips;
 }
 
-function keyframeTracksFor(clip: RenderClip) {
-  let tracks = clipKeyframeTrackCache.get(clip);
+function keyframeTracksFor(source: object, keyframes: readonly ClipKeyframe[]) {
+  let tracks = clipKeyframeTrackCache.get(source);
   if (tracks) return tracks;
   tracks = new Map<string, ClipKeyframe[]>();
-  for (const keyframe of clip.keyframes) {
+  for (const keyframe of keyframes) {
     const track = tracks.get(keyframe.property);
     if (track) track.push(keyframe);
     else tracks.set(keyframe.property, [keyframe]);
   }
   for (const track of tracks.values()) track.sort((a, b) => a.time - b.time);
-  clipKeyframeTrackCache.set(clip, tracks);
+  clipKeyframeTrackCache.set(source, tracks);
   return tracks;
 }
 
@@ -1223,7 +1227,7 @@ function evaluateClipAtTime(clip: RenderClip, timelineTime: number) {
     sceneObject: clip.sceneObject ? structuredClone(clip.sceneObject) : undefined,
   };
   const localTime = THREE.MathUtils.clamp(timelineTime - clip.start, 0, clip.duration);
-  const properties = keyframeTracksFor(clip);
+  const properties = keyframeTracksFor(clip, clip.keyframes);
   for (const [property, keys] of properties) {
     // THREE-OPT: tracks are sorted once and searched without reverse-array allocations.
     let rightIndex = keys.findIndex((keyframe) => keyframe.time >= localTime);
@@ -1288,6 +1292,75 @@ function evaluateClipAtTime(clip: RenderClip, timelineTime: number) {
     })) : undefined;
   }
   return evaluated;
+}
+
+function applyRenderFilters(source: RenderClip, timelineTime: number) {
+  const evaluated: RenderClip = {
+    ...source,
+    effects: structuredClone(source.effects),
+    filterPostProcesses: [],
+    sceneObject: source.sceneObject ? structuredClone(source.sceneObject) : undefined,
+  };
+  for (const filter of source.filterStack) {
+    if (!filter.enabled || timelineTime < filter.start || timelineTime >= filter.start + filter.duration) continue;
+    const effects = evaluateFilterEffects(filter, timelineTime);
+    evaluated.effects.push(...effects);
+    if (filter.postProcess) evaluated.filterPostProcesses!.push(filter.postProcess);
+    if (evaluated.sceneObject) applyEffectsToFilteredSceneObject(evaluated.sceneObject, effects);
+  }
+  if (evaluated.sceneObject?.material) evaluated.sceneObject.material.effects = structuredClone(evaluated.effects);
+  return evaluated;
+}
+
+function evaluateFilterEffects(filter: RenderFilter, timelineTime: number) {
+  const effects = structuredClone(filter.effects);
+  if (!filter.keyframes.length) return effects;
+  const localTime = THREE.MathUtils.clamp(timelineTime - filter.start, 0, filter.duration);
+  for (const [property, keys] of keyframeTracksFor(filter, filter.keyframes)) {
+    if (!property.startsWith("effect.")) continue;
+    const value = interpolateKeyframeTrack(keys, localTime);
+    const [, effectId, key] = property.split(".");
+    const effect = effects.find((item) => item.id === effectId);
+    if (effect && key) effect.params[key] = value;
+  }
+  return effects;
+}
+
+function interpolateKeyframeTrack(keys: ClipKeyframe[], localTime: number) {
+  let rightIndex = keys.findIndex((keyframe) => keyframe.time >= localTime);
+  if (rightIndex < 0) rightIndex = keys.length - 1;
+  const right = keys[rightIndex];
+  const left = keys[Math.max(0, right.time > localTime ? rightIndex - 1 : rightIndex)];
+  if (right === left || left.interpolation === "step") return left.value;
+  let alpha = THREE.MathUtils.clamp((localTime - left.time) / Math.max(0.000001, right.time - left.time), 0, 1);
+  if (left.interpolation === "smooth") alpha = alpha * alpha * (3 - 2 * alpha);
+  else if (left.interpolation === "bezier") alpha = cubicBezierAt(left.easing, alpha);
+  return THREE.MathUtils.lerp(left.value, right.value, alpha);
+}
+
+function applyEffectsToFilteredSceneObject(object: SceneObjectSpec, effects: ClipEffect[]) {
+  const transform = object.transform ??= {};
+  const position = [...(transform.position ?? [0, 0, 0])] as [number, number, number];
+  const rotation = [...(transform.rotation ?? [0, 0, 0])] as [number, number, number];
+  const scale = [...(transform.scale ?? [1, 1, 1])] as [number, number, number];
+  for (const effect of effects) {
+    if (!effect.enabled) continue;
+    if (effect.kind === "transform") {
+      const x = (effect.params.x ?? 0) / 100;
+      const y = -(effect.params.y ?? 0) / 100;
+      position[0] += (Math.cos(rotation[2]) * x - Math.sin(rotation[2]) * y) * scale[0];
+      position[1] += (Math.sin(rotation[2]) * x + Math.cos(rotation[2]) * y) * scale[1];
+      const amount = (effect.params.scale ?? 100) / 100;
+      scale[0] *= amount;
+      scale[1] *= amount;
+      rotation[2] -= THREE.MathUtils.degToRad(effect.params.rotation ?? 0);
+    } else if (effect.kind === "opacity" && object.material) {
+      object.material.opacity = (object.material.opacity ?? 1) * (effect.params.amount ?? 100) / 100;
+    }
+  }
+  transform.position = position;
+  transform.rotation = rotation;
+  transform.scale = scale;
 }
 
 function setAnimatedClipProperty(clip: RenderClip & Record<string, unknown>, property: string, value: number) {
