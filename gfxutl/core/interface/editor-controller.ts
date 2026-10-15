@@ -4,6 +4,7 @@ import { EngineClient } from "./engine-client";
 import { VirtualTimeline } from "./virtual-timeline";
 import { assignTimelineGroups, expandGroupToValidBoundary, hasGroupBoundaryCrossing, MIN_GROUP_HEIGHT, placeTimelineClip, timelineGroupDescendants } from "./timeline-groups";
 import { loadHandleProjects, saveHandleProject } from "../persistence/handle-project-store";
+import { loadLocalFontCatalog, loadLocalFontData, saveLocalFontCatalog, saveLocalFontData } from "../persistence/local-font-store";
 import { createProjectDocument, parseProjectDocument, type ProjectDocument } from "../project/project-document";
 import { clampTimelineVerticalZoom, clampTimelineZoom } from "./timeline-zoom";
 import { MediaReadPlanner } from "./media-read-graph";
@@ -82,7 +83,6 @@ const initialState: EditorState = {
   previewClipTabs: [],
   activePreviewClipId: null,
   activePreviewView: "camera",
-  cameraPreviewOpen: true,
   selectedAssetId: null,
   backgroundSelected: true,
   background: { id: "background", name: t("背景オブジェクト"), color: 0xffffff, ...DEFAULT_COMPOSITION_SIZE, scene: structuredClone(defaultSceneSettings) },
@@ -98,6 +98,7 @@ const initialState: EditorState = {
   fileSystemAccess: "showDirectoryPicker" in window || "showOpenFilePicker" in window,
   localFontAccess: "queryLocalFonts" in window,
   notice: null,
+  dialog: null,
   layout: loadLayout(),
   settings: loadedSettings,
   leftPanelTab: "media",
@@ -178,6 +179,7 @@ export class EditorController {
   private previewCacheTimer = 0;
   private persistenceTimer = 0;
   private localFontEntries = new Map<string, LocalFontEntry>();
+  private fontCatalogRevision = 0;
   private registeredFonts = new Set<string>();
   private fontPreviewLoads = new Map<string, Promise<string | undefined>>();
   private memoryClipboard: ClipboardPayload | null = null;
@@ -197,6 +199,7 @@ export class EditorController {
   constructor(worker: Worker) {
     this.engine = new EngineClient(worker, (message) => this.onEngineMessage(message));
     this.engine.configurePreviewCache(this.state.settings.ramPreviewEnabled, this.state.settings.ramPreviewMaxBytes);
+    void this.restoreLocalFonts();
     void this.restoreHandleProjects();
   }
 
@@ -355,6 +358,7 @@ export class EditorController {
         exportSettings: project?.exportSettings ?? this.state.exportSettings,
       });
       this.historySuspended = false;
+      await this.registerTimelineFonts();
       await Promise.allSettled(assets.map((asset) => this.restoreAssetFile(asset.id, false)));
       this.renderPreview(true);
     } catch {
@@ -429,7 +433,6 @@ export class EditorController {
         previewClipTabs: [],
         activePreviewClipId: null,
         activePreviewView: "camera",
-        cameraPreviewOpen: true,
         selectedAssetId: null,
         backgroundSelected: true,
       });
@@ -445,7 +448,14 @@ export class EditorController {
   };
 
   newProject = () => {
-    if ((this.state.clips.length || this.state.assets.length) && !window.confirm(t("現在の編集内容を閉じて新規プロジェクトを作成しますか？"))) return;
+    if (this.state.clips.length || this.state.assets.length) {
+      this.update({ dialog: { kind: "new-project" } });
+      return;
+    }
+    this.createNewProject();
+  };
+
+  private createNewProject() {
     this.projectFileHandle = undefined;
     this.update({
       projectName: "Untitled Project",
@@ -464,7 +474,6 @@ export class EditorController {
       previewClipTabs: [],
       activePreviewClipId: null,
       activePreviewView: "camera",
-      cameraPreviewOpen: true,
       selectedAssetId: null,
       backgroundSelected: true,
       exportSettings: { ...initialState.exportSettings },
@@ -473,6 +482,30 @@ export class EditorController {
     this.engine.clearCache();
     this.renderClipSource = null;
     this.renderPreview(true);
+  }
+
+  openMarkerRenameDialog = (markerId: string) => {
+    const marker = this.state.markers.find((item) => item.id === markerId);
+    if (marker) this.update({ dialog: { kind: "rename-marker", markerId, value: marker.label } });
+  };
+
+  updateDialogValue = (value: string) => {
+    const dialog = this.state.dialog;
+    if (dialog?.kind === "rename-marker") this.update({ dialog: { ...dialog, value } });
+  };
+
+  dismissDialog = () => this.update({ dialog: null });
+
+  confirmDialog = () => {
+    const dialog = this.state.dialog;
+    if (!dialog) return;
+    this.update({ dialog: null });
+    if (dialog.kind === "new-project") {
+      this.createNewProject();
+      return;
+    }
+    const label = dialog.value.trim();
+    if (label) this.updateMarker(dialog.markerId, { label });
   };
 
   private async restoreAssetFile(assetId: string, requestPermission: boolean) {
@@ -733,7 +766,7 @@ export class EditorController {
   }
 
   private previewDpr() {
-    // Inspector View renders at the device's native backing resolution. Camera
+    // Inspector renders at the device's native backing resolution. Camera
     // previews apply their own scale and fill-rate cap inside the renderer.
     return window.devicePixelRatio || 1;
   }
@@ -1041,14 +1074,8 @@ export class EditorController {
     this.update({
       activePreviewClipId: null,
       activePreviewView: view,
-      ...(view === "camera" ? { cameraPreviewOpen: true } : {}),
     });
     this.renderPreview(false);
-  };
-  closeCameraPreview = () => {
-    const wasActive = this.state.activePreviewClipId === null && this.state.activePreviewView === "camera";
-    this.update({ cameraPreviewOpen: false, ...(wasActive ? { activePreviewView: "inspector" as const } : {}) });
-    if (wasActive) this.renderPreview(false);
   };
   closePreviewTab = (clipId: string) => {
     const previewClipTabs = this.state.previewClipTabs.filter((id) => id !== clipId);
@@ -1234,8 +1261,10 @@ export class EditorController {
   getMediaThumbnail = (assetId: string, time = 0) => this.engine.getMediaThumbnail(assetId, time);
   prepareMediaPreview = (file: File, previewId: string, handle?: FileSystemFileHandle) => this.engine.inspectMedia(file, previewId, handle);
   releaseMediaPreview = (previewId: string) => this.engine.releaseMedia(previewId);
-  pickPreview = (ndcX: number, ndcY: number, coalesce = false) => this.engine.pick(ndcX, ndcY, coalesce);
+  pickPreview = async (ndcX: number, ndcY: number, coalesce = false) => (await this.engine.pick(ndcX, ndcY, coalesce)).clipId;
+  pickPreviewTarget = (ndcX: number, ndcY: number, coalesce = false) => this.engine.pick(ndcX, ndcY, coalesce);
   moveInspectorCamera = (operation: "orbit" | "pan", deltaX: number, deltaY: number) => this.engine.moveInspectorCamera(operation, deltaX, deltaY);
+  setPreviewTransformHandles = (clipId?: string) => this.engine.setTransformHandles(clipId);
 
   setLayout = (patch: Partial<EditorLayout>, persist = false) => {
     const layout = { ...this.state.layout, ...patch };
@@ -2113,18 +2142,79 @@ export class EditorController {
     }
     try {
       const fonts = await window.queryLocalFonts();
-      const unique = new Map<string, FontFaceInfo>();
+      this.fontCatalogRevision += 1;
+      const unique = new Map<string, { info: FontFaceInfo; entry: LocalFontEntry }>();
       this.localFontEntries.clear();
       fonts.forEach((font) => {
-        unique.set(font.postscriptName, font);
-        this.localFontEntries.set(font.postscriptName, font);
+        const info: FontFaceInfo = {
+          postscriptName: font.postscriptName,
+          fullName: font.fullName,
+          family: font.family,
+          style: font.style,
+        };
+        unique.set(font.postscriptName, {
+          info,
+          entry: {
+            ...info,
+            blob: async () => {
+              const blob = await font.blob();
+              await saveLocalFontData(info.postscriptName, blob).catch(() => { /* Font use must not depend on persistent storage. */ });
+              return blob;
+            },
+          },
+        });
       });
-      this.update({ fonts: [...unique.values()].slice(0, 500) });
+      const available = [...unique.values()].slice(0, 500);
+      available.forEach(({ info, entry }) => this.localFontEntries.set(info.postscriptName, entry));
+      const catalog = available.map(({ info }) => info);
+      await saveLocalFontCatalog(catalog).catch(() => { /* Fonts remain available for the current page session. */ });
+      this.update({ fonts: catalog });
+      await this.registerTimelineFonts();
       this.toast(t("{count} 個のローカルフォントを利用できます", { count: unique.size }));
     } catch (error) {
       if ((error as DOMException).name !== "AbortError") this.toast(t("ローカルフォントへのアクセスが拒否されました"));
     }
   };
+
+  private async restoreLocalFonts() {
+    try {
+      const revision = this.fontCatalogRevision;
+      const fonts = (await loadLocalFontCatalog()).slice(0, 500);
+      if (!fonts.length || revision !== this.fontCatalogRevision) return;
+      fonts.forEach((font) => this.localFontEntries.set(font.postscriptName, {
+        ...font,
+        blob: async () => {
+          const blob = await loadLocalFontData(font.postscriptName);
+          if (!blob) throw new Error("Local font data is not cached");
+          return blob;
+        },
+      }));
+      this.update({ fonts });
+      await this.registerTimelineFonts();
+    } catch {
+      // IndexedDB may be unavailable in private browsing. Opening the font
+      // picker can still load the catalog for the current session.
+    }
+  }
+
+  private async registerTimelineFonts() {
+    const fontIds = new Set(this.state.clips.map((clip) => clip.fontId).filter((fontId): fontId is string => Boolean(fontId)));
+    let registered = false;
+    await Promise.all([...fontIds].map(async (fontId) => {
+      if (this.registeredFonts.has(fontId)) return;
+      const entry = this.localFontEntries.get(fontId);
+      if (!entry) return;
+      try {
+        const buffer = await (await entry.blob()).arrayBuffer();
+        this.engine.registerFont(fontId, buffer);
+        this.registeredFonts.add(fontId);
+        registered = true;
+      } catch {
+        // Catalog metadata can outlive lazily cached binary font data.
+      }
+    }));
+    if (registered) this.renderPreview(true);
+  }
 
   clearCache = () => this.engine.clearCache();
   upsertGeometry = (object: SceneObjectSpec) => this.engine.upsertGeometry(object);

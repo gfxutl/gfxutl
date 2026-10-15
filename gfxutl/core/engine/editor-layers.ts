@@ -1,0 +1,2 @@
+export const TRANSFORM_HANDLES_LAYER = 30;
+export const INSPECTOR_HELPERS_LAYER = 31;

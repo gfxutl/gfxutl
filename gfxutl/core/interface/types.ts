@@ -10,7 +10,7 @@ export interface ClipPropertyAction {
 }
 
 import type { AudioProcessingSpec, ClipEffect, ClipKeyframe, ClipMask, ClipPostProcess, ColorGradingSpec, ExportSettings, GeometrySpec, SceneMaterialSpec, SceneSettings, SourceIoProfile } from "../protocol/engine-protocol";
-export type { AudioProcessingSpec, BackgroundSettings, BlendMode, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ColorGradingSpec, EngineRequest, EngineResponse, ExportSettings, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, PreviewView, RendererSettings, RendererStats, RenderClip, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, SceneSettingsPatch, SourceIoProfile, TimelinePatch, TimelineSnapshot, ToneMappingKind } from "../protocol/engine-protocol";
+export type { AudioProcessingSpec, BackgroundSettings, BlendMode, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ColorGradingSpec, EngineRequest, EngineResponse, ExportSettings, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, PreviewPickResult, PreviewView, RendererSettings, RendererStats, RenderClip, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, SceneSettingsPatch, SourceIoProfile, TimelinePatch, TimelineSnapshot, ToneMappingKind, TransformHandleKind } from "../protocol/engine-protocol";
 
 export interface MediaAsset {
   id: string;
@@ -159,6 +159,10 @@ export interface EditorSettings {
   audioChannels: "stereo" | "mono";
 }
 
+export type EditorDialogState =
+  | { kind: "new-project" }
+  | { kind: "rename-marker"; markerId: string; value: string };
+
 export interface EditorState {
   projectName: string;
   canUndo: boolean;
@@ -178,7 +182,6 @@ export interface EditorState {
   previewClipTabs: string[];
   activePreviewClipId: string | null;
   activePreviewView: "camera" | "inspector";
-  cameraPreviewOpen: boolean;
   selectedAssetId: string | null;
   backgroundSelected: boolean;
   background: BackgroundObject;
@@ -194,6 +197,7 @@ export interface EditorState {
   fileSystemAccess: boolean;
   localFontAccess: boolean;
   notice: string | null;
+  dialog: EditorDialogState | null;
   layout: EditorLayout;
   settings: EditorSettings;
   leftPanelTab: "media" | "export" | "settings" | "plugins";

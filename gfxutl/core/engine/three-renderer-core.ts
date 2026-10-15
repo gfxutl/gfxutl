@@ -3,8 +3,9 @@ import { emissive, mrt, output, pass, renderOutput } from "three/tsl";
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import { fxaa } from "three/addons/tsl/display/FXAANode.js";
 import type { LightSpec, PreviewView, SceneSettings, ToneMappingKind } from "../protocol/engine-protocol";
+import { INSPECTOR_HELPERS_LAYER, TRANSFORM_HANDLES_LAYER } from "./editor-layers";
 
-const INSPECTOR_LAYER = 31;
+const INSPECTOR_LAYER = INSPECTOR_HELPERS_LAYER;
 
 type RendererCallbacks = {
   onError?: (message: string) => void;
@@ -43,6 +44,7 @@ export class ThreeRendererCore {
     this.settings = structuredClone(settings);
     this.callbacks = callbacks;
     this.inspectorCamera.layers.enableAll();
+    this.inspectorCamera.layers.disable(TRANSFORM_HANDLES_LAYER);
     this.inspectorGrid.layers.set(INSPECTOR_LAYER);
     this.inspectorGrid.name = "editor:inspector-grid";
     this.inspectorAxes.layers.set(INSPECTOR_LAYER);
@@ -126,6 +128,7 @@ export class ThreeRendererCore {
 
   createCameraForSize(width: number, height: number) {
     const camera = this.activeCamera.clone();
+    camera.layers.disable(TRANSFORM_HANDLES_LAYER);
     this.updateCameraProjection(camera, Math.max(1, width) / Math.max(1, height));
     return camera;
   }

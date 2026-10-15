@@ -1,4 +1,4 @@
-import type { EngineRequest, EngineResponse, ExportSettings, MediaFileSource, MediaReadGraph, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, SceneSettingsPatch, TimelinePatch, TimelineSnapshot } from "../protocol/engine-protocol";
+import type { EngineRequest, EngineResponse, ExportSettings, MediaFileSource, MediaReadGraph, PreviewPickResult, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, SceneSettingsPatch, TimelinePatch, TimelineSnapshot } from "../protocol/engine-protocol";
 import type { RendererPluginBundle, RendererPluginInfo } from "../plugins/plugin-types";
 import nagaWasmUrl from "../naga-wasm/pkg/naga_wasm_bg.wasm?url";
 
@@ -14,11 +14,11 @@ export class EngineClient {
   private pendingExports = new Map<string, { resolve: (value: ExportResult) => void; reject: (reason: Error) => void }>();
   private pendingAudio = new Map<string, { resolve: (value: AudioPreviewChunk[]) => void; reject: (reason: Error) => void }>();
   private pendingThumbnails = new Map<string, { resolve: (value: MediaThumbnail) => void; reject: (reason: Error) => void }>();
-  private pendingPicks = new Map<string, (clipId: string | undefined) => void>();
+  private pendingPicks = new Map<string, (result: PreviewPickResult) => void>();
   private pendingShaders = new Map<string, { resolve: (wgsl: string) => void; reject: (reason: Error) => void }>();
   private pendingPlugins = new Map<string, { resolve: (plugin: RendererPluginInfo) => void; reject: (reason: Error) => void }>();
   private pickInFlight = false;
-  private pickQueue: Array<{ ndcX: number; ndcY: number; coalescible: boolean; resolves: Array<(clipId: string | undefined) => void> }> = [];
+  private pickQueue: Array<{ ndcX: number; ndcY: number; coalescible: boolean; resolves: Array<(result: PreviewPickResult) => void> }> = [];
   private renderSequence = 0;
   private renderInFlight = false;
   private pendingRender: { time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; sceneSettings: SceneSettings; previewView: PreviewView; focusClipId?: string } | null = null;
@@ -51,7 +51,7 @@ export class EngineClient {
       this.pendingThumbnails.get(message.requestId)?.resolve(message);
       this.pendingThumbnails.delete(message.requestId);
     } else if (message.type === "pick-result") {
-      this.pendingPicks.get(message.requestId)?.(message.clipId);
+      this.pendingPicks.get(message.requestId)?.({ clipId: message.clipId, handle: message.handle });
       this.pendingPicks.delete(message.requestId);
     } else if (message.type === "glsl-compiled") {
       this.pendingShaders.get(message.requestId)?.resolve(message.wgsl);
@@ -70,7 +70,7 @@ export class EngineClient {
       this.pendingExports.get(message.requestId)?.reject(new Error(message.message));
       this.pendingAudio.get(message.requestId)?.reject(new Error(message.message));
       this.pendingThumbnails.get(message.requestId)?.reject(new Error(message.message));
-      this.pendingPicks.get(message.requestId)?.(undefined);
+      this.pendingPicks.get(message.requestId)?.({});
       this.pendingShaders.get(message.requestId)?.reject(new Error(message.message));
       this.pendingPlugins.get(message.requestId)?.reject(new Error(message.message));
       this.pending.delete(message.requestId);
@@ -241,7 +241,7 @@ export class EngineClient {
   }
 
   pick(ndcX: number, ndcY: number, coalesce = false) {
-    return new Promise<string | undefined>((resolve) => {
+    return new Promise<PreviewPickResult>((resolve) => {
       const tail = this.pickQueue.at(-1);
       if (coalesce && tail?.coalescible) {
         tail.ndcX = ndcX;
@@ -256,6 +256,10 @@ export class EngineClient {
 
   moveInspectorCamera(operation: "orbit" | "pan", deltaX: number, deltaY: number) {
     this.post({ type: "inspector-camera", operation, deltaX, deltaY });
+  }
+
+  setTransformHandles(clipId?: string) {
+    this.post({ type: "transform-handles", clipId });
   }
 
   compileGlsl(source: string) {
@@ -283,8 +287,8 @@ export class EngineClient {
     const next = this.pickQueue.shift()!;
     this.pickInFlight = true;
     const requestId = crypto.randomUUID();
-    this.pendingPicks.set(requestId, (clipId) => {
-      for (const resolve of next.resolves) resolve(clipId);
+    this.pendingPicks.set(requestId, (result) => {
+      for (const resolve of next.resolves) resolve(result);
       this.pickInFlight = false;
       this.flushPendingPick();
     });

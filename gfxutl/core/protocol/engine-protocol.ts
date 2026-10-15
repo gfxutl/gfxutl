@@ -250,6 +250,8 @@ export interface CameraSettings {
 }
 
 export type PreviewView = "camera" | "inspector";
+export type TransformHandleKind = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "rotation";
+export interface PreviewPickResult { clipId?: string; handle?: TransformHandleKind }
 
 export interface RendererSettings {
   previewScale: number;
@@ -432,6 +434,7 @@ export type EngineRequest =
   | { type: "geometry-remove"; id: string }
   | { type: "font-register"; fontId: string; buffer: ArrayBuffer }
   | { type: "inspector-camera"; operation: "orbit" | "pan"; deltaX: number; deltaY: number }
+  | { type: "transform-handles"; clipId?: string }
   | { type: "pick"; requestId: string; ndcX: number; ndcY: number }
   | { type: "compile-glsl"; requestId: string; source: string }
   | { type: "plugin-load"; requestId: string; plugin: RendererPluginBundle }
@@ -462,7 +465,7 @@ export type EngineResponse =
   | { type: "image-object-count"; count: number }
   | { type: "font-ready"; fontId: string }
   | { type: "video-frame-ready"; clipId: string; timestamp: number }
-  | { type: "pick-result"; requestId: string; clipId?: string }
+  | { type: "pick-result"; requestId: string; clipId?: string; handle?: TransformHandleKind }
   | { type: "glsl-compiled"; requestId: string; wgsl: string }
   | { type: "plugin-state"; plugin: RendererPluginInfo; requestId?: string }
   | { type: "cache"; usedBytes: number; maxBytes: number; entries: number }

@@ -7,13 +7,14 @@ import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { clone as cloneSkinned } from "three/addons/utils/SkeletonUtils.js";
 import { ALL_FORMATS, AudioSample, AudioSampleSink, AudioSampleSource, BufferTarget, CanvasSource, Input, Mp4OutputFormat, Output, VideoSampleSink, WebMOutputFormat } from "mediabunny";
-import type { AudioProcessingSpec, ClipKeyframe, EngineRequest, EngineResponse, MediaFileSource, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, TimelinePatch, TimelineSnapshot } from "../protocol/engine-protocol";
+import type { AudioProcessingSpec, ClipKeyframe, EngineRequest, EngineResponse, MediaFileSource, PreviewPickResult, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, TimelinePatch, TimelineSnapshot, TransformHandleKind } from "../protocol/engine-protocol";
 import { RamPreviewCache } from "./ram-preview-cache";
 import { createRenderPipeline, shadowTypeFrom, ThreeRendererCore, toneMappingFrom } from "./three-renderer-core";
 import { ThreeSceneCore } from "./three-scene-core";
 import { registerLocalFont } from "./three-geometry-factory";
 import { MediaBuffer } from "./media-buffer";
 import { RendererPluginRuntime } from "./renderer-plugin-runtime";
+import { ThreeTransformHandles } from "./three-transform-handles";
 
 const worker = self as unknown as DedicatedWorkerGlobalScope;
 
@@ -46,6 +47,9 @@ let ramPreviewEnabled = true;
 let canvas: OffscreenCanvas | null = null;
 let graphics: ThreeRendererCore | null = null;
 let sceneCore: ThreeSceneCore | null = null;
+let transformHandles: ThreeTransformHandles | null = null;
+let timelineParkingRoot: THREE.Group | null = null;
+let transformHandleClipId: string | undefined;
 let width = 1280;
 let height = 720;
 let dpr = 1;
@@ -97,7 +101,8 @@ interface VideoSurface {
 }
 
 interface ImageRuntime {
-  bitmap?: ImageBitmap;
+  bitmap: ImageBitmap;
+  bitmapFlipY: boolean;
   sourceTexture?: THREE.Texture;
   textures: Map<string, THREE.Texture>;
   width: number;
@@ -148,8 +153,9 @@ interface CachedPreviewSurface {
 interface RenderFrameIndex {
   clips: RenderClip[];
   activeClips: RenderClip[];
-  knownIds: Set<string>;
-  activeIds: Set<string>;
+  videoIds: Set<string>;
+  imageIds: Set<string>;
+  modelIds: Set<string>;
   particleIds: Set<string>;
   sceneObjectIds: Set<string>;
 }
@@ -180,6 +186,7 @@ const bufferedAssets = new Map<string, { kind: "media" | "image" | "model"; sour
 const mediaBuffer = new MediaBuffer(128 * 1024 * 1024, (assetId) => detachAssetInstances(assetId));
 let reportedSceneObjectCount = -1;
 let reportedImageObjectCount = -1;
+let activeSceneObjectCount = 0;
 let activeModelObjectCount = 0;
 let activeParticleObjectCount = 0;
 let cachedPreviewSurface: CachedPreviewSurface | null = null;
@@ -192,7 +199,9 @@ function resolveImageTexture(assetId: string, usage: "color" | "data" | "normal"
   if (!runtime) return undefined;
   let texture = runtime.textures.get(usage);
   if (texture) return texture;
-  texture = runtime.sourceTexture?.clone() ?? new THREE.Texture(runtime.bitmap);
+  const preserveHdr = usage === "background" || usage === "environment";
+  texture = preserveHdr && runtime.sourceTexture ? runtime.sourceTexture.clone() : new THREE.Texture(runtime.bitmap);
+  if (!(preserveHdr && runtime.sourceTexture)) texture.flipY = runtime.bitmapFlipY;
   texture.colorSpace = usage === "color" || usage === "background" || usage === "environment" ? THREE.SRGBColorSpace : THREE.NoColorSpace;
   if (usage === "background" || usage === "environment") texture.mapping = THREE.EquirectangularReflectionMapping;
   texture.needsUpdate = true;
@@ -263,6 +272,9 @@ async function replaceCanvas(nextCanvas: OffscreenCanvas, nextWidth: number, nex
     cachedPreviewSurface = null;
   }
   sceneCore?.dispose();
+  transformHandles?.dispose();
+  transformHandles = null;
+  timelineParkingRoot = null;
   await graphics?.dispose();
   encoder?.close();
   encoder = null;
@@ -276,10 +288,19 @@ async function replaceCanvas(nextCanvas: OffscreenCanvas, nextWidth: number, nex
     resolveTexture: (assetId, usage) => resolveImageTexture(assetId, usage),
   });
   sceneCore = new ThreeSceneCore(graphics.scene, (assetId, usage) => resolveImageTexture(assetId, usage));
+  transformHandles = new ThreeTransformHandles(graphics.scene);
+  timelineParkingRoot = new THREE.Group();
+  timelineParkingRoot.name = "editor:timeline-parking";
+  timelineParkingRoot.position.set(1_000_000, 1_000_000, 1_000_000);
+  timelineParkingRoot.visible = false;
+  graphics.scene.add(timelineParkingRoot);
   sceneClipSignatures.clear();
   timelineRoots.clear();
   reportedSceneObjectCount = -1;
   reportedImageObjectCount = -1;
+  activeSceneObjectCount = 0;
+  activeModelObjectCount = 0;
+  activeParticleObjectCount = 0;
   for (const object of standaloneObjects.values()) await sceneCore.upsert(object);
   cache.clear();
   setupEncoder();
@@ -681,8 +702,31 @@ async function updateVideoSurfaces(time: number, frame: RenderFrameIndex) {
   const retiredFrames: VideoFrame[] = [];
   const samplesToClose: Array<Awaited<ReturnType<VideoSampleSink["getSample"]>>> = [];
   const readyClipIds: Array<{ clipId: string; timestamp: number }> = [];
-  for (const id of videoSurfaces.keys()) if (!frame.knownIds.has(id)) removeVideoSurface(id);
-  for (const surface of videoSurfaces.values()) surface.mesh.visible = false;
+  for (const id of videoSurfaces.keys()) if (!frame.videoIds.has(id)) removeVideoSurface(id);
+
+  // Allocate every timeline video plane and retain its first frame before the
+  // playhead reaches it. Inactive planes live under the off-camera parking root.
+  for (const clip of frame.clips) {
+    if (!clip.assetId) continue;
+    const runtime = mediaRuntimes.get(clip.assetId);
+    if (!runtime?.videoSink || !runtime.width || !runtime.height) continue;
+    let surface = ensureVideoSurface(clip, runtime.width / runtime.height);
+    if (!surface.frame && surface.requestedTime === -Infinity) {
+      const preloadTime = Math.max(0, clip.offset);
+      surface.requestedTime = preloadTime;
+      const sample = await runtime.videoSink.getSample(preloadTime);
+      if (sample) {
+        samplesToClose.push(sample);
+        surface = ensureVideoSurface(clip, sample.displayWidth / sample.displayHeight);
+        const videoFrame = sample.toVideoFrame();
+        surface.frame = videoFrame;
+        surface.timestamp = sample.timestamp;
+        surface.texture.setFrame(videoFrame);
+        if (!reportedVideoClips.has(clip.id)) readyClipIds.push({ clipId: clip.id, timestamp: sample.timestamp });
+      }
+    }
+  }
+  for (const surface of videoSurfaces.values()) parkTimelineRoot(surface.mesh);
 
   for (const clip of frame.activeClips) {
     if (!clip.assetId) continue;
@@ -744,7 +788,8 @@ function ensureImageSurface(clip: RenderClip, runtime: ImageRuntime) {
   if (!surface) {
     const assetId = clip.assetId!;
     surface = mediaBuffer.instantiateSync<ImageSurface>(assetId, `three-image-surface:${clip.id}`, () => {
-      const texture = runtime.sourceTexture?.clone() ?? new THREE.Texture(runtime.bitmap);
+      const texture = new THREE.Texture(runtime.bitmap);
+      texture.flipY = runtime.bitmapFlipY;
       texture.colorSpace = THREE.SRGBColorSpace;
       texture.generateMipmaps = false;
       texture.needsUpdate = true;
@@ -764,16 +809,22 @@ function ensureImageSurface(clip: RenderClip, runtime: ImageRuntime) {
 
 function updateImageSurfaces(frame: RenderFrameIndex) {
   let changed = false;
-  for (const id of imageSurfaces.keys()) if (!frame.knownIds.has(id)) { removeImageSurface(id); changed = true; }
-  for (const surface of imageSurfaces.values()) surface.mesh.visible = false;
+  for (const id of imageSurfaces.keys()) if (!frame.imageIds.has(id)) { removeImageSurface(id); changed = true; }
+  for (const clip of frame.clips) {
+    if (!clip.assetId) continue;
+    const runtime = imageRuntimes.get(clip.assetId);
+    if (!runtime) continue;
+    const existed = imageSurfaces.has(clip.id);
+    ensureImageSurface(clip, runtime);
+    changed ||= !existed;
+  }
+  for (const surface of imageSurfaces.values()) parkTimelineRoot(surface.mesh);
   let activeCount = 0;
   for (const clip of frame.activeClips) {
     if (!clip.assetId) continue;
     const runtime = imageRuntimes.get(clip.assetId);
     if (!runtime) continue;
-    const existed = imageSurfaces.has(clip.id);
     const surface = ensureImageSurface(clip, runtime);
-    changed ||= !existed;
     surface.mesh.visible = clip.visible;
     applyVisualTransform(surface.mesh, surface.mesh.material, clip);
     applyTextureCrop(surface, clip, runtime.width, runtime.height);
@@ -881,8 +932,13 @@ function applyModelTransform(surface: ModelSurface, clip: RenderClip) {
 }
 
 function updateModelSurfaces(time: number, frame: RenderFrameIndex) {
-  for (const id of modelSurfaces.keys()) if (!frame.knownIds.has(id)) removeModelSurface(id);
-  for (const surface of modelSurfaces.values()) surface.root.visible = false;
+  for (const id of modelSurfaces.keys()) if (!frame.modelIds.has(id)) removeModelSurface(id);
+  for (const clip of frame.clips) {
+    if (!clip.assetId) continue;
+    const runtime = modelRuntimes.get(clip.assetId);
+    if (runtime) ensureModelSurface(clip, runtime);
+  }
+  for (const surface of modelSurfaces.values()) parkTimelineRoot(surface.root);
   let active = 0;
   for (const clip of frame.activeClips) {
     if (!clip.assetId) continue;
@@ -898,11 +954,11 @@ function updateModelSurfaces(time: number, frame: RenderFrameIndex) {
     active++;
   }
   activeModelObjectCount = active;
-  const total = sceneClipSignatures.size + activeModelObjectCount + activeParticleObjectCount;
-  if (reportedSceneObjectCount !== total) {
-    reportedSceneObjectCount = total;
-    send({ type: "scene-object-count", count: total });
-  }
+}
+
+function parkTimelineRoot(root: THREE.Object3D) {
+  root.visible = false;
+  if (timelineParkingRoot && root.parent !== timelineParkingRoot) timelineParkingRoot.add(root);
 }
 
 function canParentObject(object: THREE.Object3D, parent: THREE.Object3D) {
@@ -962,7 +1018,8 @@ function ensureParticleSurface(clip: RenderClip, renderer: THREE.WebGPURenderer)
 function updateParticleSurfaces(time: number, frame: RenderFrameIndex, renderer = graphics?.renderer) {
   if (!renderer) return;
   for (const id of particleSurfaces.keys()) if (!frame.particleIds.has(id)) removeParticleSurface(id);
-  for (const surface of particleSurfaces.values()) surface.root.visible = false;
+  for (const clip of frame.clips) if (clip.particleSystem) ensureParticleSurface(clip, renderer);
+  for (const surface of particleSurfaces.values()) parkTimelineRoot(surface.root);
   let active = 0;
   for (const clip of frame.activeClips) {
     const spec = clip.particleSystem;
@@ -989,11 +1046,6 @@ function updateParticleSurfaces(time: number, frame: RenderFrameIndex, renderer 
     active++;
   }
   activeParticleObjectCount = active;
-  const total = sceneClipSignatures.size + activeModelObjectCount + activeParticleObjectCount;
-  if (reportedSceneObjectCount !== total) {
-    reportedSceneObjectCount = total;
-    send({ type: "scene-object-count", count: total });
-  }
 }
 
 async function updateTimelineSceneObjects(frame: RenderFrameIndex) {
@@ -1011,17 +1063,6 @@ async function updateTimelineSceneObjects(frame: RenderFrameIndex) {
   for (const clip of frame.clips) {
     const object = clip.sceneObject;
     if (!object) continue;
-    const active = frame.activeIds.has(clip.id);
-    if (!active) {
-      if (sceneClipSignatures.has(object.id)) {
-        const root = sceneCore.getObject(object.id);
-        sceneCore.remove(object.id);
-        if (root) unregisterTimelineRoot(root);
-        sceneClipSignatures.delete(object.id);
-        changed = true;
-      }
-      continue;
-    }
     if (sceneClipSignatures.get(object.id) !== object) {
       const root = await sceneCore.upsert(object);
       timelineRoots.set(clip.id, root);
@@ -1030,31 +1071,50 @@ async function updateTimelineSceneObjects(frame: RenderFrameIndex) {
       changed = true;
     }
   }
-  const total = sceneClipSignatures.size + activeModelObjectCount + activeParticleObjectCount;
-  if (reportedSceneObjectCount !== total) {
-    reportedSceneObjectCount = total;
-    send({ type: "scene-object-count", count: total });
+  for (const objectId of sceneClipSignatures.keys()) {
+    const root = sceneCore.getObject(objectId);
+    if (root) parkTimelineRoot(root);
+  }
+  activeSceneObjectCount = 0;
+  for (const clip of frame.activeClips) {
+    if (!clip.sceneObject) continue;
+    const root = sceneCore.getObject(clip.sceneObject.id);
+    if (!root) continue;
+    root.visible = clip.sceneObject.visible ?? true;
+    activeSceneObjectCount++;
   }
   return changed;
 }
 
+function reportActiveSceneObjectCount() {
+  const total = activeSceneObjectCount + activeModelObjectCount + activeParticleObjectCount;
+  if (reportedSceneObjectCount !== total) {
+    reportedSceneObjectCount = total;
+    send({ type: "scene-object-count", count: total });
+  }
+}
+
 function pickSceneObject(ndcX: number, ndcY: number) {
-  if (!graphics) return undefined;
+  if (!graphics) return {};
   previewRaycaster.layers.enableAll();
   previewPointer.set(THREE.MathUtils.clamp(ndcX, -1, 1), THREE.MathUtils.clamp(ndcY, -1, 1));
   previewRaycaster.setFromCamera(previewPointer, graphics.previewCamera);
   const intersections = previewRaycaster.intersectObjects(graphics.scene.children, true)
     .filter((hit) => hit.object.visible && worldVisible(hit.object) && hit.object !== cachedPreviewSurface?.mesh)
     .sort(comparePickIntersections);
+  const handleHit = intersections.find((hit) => typeof hit.object.userData.gfxTransformHandleKind === "string");
+  if (handleHit && transformHandleClipId) {
+    return { clipId: transformHandleClipId, handle: handleHit.object.userData.gfxTransformHandleKind as TransformHandleKind } satisfies PreviewPickResult;
+  }
   for (const hit of intersections) {
     let object: THREE.Object3D | null = hit.object;
     while (object) {
-      if (object.name.startsWith("media:")) return object.name.slice("media:".length);
-      if (object.name.startsWith("timeline:")) return object.name.slice("timeline:".length);
+      if (object.name.startsWith("media:")) return { clipId: object.name.slice("media:".length) } satisfies PreviewPickResult;
+      if (object.name.startsWith("timeline:")) return { clipId: object.name.slice("timeline:".length) } satisfies PreviewPickResult;
       object = object.parent;
     }
   }
-  return undefined;
+  return {};
 }
 
 const PICK_COPLANAR_EPSILON = 0.0001;
@@ -1097,7 +1157,7 @@ function evaluateClipsAtTime(clips: RenderClip[], time: number) {
   let evaluated: RenderClip[] | undefined;
   for (let index = 0; index < clips.length; index++) {
     const clip = clips[index];
-    if (!clip.keyframes.length) {
+    if (!clip.keyframes.length || time < clip.start || time >= clip.start + clip.duration) {
       evaluated?.push(clip);
       continue;
     }
@@ -1316,28 +1376,53 @@ function applyExportFrameSettings(renderer: THREE.WebGPURenderer, camera: THREE.
 }
 
 /** THREE-OPT: one frame-local index replaces five independent clip scans and Set allocations. */
-function createRenderFrameIndex(clips: RenderClip[], time: number): RenderFrameIndex {
+function createRenderFrameIndex(clips: RenderClip[], time: number, focusClipId?: string): RenderFrameIndex {
   const activeClips: RenderClip[] = [];
-  const knownIds = new Set<string>();
-  const activeIds = new Set<string>();
+  const videoIds = new Set<string>();
+  const imageIds = new Set<string>();
+  const modelIds = new Set<string>();
   const particleIds = new Set<string>();
   const sceneObjectIds = new Set<string>();
   for (const clip of clips) {
-    knownIds.add(clip.id);
+    if (clip.assetId && mediaRuntimes.get(clip.assetId)?.videoSink) videoIds.add(clip.id);
+    if (clip.assetId && imageRuntimes.has(clip.assetId)) imageIds.add(clip.id);
+    if (clip.assetId && modelRuntimes.has(clip.assetId)) modelIds.add(clip.id);
     if (clip.particleSystem) particleIds.add(clip.id);
     if (clip.sceneObject) sceneObjectIds.add(clip.sceneObject.id);
-    if (time >= clip.start && time < clip.start + clip.duration) {
+    if (focusClipId ? clip.id === focusClipId : time >= clip.start && time < clip.start + clip.duration) {
       activeClips.push(clip);
-      activeIds.add(clip.id);
     }
   }
-  return { clips, activeClips, knownIds, activeIds, particleIds, sceneObjectIds };
+  return { clips, activeClips, videoIds, imageIds, modelIds, particleIds, sceneObjectIds };
 }
 
-async function renderRealtime(time: number, _shouldCache: boolean, clips: RenderClip[] = []) {
+async function preloadTimelineObjects() {
+  if (!graphics) return;
+  const focusedClip = previewFocusClipId ? renderTimeline.get(previewFocusClipId) : undefined;
+  const preloadTime = focusedClip
+    ? THREE.MathUtils.clamp(lastTimelineTime, focusedClip.start, Math.max(focusedClip.start, focusedClip.start + focusedClip.duration - 1 / previewFps))
+    : lastTimelineTime;
+  const clips = evaluateClipsAtTime([...renderTimeline.values()], preloadTime);
+  const frame = createRenderFrameIndex(clips, preloadTime, previewFocusClipId);
+  await updateTimelineSceneObjects(frame);
+  updateImageSurfaces(frame);
+  updateModelSurfaces(preloadTime, frame);
+  updateParticleSurfaces(preloadTime, frame);
+  const { retiredFrames, readyClipIds, samplesToClose } = await updateVideoSurfaces(preloadTime, frame);
+  applyTimelineHierarchy(frame.activeClips);
+  reportActiveSceneObjectCount();
+  retiredFrames.forEach((videoFrame) => videoFrame.close());
+  samplesToClose.forEach((sample) => sample?.close());
+  for (const ready of readyClipIds) {
+    reportedVideoClips.add(ready.clipId);
+    send({ type: "video-frame-ready", ...ready });
+  }
+}
+
+async function renderRealtime(time: number, _shouldCache: boolean, clips: RenderClip[] = [], focusClipId?: string) {
   if (!graphics) return { frameMs: 0, videoFramesReady: 0 };
   clips = evaluateClipsAtTime(clips, time);
-  const frame = createRenderFrameIndex(clips, time);
+  const frame = createRenderFrameIndex(clips, time, focusClipId);
   if (cachedPreviewSurface) cachedPreviewSurface.mesh.visible = false;
   await updateTimelineSceneObjects(frame);
   updateImageSurfaces(frame);
@@ -1345,6 +1430,12 @@ async function renderRealtime(time: number, _shouldCache: boolean, clips: Render
   updateParticleSurfaces(time, frame);
   const { retiredFrames, readyClipIds, samplesToClose } = await updateVideoSurfaces(time, frame);
   applyTimelineHierarchy(frame.activeClips);
+  reportActiveSceneObjectCount();
+  transformHandles?.sync(
+    previewView === "camera" && !playbackActive && transformHandleClipId ? timelineRoots.get(transformHandleClipId) : undefined,
+    graphics.previewCamera,
+    height,
+  );
   await pluginRuntime.runFrame({ time, fps: previewFps, mode: playbackActive ? "playback" : "realtime" });
   const renderStartedAt = performance.now();
   graphics.render(previewView);
@@ -1359,24 +1450,25 @@ async function renderRealtime(time: number, _shouldCache: boolean, clips: Render
 
 async function render(time: number, shouldCache: boolean, mode: "realtime" | "playback", fps: number, focusClipId = previewFocusClipId) {
   const focusedClip = focusClipId ? renderTimeline.get(focusClipId) : undefined;
-  const clips = focusedClip ? [focusedClip] : focusClipId ? [] : [...renderTimeline.values()];
+  const clips = [...renderTimeline.values()];
   const renderTime = focusedClip
     ? THREE.MathUtils.clamp(time, focusedClip.start, Math.max(focusedClip.start, focusedClip.start + focusedClip.duration - 1 / Math.max(1, fps)))
     : time;
   lastTimelineTime = time;
   previewFps = Math.max(1, Math.min(120, fps));
   playbackActive = mode === "playback";
+  if (playbackActive) transformHandles?.sync();
   postProcessTime.value = renderTime;
   if (previewView === "camera" && !focusClipId && mode === "playback" && ramPreviewEnabled && await renderCachedPreview(renderTime, previewFps)) {
     return { previewSource: "cache" as const };
   }
   if (sceneSettings.keyframes?.length) graphics?.applySettings(evaluateSceneSettingsAtTime(sceneSettings, renderTime));
-  const { frameMs, videoFramesReady } = await renderRealtime(renderTime, false, clips);
+  const { frameMs, videoFramesReady } = await renderRealtime(renderTime, false, clips, focusClipId);
   sendMediaBufferState();
   // Populate the RAM cache from the frame already on screen. The old prefetcher
   // rendered a future frame and then rendered the current frame again, doubling
   // GPU work and video seeks precisely while the user was interacting.
-  if (previewView === "camera" && !focusClipId && ramPreviewEnabled && shouldCache && !playbackActive && canvas) encodePreviewFrame(canvas, renderTime, previewFps);
+  if (previewView === "camera" && !focusClipId && !transformHandleClipId && ramPreviewEnabled && shouldCache && !playbackActive && canvas) encodePreviewFrame(canvas, renderTime, previewFps);
   const statsTime = performance.now();
   let rendererStats;
   if (graphics && statsTime - lastRendererStatsAt >= 500) {
@@ -1507,7 +1599,6 @@ async function decodeAudioPreview(message: Extract<EngineRequest, { type: "decod
 async function createMediaThumbnail(message: Extract<EngineRequest, { type: "media-thumbnail" }>) {
   const image = imageRuntimes.get(message.assetId);
   if (image) {
-    if (!image.bitmap) { send({ type: "media-thumbnail", requestId: message.requestId }); return; }
     const bitmap = await createImageBitmap(image.bitmap);
     send({ type: "media-thumbnail", requestId: message.requestId, bitmap }, [bitmap]);
     return;
@@ -1563,30 +1654,91 @@ async function createMediaThumbnail(message: Extract<EngineRequest, { type: "med
   throw new Error("サムネイルを生成できるトラックがありません");
 }
 
+async function encodeCanvasAsWebp(canvas: OffscreenCanvas) {
+  const blob = await canvas.convertToBlob({ type: "image/webp", quality: 1.0 });
+  if (blob.type !== "image/webp") throw new Error("WebPエンコーダーを利用できません");
+  return createImageBitmap(blob);
+}
+
+async function transcodeRasterImageToWebp(bytes: Uint8Array<ArrayBuffer>, mimeType: string) {
+  const decoded = await createImageBitmap(new Blob([bytes], { type: mimeType }), { imageOrientation: "from-image" });
+  try {
+    const canvas = new OffscreenCanvas(decoded.width, decoded.height);
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("画像変換用のOffscreenCanvas 2Dコンテキストを作成できません");
+    context.clearRect(0, 0, decoded.width, decoded.height);
+    context.drawImage(decoded, 0, 0);
+    return await encodeCanvasAsWebp(canvas);
+  } finally {
+    decoded.close();
+  }
+}
+
+async function transcodeDataTextureToWebp(texture: THREE.DataTexture) {
+  const image = texture.image as { data: ArrayLike<number>; width: number; height: number };
+  const { data, width, height } = image;
+  const pixels = new Uint8ClampedArray(width * height * 4);
+  const channels = Math.max(1, Math.floor(data.length / Math.max(1, width * height)));
+  const read = (index: number) => {
+    const value = Number(data[index] ?? 0);
+    if (texture.type === THREE.HalfFloatType) return THREE.DataUtils.fromHalfFloat(value);
+    if (texture.type === THREE.UnsignedByteType) return value / 255;
+    return value;
+  };
+  for (let pixel = 0; pixel < width * height; pixel++) {
+    const source = pixel * channels;
+    const target = pixel * 4;
+    pixels[target] = linearHdrToByte(read(source));
+    pixels[target + 1] = linearHdrToByte(read(source + Math.min(1, channels - 1)));
+    pixels[target + 2] = linearHdrToByte(read(source + Math.min(2, channels - 1)));
+    pixels[target + 3] = channels > 3 ? Math.round(THREE.MathUtils.clamp(read(source + 3), 0, 1) * 255) : 255;
+  }
+  const canvas = new OffscreenCanvas(width, height);
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("HDR画像変換用のOffscreenCanvas 2Dコンテキストを作成できません");
+  context.putImageData(new ImageData(pixels, width, height), 0, 0);
+  return encodeCanvasAsWebp(canvas);
+}
+
+function linearHdrToByte(value: number) {
+  const linear = Math.max(0, Number.isFinite(value) ? value : 0);
+  const mapped = THREE.MathUtils.clamp(linear * (2.51 * linear + 0.03) / (linear * (2.43 * linear + 0.59) + 0.14), 0, 1);
+  const srgb = mapped <= 0.0031308 ? mapped * 12.92 : 1.055 * mapped ** (1 / 2.4) - 0.055;
+  return Math.round(THREE.MathUtils.clamp(srgb, 0, 1) * 255);
+}
+
 async function hydrateImage(assetId: string) {
   const registration = bufferedAssets.get(assetId);
   if (!registration) throw new Error("画像の登録情報がありません");
   const extension = registration.source.name.split(".").pop()?.toLowerCase();
   const runtime = await mediaBuffer.instantiate<ImageRuntime>(assetId, "three-image", async (workerSource) => {
     const bytes = workerSource.readAll();
-    let bitmap: ImageBitmap | undefined;
+    let bitmap: ImageBitmap;
+    let bitmapFlipY = true;
     let sourceTexture: THREE.Texture | undefined;
-    if (extension === "hdr") sourceTexture = new RGBELoader().createDataTexture(bytes.buffer);
-    else if (extension === "exr") sourceTexture = new EXRLoader().createDataTexture(bytes.buffer);
-    else bitmap = await createImageBitmap(new Blob([bytes], { type: registration.source.type }), { imageOrientation: "from-image" });
+    if (extension === "hdr" || extension === "exr") {
+      sourceTexture = extension === "hdr"
+        ? new RGBELoader().createDataTexture(bytes.buffer)
+        : new EXRLoader().createDataTexture(bytes.buffer);
+      bitmap = await transcodeDataTextureToWebp(sourceTexture as THREE.DataTexture);
+      bitmapFlipY = sourceTexture.flipY;
+    } else {
+      bitmap = await transcodeRasterImageToWebp(bytes, registration.source.type);
+    }
     const textureImage = sourceTexture?.image as { width?: number; height?: number } | undefined;
     return {
       bitmap,
+      bitmapFlipY,
       sourceTexture,
       textures: new Map(),
-      width: bitmap?.width ?? textureImage?.width ?? 1,
-      height: bitmap?.height ?? textureImage?.height ?? 1,
+      width: bitmap.width ?? textureImage?.width ?? 1,
+      height: bitmap.height ?? textureImage?.height ?? 1,
       codec: extension?.toUpperCase() || registration.source.type || "image",
     };
   }, (value) => {
     for (const texture of value.textures.values()) texture.dispose();
     value.textures.clear();
-    value.bitmap?.close();
+    value.bitmap.close();
     value.sourceTexture?.dispose();
   });
   imageRuntimes.set(assetId, runtime);
@@ -2120,8 +2272,14 @@ async function handleMessage(message: EngineRequest) {
       previewView = message.previewView;
       renderCompletion = await render(message.time, message.cache, message.mode, message.fps);
     }
-    if (message.type === "timeline-sync") applyTimelineSnapshot(message.snapshot);
-    if (message.type === "timeline-patch") applyTimelinePatch(message.patch);
+    if (message.type === "timeline-sync") {
+      applyTimelineSnapshot(message.snapshot);
+      await preloadTimelineObjects();
+    }
+    if (message.type === "timeline-patch") {
+      applyTimelinePatch(message.patch);
+      await preloadTimelineObjects();
+    }
     if (message.type === "media-buffer-plan") sendMediaBufferState(mediaBuffer.setGraph(message.graph));
     if (message.type === "media-buffer-load") await loadRequestedMediaBufferAsset(message);
     if (message.type === "inspect-media") await inspectMedia(message);
@@ -2165,7 +2323,16 @@ async function handleMessage(message: EngineRequest) {
       graphics.moveInspectorCamera(message.operation, message.deltaX, message.deltaY);
       graphics.render("inspector");
     }
-    if (message.type === "pick") send({ type: "pick-result", requestId: message.requestId, clipId: pickSceneObject(message.ndcX, message.ndcY) });
+    if (message.type === "transform-handles" && graphics) {
+      transformHandleClipId = message.clipId;
+      transformHandles?.sync(
+        message.clipId && previewView === "camera" && !playbackActive ? timelineRoots.get(message.clipId) : undefined,
+        graphics.previewCamera,
+        height,
+      );
+      graphics.render(previewView);
+    }
+    if (message.type === "pick") send({ type: "pick-result", requestId: message.requestId, ...pickSceneObject(message.ndcX, message.ndcY) });
     if (message.type === "compile-glsl") send({ type: "glsl-compiled", requestId: message.requestId, wgsl: await compileGlslWithNaga(message.source) });
     if (message.type === "plugin-load") {
       const plugin = await pluginRuntime.load(message.plugin);

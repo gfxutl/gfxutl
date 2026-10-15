@@ -9,6 +9,7 @@ import { useEffect } from "react";
 import { EditorContextMenu } from "./components/editor-context-menu";
 import { observeWindowControlsOverlay } from "./core/interface/window-controls-overlay";
 import { useI18n } from "./core/i18n";
+import { Button } from "./components/ui/button";
 
 export function App() {
   const { state, controller } = useEditor();
@@ -70,6 +71,15 @@ export function App() {
     window.addEventListener("keydown", controlKeyboard, { capture: true });
     return () => window.removeEventListener("keydown", controlKeyboard, { capture: true });
   }, [controller]);
+  const dialog = state.dialog;
+  const dialogMessage = dialog?.kind === "new-project"
+    ? t("現在の編集内容を閉じて新規プロジェクトを作成しますか？")
+    : dialog?.kind === "rename-marker"
+      ? t("マーカー名")
+      : "";
+  const confirmLabel = dialog?.kind === "new-project"
+    ? t("新規作成")
+    : t("変更");
   return (
     <>
       <MediaPanel />
@@ -79,7 +89,25 @@ export function App() {
       <StatusBar />
       <PanelResizers />
       <EditorContextMenu />
-      {state.notice && <div className="toast" role="status"><span />{t(state.notice)}</div>}
+      {(state.notice || dialog) && <div className="notification-region">
+        {state.notice && <div className="toast" role="status"><span />{t(state.notice)}</div>}
+        {dialog && <form
+          className="app-dialog"
+          role="dialog"
+          aria-modal="false"
+          aria-label={dialogMessage}
+          onSubmit={(event) => { event.preventDefault(); controller.confirmDialog(); }}
+        >
+          <label>
+            <span>{dialogMessage}</span>
+            {dialog.kind === "rename-marker" && <input autoFocus aria-label={t("マーカー名")} value={dialog.value} onChange={(event) => controller.updateDialogValue(event.target.value)} />}
+          </label>
+          <div className="app-dialog-actions">
+            <Button size="sm" variant="ghost" onClick={controller.dismissDialog}>{t("キャンセル")}</Button>
+            <Button size="sm" type="submit">{confirmLabel}</Button>
+          </div>
+        </form>}
+      </div>}
     </>
   );
 }

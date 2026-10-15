@@ -9,10 +9,11 @@ type FontPickerProps = {
   fonts: FontFaceInfo[];
   value?: string;
   onChange: (fontId: string) => void;
+  onOpen: () => void;
   loadPreview: (fontId: string) => Promise<string | undefined>;
 };
 
-export function FontPicker({ fonts, value = "", onChange, loadPreview }: FontPickerProps) {
+export function FontPicker({ fonts, value = "", onChange, onOpen, loadPreview }: FontPickerProps) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -113,7 +114,10 @@ export function FontPicker({ fonts, value = "", onChange, loadPreview }: FontPic
         aria-expanded={open}
         aria-controls="font-picker-list"
         className="font-picker-trigger"
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          if (!open) onOpen();
+          setOpen((current) => !current);
+        }}
       >
         <span style={selectedPreviewFamily ? { fontFamily: selectedPreviewFamily } : undefined}>
           {selectedFont ? `${selectedFont.family} ${selectedFont.style}` : t("Helvetiker（内蔵）")}
