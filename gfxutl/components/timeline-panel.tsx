@@ -1,6 +1,5 @@
 import {
   ArrowRepeatAll16Regular as Repeat2,
-  Camera16Regular as Camera,
   ChevronDoubleLeft16Regular as ChevronsLeft,
   ChevronDoubleRight16Regular as ChevronsRight,
   Cube16Regular,
@@ -295,7 +294,7 @@ export function TimelinePanel() {
             controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "timeline", time: point.time, timelineY: point.y, positionX: 0, positionY: 0 });
           }}
         >
-          <TimelineRuler duration={state.duration} fps={state.fps} pxPerSecond={pxPerSecond} scrollLeft={timelineViewport.scrollLeft} viewportWidth={timelineViewport.width} cameraKeyframes={cameraKeyframeGroups} controller={controller} onPointerDown={beginRulerScrub} onDoubleClick={addCameraKeyframeFromRuler} />
+          <TimelineRuler duration={state.duration} fps={state.fps} pxPerSecond={pxPerSecond} scrollLeft={timelineViewport.scrollLeft} viewportWidth={timelineViewport.width} cameraKeyframes={cameraKeyframeGroups} selectedCameraKeyframeIds={state.selectedCameraKeyframeIds} controller={controller} onPointerDown={beginRulerScrub} onDoubleClick={addCameraKeyframeFromRuler} />
           {cursorGuideX !== null && <div className="timeline-cursor-guide" style={{ left: cursorGuideX }} />}
           {state.markers.map((marker) => <button key={marker.id} className="timeline-marker" title={`${marker.label} · ${t("クリックで移動 / ダブルクリックで改名 / Shift+クリックで削除")}`} style={{ left: marker.time * pxPerSecond, "--marker-color": marker.color } as React.CSSProperties} onPointerDown={(event) => event.stopPropagation()} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const point = positionFromPointer(event.clientX, event.clientY); controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "timeline", time: marker.time, timelineY: point.y, positionX: 0, positionY: 0, markerId: marker.id }); }} onDoubleClick={(event) => { event.stopPropagation(); const label = window.prompt(t("マーカー名"), marker.label); if (label?.trim()) controller.updateMarker(marker.id, { label: label.trim() }); }} onClick={(event) => { event.stopPropagation(); if (event.shiftKey) controller.removeMarker(marker.id); else controller.setTime(marker.time); }}><i /><span>{marker.label}</span></button>)}
           <div className="timeline-track-surface" style={{ height: workspaceHeight }}>
@@ -317,13 +316,14 @@ export function TimelinePanel() {
   );
 }
 
-function TimelineRuler({ duration, fps, pxPerSecond, scrollLeft, viewportWidth, cameraKeyframes, controller, onPointerDown, onDoubleClick }: {
+function TimelineRuler({ duration, fps, pxPerSecond, scrollLeft, viewportWidth, cameraKeyframes, selectedCameraKeyframeIds, controller, onPointerDown, onDoubleClick }: {
   duration: number;
   fps: number;
   pxPerSecond: number;
   scrollLeft: number;
   viewportWidth: number;
   cameraKeyframes: CameraKeyframeGroup[];
+  selectedCameraKeyframeIds: string[];
   controller: typeof import("../core/interface").editorController;
   onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onDoubleClick: (event: ReactMouseEvent<HTMLDivElement>) => void;
@@ -352,16 +352,17 @@ function TimelineRuler({ duration, fps, pxPerSecond, scrollLeft, viewportWidth, 
       {ticks.map((tick) => <i key={tick.index} className={tick.major ? "major" : "minor"} style={{ left: tick.time * pxPerSecond }}>
         {tick.major && <time dateTime={`PT${tick.time}S`}>{formatRulerTime(tick.time, duration, majorStep)}</time>}
       </i>)}
-      {visibleCameraKeyframes.map((group) => <CameraKeyframeMarker key={group.keyframes.map((keyframe) => keyframe.id).join(":")} group={group} duration={duration} fps={fps} pxPerSecond={pxPerSecond} controller={controller} />)}
+      {visibleCameraKeyframes.map((group) => <CameraKeyframeMarker key={group.keyframes.map((keyframe) => keyframe.id).join(":")} group={group} duration={duration} fps={fps} pxPerSecond={pxPerSecond} selected={group.keyframes.some((keyframe) => selectedCameraKeyframeIds.includes(keyframe.id))} controller={controller} />)}
     </div>
   );
 }
 
-function CameraKeyframeMarker({ group, duration, fps, pxPerSecond, controller }: {
+function CameraKeyframeMarker({ group, duration, fps, pxPerSecond, selected, controller }: {
   group: CameraKeyframeGroup;
   duration: number;
   fps: number;
   pxPerSecond: number;
+  selected: boolean;
   controller: typeof import("../core/interface").editorController;
 }) {
   const { t } = useI18n();
@@ -374,6 +375,7 @@ function CameraKeyframeMarker({ group, duration, fps, pxPerSecond, controller }:
     const originX = event.clientX;
     const originTime = group.time;
     const ids = group.keyframes.map((keyframe) => keyframe.id);
+    controller.selectCameraKeyframes(ids);
     let moved = false;
     let lastTime = originTime;
     const move = (pointer: PointerEvent) => {
@@ -406,7 +408,7 @@ function CameraKeyframeMarker({ group, duration, fps, pxPerSecond, controller }:
   const label = t("カメラキーフレーム {time}s（{count}項目）", { time: group.time.toFixed(3), count: group.keyframes.length });
   return <button
     type="button"
-    className={`timeline-camera-keyframe ${dragging ? "dragging" : ""}`}
+    className={`timeline-camera-keyframe ${selected ? "selected" : ""} ${dragging ? "dragging" : ""}`}
     style={{ left: group.time * pxPerSecond }}
     title={`${label} · ${t("ドラッグで移動 / Shift+クリックで削除")}`}
     aria-label={label}
@@ -414,9 +416,12 @@ function CameraKeyframeMarker({ group, duration, fps, pxPerSecond, controller }:
     onDoubleClick={(event) => event.stopPropagation()}
     onKeyDown={(event) => {
       if (event.key === "Delete" || event.key === "Backspace") controller.removeCameraKeyframes(group.keyframes.map((keyframe) => keyframe.id));
-      else if (event.key === "Enter" || event.key === " ") controller.setTime(group.time);
+      else if (event.key === "Enter" || event.key === " ") {
+        controller.selectCameraKeyframes(group.keyframes.map((keyframe) => keyframe.id));
+        controller.setTime(group.time);
+      }
     }}
-  ><Camera /><span>{group.keyframes.length}</span></button>;
+  />;
 }
 
 function groupCameraKeyframes(keyframes: readonly SceneKeyframe[], fps: number): CameraKeyframeGroup[] {

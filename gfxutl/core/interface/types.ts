@@ -174,6 +174,7 @@ export interface EditorState {
   snapEnabled: boolean;
   selectedClipId: string | null;
   selectedClipIds: string[];
+  selectedCameraKeyframeIds: string[];
   previewClipTabs: string[];
   activePreviewClipId: string | null;
   activePreviewView: "camera" | "inspector";

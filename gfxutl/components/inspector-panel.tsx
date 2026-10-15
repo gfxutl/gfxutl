@@ -20,7 +20,7 @@ import { oneDark } from "@codemirror/theme-one-dark";
 import { drawSelection, dropCursor, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
 import { useEffect, useRef, useState } from "react";
 import { useEditor } from "../core/interface";
-import type { ClipEffect, ClipEffectKind, ClipMask, ClipPropertyAction, ClipPropertyActionKind, ColorGradingSpec, GeometryKind, GeometrySpec, KeyframeProperty, MaterialKind, MediaAsset, SceneSettings, TimelineClip } from "../core/interface";
+import type { ClipEffect, ClipEffectKind, ClipMask, ClipPropertyAction, ClipPropertyActionKind, ColorGradingSpec, GeometryKind, GeometrySpec, KeyframeProperty, MaterialKind, MediaAsset, SceneKeyframe, SceneSettings, TimelineClip } from "../core/interface";
 import { applicableClipActionKinds, CLIP_ACTION_LABELS, DEFAULT_POST_PROCESS_GLSL, resolveClipPropertyActions, resolveColorGrading } from "../core/interface/clip-actions";
 import { COMPOSITION_SIZE_PRESETS } from "../core/interface/composition-size";
 import { Button } from "./ui/button";
@@ -138,8 +138,12 @@ function TextureField({ label, assets, value, onChange }: { label: string; asset
 
 function sceneKeyframeProperties(scene: SceneSettings) {
   const properties: Array<{ property: string; label: string; value: number }> = [
-    ...([0, 1, 2] as const).map((axis) => ({ property: `camera.position.${axis}`, label: `カメラ位置 ${["X", "Y", "Z"][axis]}`, value: scene.camera.position[axis] })),
-    ...([0, 1, 2] as const).map((axis) => ({ property: `camera.target.${axis}`, label: `注視点 ${["X", "Y", "Z"][axis]}`, value: scene.camera.target[axis] })),
+    { property: "camera.position.0", label: "カメラ位置 X", value: scene.camera.position[0] },
+    { property: "camera.position.1", label: "カメラ位置 Y", value: scene.camera.position[1] },
+    { property: "camera.position.2", label: "カメラ位置 Z", value: scene.camera.position[2] },
+    { property: "camera.target.0", label: "注視点 X", value: scene.camera.target[0] },
+    { property: "camera.target.1", label: "注視点 Y", value: scene.camera.target[1] },
+    { property: "camera.target.2", label: "注視点 Z", value: scene.camera.target[2] },
     { property: "camera.fov", label: "カメラ画角", value: scene.camera.fov },
     { property: "camera.zoom", label: "カメラズーム", value: scene.camera.zoom },
     { property: "camera.orthographicHeight", label: "平行投影の高さ", value: scene.camera.orthographicHeight },
@@ -193,13 +197,72 @@ function SceneKeyframeEditor({ scene, currentTime, fps }: { scene: SceneSettings
   </details>;
 }
 
+function CameraKeyframeInspector({ keyframes, duration, cameraName }: { keyframes: SceneKeyframe[]; duration: number; cameraName: string }) {
+  const { controller } = useEditor();
+  const { t } = useI18n();
+  const ids = keyframes.map((keyframe) => keyframe.id);
+  const byProperty = new Map(keyframes.map((keyframe) => [keyframe.property, keyframe]));
+  const time = keyframes.reduce((sum, keyframe) => sum + keyframe.time, 0) / Math.max(1, keyframes.length);
+  const interpolations = new Set(keyframes.map((keyframe) => keyframe.interpolation));
+  const interpolation = interpolations.size === 1 ? keyframes[0].interpolation : "mixed";
+  const updateValue = (property: string, value: number) => {
+    const keyframe = byProperty.get(property);
+    if (keyframe) controller.updateSceneKeyframe(keyframe.id, { value });
+  };
+  const vectorFields = (fields: ReadonlyArray<readonly [string, string]>) => fields.map(([property, label]) => {
+    const keyframe = byProperty.get(property);
+    return keyframe ? <NumberField key={keyframe.id} label={label} value={keyframe.value} onChange={(value) => updateValue(property, value)} /> : null;
+  });
+  const positionFields = [["camera.position.0", "X"], ["camera.position.1", "Y"], ["camera.position.2", "Z"]] as const;
+  const targetFields = [["camera.target.0", "X"], ["camera.target.1", "Y"], ["camera.target.2", "Z"]] as const;
+  const lensFields: Array<[string, string, string]> = [
+    ["camera.fov", "画角", "°"],
+    ["camera.zoom", "ズーム", ""],
+    ["camera.orthographicHeight", "平行投影の高さ", ""],
+    ["camera.near", "Near", ""],
+    ["camera.far", "Far", ""],
+  ];
+  return <div className="inspector-section camera-keyframe-inspector">
+    <div className="section-title"><span>{t("カメラキーフレーム")}</span><small>{keyframes.length} KEYS</small></div>
+    <div className="section-body">
+      <div className="camera-keyframe-summary"><Camera /><div><strong>{cameraName}</strong><small>{t("{count}個のカメラプロパティ", { count: keyframes.length })}</small></div></div>
+      <NumberField label="時刻" value={time} suffix="s" onChange={(value) => controller.moveCameraKeyframes(ids, Math.max(0, Math.min(duration, value)))} />
+      <label className="select-field"><span>{t("補間")}</span><select value={interpolation} onChange={(event) => controller.updateCameraKeyframes(ids, { interpolation: event.target.value as SceneKeyframe["interpolation"], ...(event.target.value === "bezier" ? { easing: keyframes[0].easing ?? { x1: 0.33, y1: 0, x2: 0.67, y2: 1 } } : {}) })}>
+        {interpolation === "mixed" && <option value="mixed" disabled>{t("混在")}</option>}
+        <option value="step">Step</option><option value="linear">Linear</option><option value="smooth">Smooth</option><option value="bezier">Bezier</option>
+      </select></label>
+      {interpolation === "bezier" && <BezierEditor easing={keyframes[0].easing} onChange={(easing) => controller.updateCameraKeyframes(ids, { easing })} />}
+      {[...byProperty.keys()].some((property) => property.startsWith("camera.position.")) && <>
+        <div className="text-decoration-title">{t("カメラ位置")}</div>
+        <div className="field-grid transform-position-grid">{vectorFields(positionFields)}</div>
+      </>}
+      {[...byProperty.keys()].some((property) => property.startsWith("camera.target.")) && <>
+        <div className="text-decoration-title">{t("注視点")}</div>
+        <div className="field-grid transform-position-grid">{vectorFields(targetFields)}</div>
+      </>}
+      {lensFields.some(([property]) => byProperty.has(property)) && <>
+        <div className="text-decoration-title">{t("レンズ")}</div>
+        <div className="field-grid">{lensFields.map(([property, label, suffix]) => {
+          const keyframe = byProperty.get(property);
+          return keyframe ? <NumberField key={property} label={label} value={keyframe.value} suffix={suffix} onChange={(value) => updateValue(property, value)} /> : null;
+        })}</div>
+      </>}
+      <Button className="camera-keyframe-delete" variant="destructive" size="sm" onClick={() => controller.removeCameraKeyframes(ids)}><Trash2 /> {t("選択したカメラキーフレームを削除")}</Button>
+    </div>
+  </div>;
+}
+
 export function InspectorPanel() {
   const { state, controller } = useEditor();
   const { t } = useI18n();
   const [tab, setTab] = useState<"properties" | "inspector" | "metadata">("properties");
   const selected = state.clips.find((clip) => clip.id === state.selectedClipId);
-  const background = state.backgroundSelected ? state.background : null;
+  const selectedCameraKeyframeIds = new Set(state.selectedCameraKeyframeIds);
+  const selectedCameraKeyframes = (state.background.scene.keyframes ?? []).filter((keyframe) => selectedCameraKeyframeIds.has(keyframe.id));
+  const cameraKeyframeSelection = state.selectedCameraKeyframeIds.join(":");
+  const background = state.backgroundSelected && selectedCameraKeyframes.length === 0 ? state.background : null;
   const asset = state.assets.find((item) => item.id === selected?.assetId) ?? state.assets.find((item) => item.id === state.selectedAssetId);
+  useEffect(() => { if (cameraKeyframeSelection) setTab("properties"); }, [cameraKeyframeSelection]);
   return (
     <section className="inspector-panel panel" onContextMenu={(event) => {
       event.preventDefault();
@@ -212,9 +275,9 @@ export function InspectorPanel() {
         <button className={tab === "metadata" ? "active" : ""} onClick={() => setTab("metadata")}>{t("メタデータ")}</button>
       </div>
       {tab !== "inspector" && <div className="selected-clip">
-        <div><strong>{selected?.name ?? background?.name ?? asset?.name ?? t("項目未選択")}</strong></div>
+        <div><strong>{selectedCameraKeyframes.length ? t("{name} キーフレーム", { name: state.background.scene.camera.name }) : selected?.name ?? background?.name ?? asset?.name ?? t("項目未選択")}</strong></div>
       </div>}
-      {tab === "inspector" ? <RealtimeLayerInspector clips={state.clips} currentTime={state.currentTime} fps={state.fps} selectedClipId={state.selectedClipId} onSelect={controller.selectClip} onToggleVisibility={(id, visible) => controller.updateClip(id, { visible })} /> : tab === "metadata" ? background ? <div className="metadata-view"><div className="metadata-row"><span>{t("名前")}</span><strong>{t("背景オブジェクト")}</strong></div><div className="metadata-row"><span>{t("種類")}</span><strong>SCENE BACKGROUND</strong></div><div className="metadata-row"><span>{t("表示範囲")}</span><strong>{t("プロジェクト全体")}</strong></div></div> : <MetadataView clip={selected} asset={asset} fps={state.fps} /> : background ? <div className="inspector-section background-inspector">
+      {tab === "inspector" ? <RealtimeLayerInspector clips={state.clips} currentTime={state.currentTime} fps={state.fps} selectedClipId={state.selectedClipId} onSelect={controller.selectClip} onToggleVisibility={(id, visible) => controller.updateClip(id, { visible })} /> : tab === "metadata" ? selectedCameraKeyframes.length ? <div className="metadata-view"><div className="metadata-row"><span>{t("種類")}</span><strong>CAMERA KEYFRAME</strong></div><div className="metadata-row"><span>{t("時刻")}</span><strong>{selectedCameraKeyframes[0].time.toFixed(3)}s</strong></div><div className="metadata-row"><span>{t("プロパティ")}</span><strong>{selectedCameraKeyframes.length}</strong></div></div> : background ? <div className="metadata-view"><div className="metadata-row"><span>{t("名前")}</span><strong>{t("背景オブジェクト")}</strong></div><div className="metadata-row"><span>{t("種類")}</span><strong>SCENE BACKGROUND</strong></div><div className="metadata-row"><span>{t("表示範囲")}</span><strong>{t("プロジェクト全体")}</strong></div></div> : <MetadataView clip={selected} asset={asset} fps={state.fps} /> : selectedCameraKeyframes.length ? <CameraKeyframeInspector keyframes={selectedCameraKeyframes} duration={state.duration} cameraName={state.background.scene.camera.name} /> : background ? <div className="inspector-section background-inspector">
         <div className="section-title"><span>{t("背景")}</span><small>THREE.SCENE</small></div>
         <div className="section-body">
           <label className="select-field"><span>{t("サイズ")}</span><select aria-label={t("サイズプリセット")} value={COMPOSITION_SIZE_PRESETS.some(({ width, height }) => width === background.width && height === background.height) ? `${background.width}x${background.height}` : "custom"} onChange={(event) => {
@@ -236,7 +299,7 @@ export function InspectorPanel() {
           <NumberField label="平行投影の高さ" value={background.scene.camera.orthographicHeight} onChange={(orthographicHeight) => controller.updateSceneSettings({ camera: { ...background.scene.camera, orthographicHeight } })} />
           <div className="field-grid"><NumberField label="Near" value={background.scene.camera.near} onChange={(near) => controller.updateSceneSettings({ camera: { ...background.scene.camera, near } })} /><NumberField label="Far" value={background.scene.camera.far} onChange={(far) => controller.updateSceneSettings({ camera: { ...background.scene.camera, far } })} /></div>
           <div className="text-decoration-title">{t("カメラ位置")}</div>
-          <div className="field-grid transform-position-grid">{([0, 1, 2] as const).map((axis) => <NumberField key={axis} label={["X", "Y", "Z"][axis]} value={background.scene.camera.position[axis]} onChange={(value) => { const position = [...background.scene.camera.position] as [number, number, number]; position[axis] = value; controller.updateSceneSettings({ camera: { ...background.scene.camera, position } }); }} />)}</div>
+          <div className="field-grid transform-position-grid">{([0, 1, 2] as const).map((axis) => <NumberField key={axis} label={["X", "Y", "Z"][axis]} value={background.scene.camera.position[axis]} onChange={(value) => controller.updateCameraPositionAxis(axis, value)} />)}</div>
           <div className="text-decoration-title">{t("注視点")}</div>
           <div className="field-grid transform-position-grid">{([0, 1, 2] as const).map((axis) => <NumberField key={axis} label={["X", "Y", "Z"][axis]} value={background.scene.camera.target[axis]} onChange={(value) => { const target = [...background.scene.camera.target] as [number, number, number]; target[axis] = value; controller.updateSceneSettings({ camera: { ...background.scene.camera, target } }); }} />)}</div>
           <label className="select-field"><span>{t("トーンマップ")}</span><select aria-label={t("トーンマッピング")} value={background.scene.renderer.toneMapping} onChange={(event) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, toneMapping: event.target.value as typeof background.scene.renderer.toneMapping } })}><option value="none">{t("なし")}</option><option value="linear">Linear</option><option value="reinhard">Reinhard</option><option value="cineon">Cineon</option><option value="aces">ACES</option><option value="agx">AgX</option><option value="neutral">Neutral</option></select></label>

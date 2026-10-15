@@ -78,6 +78,7 @@ const initialState: EditorState = {
   snapEnabled: true,
   selectedClipId: null,
   selectedClipIds: [],
+  selectedCameraKeyframeIds: [],
   previewClipTabs: [],
   activePreviewClipId: null,
   activePreviewView: "camera",
@@ -214,7 +215,7 @@ export class EditorController {
     }
     this.recordHistory(patch);
     const nextState = { ...this.state, ...patch };
-    if (!nextState.selectedClipId && nextState.selectedClipIds.length === 0 && !nextState.selectedAssetId) {
+    if (!nextState.selectedClipId && nextState.selectedClipIds.length === 0 && !nextState.selectedAssetId && nextState.selectedCameraKeyframeIds.length === 0) {
       nextState.backgroundSelected = true;
     }
     this.state = nextState;
@@ -260,6 +261,8 @@ export class EditorController {
     const selectedClipId = snapshot.clips.some((clip) => clip.id === this.state.selectedClipId) ? this.state.selectedClipId : selectedClipIds.at(-1) ?? null;
     const selectionWasClip = this.state.selectedClipId !== null || this.state.selectedClipIds.length > 0;
     const selectedAssetId = selectionWasClip ? snapshot.clips.find((clip) => clip.id === selectedClipId)?.assetId ?? null : this.state.selectedAssetId;
+    const sceneKeyframeIds = new Set(snapshot.background.scene.keyframes?.map((keyframe) => keyframe.id) ?? []);
+    const selectedCameraKeyframeIds = this.state.selectedCameraKeyframeIds.filter((id) => sceneKeyframeIds.has(id));
     this.historySuspended = true;
     this.state = {
       ...this.state,
@@ -270,8 +273,9 @@ export class EditorController {
       canRedo,
       selectedClipId,
       selectedClipIds,
+      selectedCameraKeyframeIds,
       selectedAssetId,
-      backgroundSelected: !selectedClipId && selectedClipIds.length === 0 && !selectedAssetId ? true : this.state.backgroundSelected,
+      backgroundSelected: !selectedClipId && selectedClipIds.length === 0 && !selectedAssetId && selectedCameraKeyframeIds.length === 0 ? true : this.state.backgroundSelected,
     };
     this.historySuspended = false;
     this.renderClipSource = null;
@@ -421,6 +425,7 @@ export class EditorController {
         exportSettings: project.exportSettings,
         selectedClipId: null,
         selectedClipIds: [],
+        selectedCameraKeyframeIds: [],
         previewClipTabs: [],
         activePreviewClipId: null,
         activePreviewView: "camera",
@@ -455,6 +460,7 @@ export class EditorController {
       loopPlayback: false,
       selectedClipId: null,
       selectedClipIds: [],
+      selectedCameraKeyframeIds: [],
       previewClipTabs: [],
       activePreviewClipId: null,
       activePreviewView: "camera",
@@ -988,6 +994,7 @@ export class EditorController {
     this.update({
       selectedClipId,
       selectedClipIds,
+      selectedCameraKeyframeIds: [],
       selectedAssetId: selectedClip?.assetId ?? null,
       backgroundSelected: false,
       ...(previewable ? {
@@ -1003,7 +1010,7 @@ export class EditorController {
     const clip = this.state.clips.find((item) => item.id === selectedClipId);
     const previewable = clip && clip.kind !== "group";
     this.update({
-      selectedClipIds, selectedClipId, selectedAssetId: clip?.assetId ?? null, backgroundSelected: false,
+      selectedClipIds, selectedClipId, selectedCameraKeyframeIds: [], selectedAssetId: clip?.assetId ?? null, backgroundSelected: false,
       ...(previewable ? {
         previewClipTabs: this.state.previewClipTabs.includes(clip.id) ? this.state.previewClipTabs : [...this.state.previewClipTabs, clip.id],
         activePreviewClipId: clip.id,
@@ -1024,6 +1031,7 @@ export class EditorController {
       activePreviewClipId: clipId,
       selectedClipId: clipId,
       selectedClipIds: [clipId],
+      selectedCameraKeyframeIds: [],
       selectedAssetId: clip.assetId ?? null,
       backgroundSelected: false,
     });
@@ -1048,8 +1056,13 @@ export class EditorController {
     this.update({ previewClipTabs, activePreviewClipId, ...(this.state.activePreviewClipId === clipId ? { activePreviewView: "inspector" as const } : {}) });
     if (activePreviewClipId !== this.state.activePreviewClipId) this.renderPreview(false);
   };
-  selectAsset = (id: string | null) => this.update({ selectedAssetId: id, selectedClipId: null, selectedClipIds: [], backgroundSelected: false });
-  selectBackground = () => this.update({ backgroundSelected: true, selectedAssetId: null, selectedClipId: null, selectedClipIds: [] });
+  selectAsset = (id: string | null) => this.update({ selectedAssetId: id, selectedClipId: null, selectedClipIds: [], selectedCameraKeyframeIds: [], backgroundSelected: false });
+  selectBackground = () => this.update({ backgroundSelected: true, selectedAssetId: null, selectedClipId: null, selectedClipIds: [], selectedCameraKeyframeIds: [] });
+  selectCameraKeyframes = (ids: readonly string[]) => {
+    const available = new Set((this.state.background.scene.keyframes ?? []).filter((keyframe) => keyframe.property.startsWith("camera.")).map((keyframe) => keyframe.id));
+    const selectedCameraKeyframeIds = [...new Set(ids)].filter((id) => available.has(id));
+    this.update({ selectedCameraKeyframeIds, selectedClipId: null, selectedClipIds: [], selectedAssetId: null, backgroundSelected: selectedCameraKeyframeIds.length === 0 });
+  };
   updateBackground = (patch: Partial<EditorState["background"]>) => {
     const next = normalizeBackgroundSize({ ...this.state.background, ...patch });
     if (patch.color !== undefined) next.scene = { ...next.scene, background: { ...next.scene.background, color: patch.color } };
@@ -1075,8 +1088,21 @@ export class EditorController {
       renderer: { ...this.state.background.scene.renderer, ...patch.renderer },
       lights: patch.lights ?? this.state.background.scene.lights,
     };
-    this.update({ background: { ...this.state.background, color: scene.background.color, scene }, backgroundSelected: true });
+    const sceneKeyframeIds = new Set(scene.keyframes?.map((keyframe) => keyframe.id) ?? []);
+    const selectedCameraKeyframeIds = this.state.selectedCameraKeyframeIds.filter((id) => sceneKeyframeIds.has(id));
+    this.update({ background: { ...this.state.background, color: scene.background.color, scene }, selectedCameraKeyframeIds, backgroundSelected: selectedCameraKeyframeIds.length === 0 });
     this.renderPreview(true);
+  };
+  updateCameraPositionAxis = (axis: 0 | 1 | 2, value: number) => {
+    const camera = this.state.background.scene.camera;
+    const position = [...camera.position] as [number, number, number];
+    const target = [...camera.target] as [number, number, number];
+    const delta = value - position[axis];
+    position[axis] = value;
+    // X/Y are world-space truck/pedestal controls. Moving the target by the
+    // same amount preserves the viewing direction instead of orbiting it.
+    if (axis === 0 || axis === 1) target[axis] += delta;
+    this.updateSceneSettings({ camera: { ...camera, position, target } });
   };
   addSceneKeyframe = (property: string, value: number, interpolation: SceneKeyframe["interpolation"] = "smooth") => {
     const keys = (this.state.background.scene.keyframes ?? []).map((keyframe) => ({ ...keyframe, easing: keyframe.easing ? { ...keyframe.easing } : undefined }));
@@ -1090,7 +1116,19 @@ export class EditorController {
     this.schedulePersistence();
   };
   updateSceneKeyframe = (id: string, patch: Partial<SceneKeyframe>) => {
-    this.updateSceneSettings({ keyframes: (this.state.background.scene.keyframes ?? []).map((keyframe) => keyframe.id === id ? { ...keyframe, ...patch } : keyframe).sort((a, b) => a.time - b.time) });
+    const keyframes = this.state.background.scene.keyframes ?? [];
+    const source = keyframes.find((keyframe) => keyframe.id === id);
+    const positionAxis = source?.property.match(/^camera\.position\.([01])$/)?.[1];
+    const positionDelta = source && positionAxis !== undefined && patch.value !== undefined ? patch.value - source.value : 0;
+    const pairedTargetProperty = positionAxis === undefined ? undefined : `camera.target.${positionAxis}`;
+    const tolerance = 0.5 / this.state.fps;
+    this.updateSceneSettings({ keyframes: keyframes.map((keyframe) => {
+      if (keyframe.id === id) return { ...keyframe, ...patch };
+      if (pairedTargetProperty && source && keyframe.property === pairedTargetProperty && Math.abs(keyframe.time - source.time) <= tolerance) {
+        return { ...keyframe, value: keyframe.value + positionDelta };
+      }
+      return keyframe;
+    }).sort((a, b) => a.time - b.time) });
     this.schedulePersistence();
   };
   removeSceneKeyframe = (id: string) => {
@@ -1102,8 +1140,12 @@ export class EditorController {
     const camera = this.state.background.scene.camera;
     const keys = (this.state.background.scene.keyframes ?? []).map((keyframe) => ({ ...keyframe, easing: keyframe.easing ? { ...keyframe.easing } : undefined }));
     const values: Array<[string, number]> = [
-      ...camera.position.map((value, axis) => [`camera.position.${axis}`, value] as [string, number]),
-      ...camera.target.map((value, axis) => [`camera.target.${axis}`, value] as [string, number]),
+      ["camera.position.0", camera.position[0]],
+      ["camera.position.1", camera.position[1]],
+      ["camera.position.2", camera.position[2]],
+      ["camera.target.0", camera.target[0]],
+      ["camera.target.1", camera.target[1]],
+      ["camera.target.2", camera.target[2]],
       ["camera.near", camera.near],
       ["camera.far", camera.far],
       ["camera.fov", camera.fov],
@@ -1120,7 +1162,16 @@ export class EditorController {
     }
     keyframes.sort((a, b) => a.time - b.time || a.property.localeCompare(b.property));
     this.updateSceneSettings({ keyframes });
+    const selectedCameraKeyframeIds = keyframes.filter((keyframe) => keyframe.property.startsWith("camera.") && Math.abs(keyframe.time - time) <= tolerance).map((keyframe) => keyframe.id);
+    this.selectCameraKeyframes(selectedCameraKeyframeIds);
     this.setTime(time);
+    this.schedulePersistence();
+  };
+  updateCameraKeyframes = (ids: readonly string[], patch: Partial<Pick<SceneKeyframe, "interpolation" | "easing">>) => {
+    const selected = new Set(ids);
+    this.updateSceneSettings({
+      keyframes: (this.state.background.scene.keyframes ?? []).map((keyframe) => selected.has(keyframe.id) ? { ...keyframe, ...patch } : keyframe),
+    });
     this.schedulePersistence();
   };
   moveCameraKeyframes = (ids: readonly string[], requestedTime: number) => {
@@ -1137,6 +1188,7 @@ export class EditorController {
   removeCameraKeyframes = (ids: readonly string[]) => {
     const selected = new Set(ids);
     this.updateSceneSettings({ keyframes: (this.state.background.scene.keyframes ?? []).filter((keyframe) => !selected.has(keyframe.id)) });
+    this.selectCameraKeyframes([]);
     this.schedulePersistence();
   };
   openContextMenu = (menu: ContextMenuState) => this.update({ contextMenu: menu });
@@ -1297,7 +1349,7 @@ export class EditorController {
         ? { ...keyframe, value: keyframe.value + deltaX }
         : keyframe.property === "positionY" ? { ...keyframe, value: keyframe.value + deltaY } : keyframe),
     } : item);
-    this.update({ clips, selectedClipId: id, selectedClipIds: [id], backgroundSelected: false });
+    this.update({ clips, selectedClipId: id, selectedClipIds: [id], selectedCameraKeyframeIds: [], backgroundSelected: false });
     if (!transient) {
       this.invalidatePreviewCache();
       this.schedulePersistence();

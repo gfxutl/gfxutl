@@ -447,6 +447,14 @@ svg { width: 16px; height: 16px; }
 .layer-inspector-empty span { font: 8px "IBM Plex Mono", monospace; letter-spacing: .12em; }
 .layer-inspector-empty small { color: #5d6267; font-size: 8px; }
 .inspector-section { border-bottom: 1px solid var(--line); }
+.camera-keyframe-inspector .section-body { display: grid; gap: 8px; }
+.camera-keyframe-summary { min-height: 42px; display: flex; align-items: center; gap: 9px; padding: 7px 8px; border: 1px solid #34383d; border-radius: 4px; background: #171a1d; }
+.camera-keyframe-summary > svg { width: 16px; height: 16px; color: #e2a16d; }
+.camera-keyframe-summary > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.camera-keyframe-summary strong { overflow: hidden; color: #d2d4d6; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.camera-keyframe-summary small { color: #696f74; font: 7px "IBM Plex Mono", monospace; }
+.camera-keyframe-inspector .bezier-editor { margin-top: 0; }
+.camera-keyframe-delete { width: 100%; margin-top: 3px; }
 .property-base-heading { height: 27px; display: flex; align-items: center; justify-content: space-between; padding: 0 10px; border-bottom: 1px solid #292c30; background: #0e1012; color: #8b9095; font: 8px "IBM Plex Mono", monospace; letter-spacing: .1em; }
 .property-base-heading > div { display: flex; align-items: center; gap: 8px; }
 .property-base-heading small { color: #555b60; font-size: 7px; letter-spacing: .06em; }
@@ -701,11 +709,12 @@ svg { width: 16px; height: 16px; }
 .timeline-time-ruler > i { position: absolute; bottom: 0; width: 1px; height: 6px; background: #545a5f; pointer-events: none; }
 .timeline-time-ruler > i.major { height: 11px; background: #858b90; }
 .timeline-time-ruler time { position: absolute; top: -10px; left: 4px; color: #8f9498; font: 7px "IBM Plex Mono", monospace; font-style: normal; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.timeline-camera-keyframe { position: absolute; z-index: 3; bottom: 1px; width: 19px; height: 17px; display: grid; grid-template-columns: 1fr; place-items: center; padding: 0; border: 1px solid #d58a51; border-radius: 3px 3px 1px 1px; background: #3b2a20; color: #f0b47f; box-shadow: 0 2px 5px #0009; cursor: grab; touch-action: none; transform: translateX(-50%); }
-.timeline-camera-keyframe:hover, .timeline-camera-keyframe:focus-visible { outline: 0; border-color: #ffd0a7; background: #513424; color: #ffe0c4; }
-.timeline-camera-keyframe.dragging { cursor: grabbing; border-color: #fff; color: #fff; }
-.timeline-camera-keyframe > svg { width: 10px; height: 10px; }
-.timeline-camera-keyframe > span { position: absolute; top: -5px; right: -5px; min-width: 9px; height: 9px; padding: 0 2px; border-radius: 5px; background: #d58a51; color: #17110d; font: 6px/9px "IBM Plex Mono", monospace; text-align: center; }
+.timeline-camera-keyframe { position: absolute; z-index: 3; bottom: -1px; width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border: 0; outline: 0; background: transparent; cursor: grab; touch-action: none; transform: translateX(-50%); }
+.timeline-camera-keyframe::before { content: ""; width: 9px; height: 9px; border: 1px solid #d58a51; background: #3b2a20; box-shadow: 2px 2px 4px #0009; transform: rotate(45deg); transition: border-color .12s, background .12s, box-shadow .12s; }
+.timeline-camera-keyframe:hover::before, .timeline-camera-keyframe:focus-visible::before { border-color: #ffd0a7; background: #513424; }
+.timeline-camera-keyframe.selected::before { border-color: #fff; background: #d58a51; box-shadow: 0 0 0 2px #d58a5140, 2px 2px 5px #000b; }
+.timeline-camera-keyframe.dragging { cursor: grabbing; }
+.timeline-camera-keyframe.dragging::before { border-color: #fff; background: #f0b47f; }
 .timeline-workspace::after { content: ""; position: fixed; z-index: 45; inset: calc(100% - var(--status-h) - var(--timeline-h) + 7px) 7px calc(var(--status-h) + 7px) 7px; border: 1px dashed transparent; border-radius: 4px; pointer-events: none; transition: border-color .12s, background .12s; }
 .timeline-workspace.drop-active::after { border-color: #fff; background: #ffffff0a; }
 .asset-drop-ghost { position: absolute; z-index: 70; width: 112px; height: 32px; display: grid; place-items: center; border: 1px dashed #fff; border-radius: 4px; background: #ffffff22; color: #fff; font-size: 8px; pointer-events: none; }
