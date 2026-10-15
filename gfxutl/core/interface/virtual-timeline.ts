@@ -1,4 +1,4 @@
-import type { RenderClip, TimelinePatch } from "../protocol/engine-protocol";
+import type { RenderClip, TimelinePatch, TimelineSnapshot } from "../protocol/engine-protocol";
 
 interface TimelineNode {
   clip: RenderClip;
@@ -13,6 +13,12 @@ export class VirtualTimeline {
   private nodes = new Map<string, TimelineNode>();
   private revision = 0;
   private source: readonly RenderClip[] | null = null;
+
+  snapshot(clips: RenderClip[]): TimelineSnapshot {
+    this.source = clips;
+    this.nodes = new Map(clips.map((clip) => [clip.id, { clip, signature: JSON.stringify(clip) }]));
+    return { revision: ++this.revision, clips };
+  }
 
   reconcile(clips: RenderClip[]): TimelinePatch | null {
     // Playback reuses immutable render nodes. Do not stringify the complete

@@ -7,7 +7,7 @@ import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { clone as cloneSkinned } from "three/addons/utils/SkeletonUtils.js";
 import { ALL_FORMATS, AudioSample, AudioSampleSink, AudioSampleSource, BufferTarget, CanvasSource, Input, Mp4OutputFormat, Output, VideoSampleSink, WebMOutputFormat } from "mediabunny";
-import type { AudioProcessingSpec, ClipKeyframe, EngineRequest, EngineResponse, MediaFileSource, PreviewView, RenderClip, SceneObjectSpec, SceneSettings } from "../protocol/engine-protocol";
+import type { AudioProcessingSpec, ClipKeyframe, EngineRequest, EngineResponse, MediaFileSource, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, TimelinePatch, TimelineSnapshot } from "../protocol/engine-protocol";
 import { RamPreviewCache } from "./ram-preview-cache";
 import { createRenderPipeline, shadowTypeFrom, ThreeRendererCore, toneMappingFrom } from "./three-renderer-core";
 import { ThreeSceneCore } from "./three-scene-core";
@@ -174,6 +174,7 @@ const clipKeyframeTrackCache = new WeakMap<RenderClip, Map<string, ClipKeyframe[
 const reportedVideoClips = new Set<string>();
 const sceneClipSignatures = new Map<string, SceneObjectSpec>();
 const renderTimeline = new Map<string, RenderClip>();
+let timelineRevision = 0;
 const standaloneObjects = new Map<string, SceneObjectSpec>();
 const bufferedAssets = new Map<string, { kind: "media" | "image" | "model"; source: MediaFileSource }>();
 const mediaBuffer = new MediaBuffer(128 * 1024 * 1024, (assetId) => detachAssetInstances(assetId));
@@ -2028,7 +2029,31 @@ async function exportStill(message: Extract<EngineRequest, { type: "export-still
   }
 }
 
-function applyTimelinePatch(patch: NonNullable<Extract<EngineRequest, { type: "render" }>["timelinePatch"]>) {
+function applyTimelineSnapshot(snapshot: TimelineSnapshot) {
+  if (snapshot.revision <= timelineRevision) return;
+  timelineRevision = snapshot.revision;
+  const invalidatedRanges: Array<{ start: number; end: number }> = [];
+  const next = new Map(snapshot.clips.map((clip) => [clip.id, clip]));
+  for (const [id, previous] of renderTimeline) {
+    const replacement = next.get(id);
+    if (!replacement || JSON.stringify(previous) !== JSON.stringify(replacement)) {
+      invalidatedRanges.push({ start: previous.start, end: previous.start + previous.duration });
+    }
+  }
+  for (const clip of snapshot.clips) {
+    const previous = renderTimeline.get(clip.id);
+    if (!previous || JSON.stringify(previous) !== JSON.stringify(clip)) {
+      invalidatedRanges.push({ start: clip.start, end: clip.start + clip.duration });
+    }
+  }
+  renderTimeline.clear();
+  for (const clip of snapshot.clips) renderTimeline.set(clip.id, clip);
+  invalidateTimelineRanges(invalidatedRanges);
+}
+
+function applyTimelinePatch(patch: TimelinePatch) {
+  if (patch.revision <= timelineRevision) return;
+  timelineRevision = patch.revision;
   const invalidatedRanges: Array<{ start: number; end: number }> = [];
   for (const id of patch.removes) {
     const previous = renderTimeline.get(id);
@@ -2041,13 +2066,16 @@ function applyTimelinePatch(patch: NonNullable<Extract<EngineRequest, { type: "r
     invalidatedRanges.push({ start: clip.start, end: clip.start + clip.duration });
     renderTimeline.set(clip.id, clip);
   }
-  if (invalidatedRanges.length) {
-    cache.deleteWhere((key) => {
-      const time = Number(key) / previewFps;
-      return invalidatedRanges.some((range) => time >= range.start && time <= range.end);
-    });
-    cacheStatus();
-  }
+  invalidateTimelineRanges(invalidatedRanges);
+}
+
+function invalidateTimelineRanges(ranges: Array<{ start: number; end: number }>) {
+  if (!ranges.length) return;
+  cache.deleteWhere((key) => {
+    const time = Number(key) / previewFps;
+    return ranges.some((range) => time >= range.start && time <= range.end);
+  });
+  cacheStatus();
 }
 
 function applySceneSettingsPatch(patch: NonNullable<Extract<EngineRequest, { type: "render" }>["sceneSettingsPatch"]>) {
@@ -2087,12 +2115,13 @@ async function handleMessage(message: EngineRequest) {
       await render(lastTimelineTime, false, "realtime", previewFps);
     }
     if (message.type === "render") {
-      if (message.timelinePatch) applyTimelinePatch(message.timelinePatch);
       if (message.sceneSettingsPatch) applySceneSettingsPatch(message.sceneSettingsPatch);
       previewFocusClipId = message.focusClipId;
       previewView = message.previewView;
       renderCompletion = await render(message.time, message.cache, message.mode, message.fps);
     }
+    if (message.type === "timeline-sync") applyTimelineSnapshot(message.snapshot);
+    if (message.type === "timeline-patch") applyTimelinePatch(message.patch);
     if (message.type === "media-buffer-plan") sendMediaBufferState(mediaBuffer.setGraph(message.graph));
     if (message.type === "media-buffer-load") await loadRequestedMediaBufferAsset(message);
     if (message.type === "inspect-media") await inspectMedia(message);
@@ -2179,7 +2208,10 @@ function enqueueMessage(message: EngineRequest) {
       if (messageQueue[index].type === "render") messageQueue.splice(index, 1);
     }
     if (message.mode === "playback") {
-      const index = messageQueue.findIndex((queued) => queued.type !== "media-buffer-plan" && queued.type !== "media-buffer-load");
+      const index = messageQueue.findIndex((queued) => queued.type !== "media-buffer-plan"
+        && queued.type !== "media-buffer-load"
+        && queued.type !== "timeline-sync"
+        && queued.type !== "timeline-patch");
       messageQueue.splice(index < 0 ? messageQueue.length : index, 0, message);
     } else messageQueue.push(message);
   } else if (message.type === "media-buffer-plan") {

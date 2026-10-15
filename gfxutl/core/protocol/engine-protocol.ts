@@ -372,6 +372,11 @@ export interface TimelinePatch {
   removes: string[];
 }
 
+export interface TimelineSnapshot {
+  revision: number;
+  clips: RenderClip[];
+}
+
 export interface MediaFileSource {
   name: string;
   type: string;
@@ -412,7 +417,9 @@ export type EngineRequest =
   | { type: "init"; canvas: OffscreenCanvas; port: MessagePort; width: number; height: number; dpr: number; nagaWasm: ArrayBuffer; previewCache?: { enabled: boolean; maxBytes: number } }
   | { type: "attach-canvas"; canvas: OffscreenCanvas; width: number; height: number; dpr: number }
   | { type: "resize"; width: number; height: number; dpr: number }
-  | { type: "render"; sequence: number; time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; previewView: PreviewView; focusClipId?: string; timelinePatch?: TimelinePatch; sceneSettingsPatch?: SceneSettingsPatch }
+  | { type: "render"; sequence: number; time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; previewView: PreviewView; focusClipId?: string; sceneSettingsPatch?: SceneSettingsPatch }
+  | { type: "timeline-sync"; snapshot: TimelineSnapshot }
+  | { type: "timeline-patch"; patch: TimelinePatch }
   | { type: "inspect-media"; requestId: string; assetId: string; source: MediaFileSource; stream: ReadableStream<Uint8Array> }
   | { type: "inspect-image"; requestId: string; assetId: string; source: MediaFileSource; stream: ReadableStream<Uint8Array> }
   | { type: "inspect-model"; requestId: string; assetId: string; source: MediaFileSource; stream: ReadableStream<Uint8Array> }

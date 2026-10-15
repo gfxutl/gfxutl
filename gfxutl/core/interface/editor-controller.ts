@@ -754,6 +754,9 @@ export class EditorController {
 
   renderPreview(cache = false) {
     if (!this.canvasReady) return;
+    const renderClips = this.getRenderClips();
+    const patch = this.virtualTimeline.reconcile(renderClips);
+    if (patch) this.engine.patchTimeline(patch);
     this.engine.setMediaReadGraph(this.mediaReadPlanner.build(this.state.clips, this.state.assets, this.state.currentTime));
     const activePreviewClip = this.state.activePreviewClipId
       ? this.state.clips.find((clip) => clip.id === this.state.activePreviewClipId)
@@ -768,9 +771,6 @@ export class EditorController {
     } else {
       this.lastPlaybackFrame = -1;
     }
-    const renderClips = this.getRenderClips();
-    const patch = this.virtualTimeline.reconcile(renderClips);
-    if (patch) this.engine.patchTimeline(patch);
     const previewView = this.state.activePreviewClipId ? "camera" : this.state.activePreviewView;
     this.engine.render(this.state.currentTime, cache && this.state.settings.ramPreviewEnabled && !this.state.activePreviewClipId && previewView === "camera", this.state.playing ? "playback" : "realtime", this.state.fps, this.state.background.scene, previewView, this.state.activePreviewClipId ?? undefined);
   }
@@ -910,6 +910,8 @@ export class EditorController {
     }
     this.update({ playing });
     if (playing) {
+      const renderClips = this.getRenderClips();
+      this.engine.syncTimeline(this.virtualTimeline.snapshot(renderClips));
       this.lastTick = performance.now();
       this.playbackStartedAt = this.lastTick;
       this.playbackStartTime = this.state.currentTime;

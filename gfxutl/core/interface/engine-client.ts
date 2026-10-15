@@ -1,4 +1,4 @@
-import type { EngineRequest, EngineResponse, ExportSettings, MediaFileSource, MediaReadGraph, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, SceneSettingsPatch, TimelinePatch } from "../protocol/engine-protocol";
+import type { EngineRequest, EngineResponse, ExportSettings, MediaFileSource, MediaReadGraph, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, SceneSettingsPatch, TimelinePatch, TimelineSnapshot } from "../protocol/engine-protocol";
 import type { RendererPluginBundle, RendererPluginInfo } from "../plugins/plugin-types";
 import nagaWasmUrl from "../naga-wasm/pkg/naga_wasm_bg.wasm?url";
 
@@ -133,7 +133,14 @@ export class EngineClient {
     this.lastResize = signature;
     this.post({ type: "resize", width, height, dpr });
   }
-  patchTimeline(patch: TimelinePatch) { this.pendingTimelinePatch = mergeTimelinePatches(this.pendingTimelinePatch, patch); }
+  syncTimeline(snapshot: TimelineSnapshot) {
+    this.pendingTimelinePatch = null;
+    this.post({ type: "timeline-sync", snapshot });
+  }
+  patchTimeline(patch: TimelinePatch) {
+    this.pendingTimelinePatch = mergeTimelinePatches(this.pendingTimelinePatch, patch);
+    if (!this.renderInFlight) this.flushPendingTimeline();
+  }
   render(time: number, cache: boolean, mode: "realtime" | "playback", fps: number, sceneSettings: SceneSettings, previewView: PreviewView, focusClipId?: string) {
     // Keep at most one GPU/decode operation in flight. During a slow frame the
     // newest playhead position supersedes every intermediate request.
@@ -142,12 +149,12 @@ export class EngineClient {
   }
 
   private flushPendingRender() {
-    if (this.renderInFlight || !this.pendingRender) return;
+    if (this.renderInFlight) return;
+    this.flushPendingTimeline();
+    if (!this.pendingRender) return;
     const next = this.pendingRender;
     this.pendingRender = null;
     const sequence = ++this.renderSequence;
-    const patch = this.pendingTimelinePatch;
-    this.pendingTimelinePatch = null;
     const sceneSettingsPatch = diffSceneSettings(this.lastSceneSettings, next.sceneSettings);
     this.lastSceneSettings = next.sceneSettings;
     this.renderInFlight = true;
@@ -155,9 +162,15 @@ export class EngineClient {
       type: "render", sequence, time: next.time, cache: next.cache,
       mode: next.mode, fps: next.fps, previewView: next.previewView,
       ...(next.focusClipId ? { focusClipId: next.focusClipId } : {}),
-      ...(patch ? { timelinePatch: patch } : {}),
       ...(sceneSettingsPatch ? { sceneSettingsPatch } : {}),
     });
+  }
+
+  private flushPendingTimeline() {
+    if (!this.pendingTimelinePatch) return;
+    const patch = this.pendingTimelinePatch;
+    this.pendingTimelinePatch = null;
+    this.post({ type: "timeline-patch", patch });
   }
 
   inspectMedia(file: File, assetId: string, handle?: FileSystemFileHandle) {
@@ -322,11 +335,7 @@ function mergeTimelinePatches(previous: TimelinePatch | null, next: TimelinePatc
   const removes = new Set(previous.removes);
   for (const id of next.removes) { upserts.delete(id); removes.add(id); }
   for (const clip of next.upserts) { removes.delete(clip.id); upserts.set(clip.id, clip); }
-  return {
-    revision: next.revision,
-    upserts: [...upserts.values()],
-    removes: [...removes],
-  };
+  return { revision: next.revision, upserts: [...upserts.values()], removes: [...removes] };
 }
 
 function diffSceneSettings(previous: SceneSettings | null, next: SceneSettings): SceneSettingsPatch | null {
