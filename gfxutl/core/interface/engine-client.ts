@@ -1,4 +1,6 @@
 import type { EngineRequest, EngineResponse, ExportSettings, MediaFileSource, MediaReadGraph, RenderClip, SceneObjectSpec, SceneSettings, SceneSettingsPatch, TimelinePatch } from "../protocol/engine-protocol";
+import type { RendererPluginBundle, RendererPluginInfo } from "../plugins/plugin-types";
+import nagaWasmUrl from "../naga-wasm/pkg/naga_wasm_bg.wasm?url";
 
 type MediaInfo = Extract<EngineResponse, { type: "media-info" }>;
 type ExportResult = { buffer: ArrayBuffer; mimeType: string };
@@ -14,6 +16,7 @@ export class EngineClient {
   private pendingThumbnails = new Map<string, { resolve: (value: MediaThumbnail) => void; reject: (reason: Error) => void }>();
   private pendingPicks = new Map<string, (clipId: string | undefined) => void>();
   private pendingShaders = new Map<string, { resolve: (wgsl: string) => void; reject: (reason: Error) => void }>();
+  private pendingPlugins = new Map<string, { resolve: (plugin: RendererPluginInfo) => void; reject: (reason: Error) => void }>();
   private pickInFlight = false;
   private pickQueue: Array<{ ndcX: number; ndcY: number; coalescible: boolean; resolves: Array<(clipId: string | undefined) => void> }> = [];
   private renderSequence = 0;
@@ -27,6 +30,7 @@ export class EngineClient {
   private mediaBufferLoads = new Set<string>();
   private mediaGraphRevision = 0;
   private mediaGraphSignature = "";
+  private initializing = false;
 
   constructor(private worker: Worker, private onMessage: (message: EngineResponse) => void) {
     this.worker.onerror = (event) => this.onMessage({ type: "error", message: event.message || "Workerの初期化に失敗しました" });
@@ -52,6 +56,9 @@ export class EngineClient {
     } else if (message.type === "glsl-compiled") {
       this.pendingShaders.get(message.requestId)?.resolve(message.wgsl);
       this.pendingShaders.delete(message.requestId);
+    } else if (message.type === "plugin-state" && message.requestId) {
+      this.pendingPlugins.get(message.requestId)?.resolve(message.plugin);
+      this.pendingPlugins.delete(message.requestId);
     } else if (message.type === "render-complete") {
       this.renderInFlight = false;
       this.flushPendingRender();
@@ -65,12 +72,14 @@ export class EngineClient {
       this.pendingThumbnails.get(message.requestId)?.reject(new Error(message.message));
       this.pendingPicks.get(message.requestId)?.(undefined);
       this.pendingShaders.get(message.requestId)?.reject(new Error(message.message));
+      this.pendingPlugins.get(message.requestId)?.reject(new Error(message.message));
       this.pending.delete(message.requestId);
       this.pendingExports.delete(message.requestId);
       this.pendingAudio.delete(message.requestId);
       this.pendingThumbnails.delete(message.requestId);
       this.pendingPicks.delete(message.requestId);
       this.pendingShaders.delete(message.requestId);
+      this.pendingPlugins.delete(message.requestId);
     }
     this.onMessage(message);
   };
@@ -85,17 +94,32 @@ export class EngineClient {
       this.attachCanvas(canvas, width, height, dpr);
       return;
     }
-    const channel = new MessageChannel();
-    this.port = channel.port1;
-    this.port.onmessage = this.receive;
-    this.port.start();
-    const message: Extract<EngineRequest, { type: "init" }> = {
-      type: "init", canvas, port: channel.port2, width, height, dpr,
-      ...(this.initialPreviewCache ? { previewCache: this.initialPreviewCache } : {}),
-    };
-    this.worker.postMessage(message, [canvas, channel.port2]);
-    this.lastResize = `${width}:${height}:${dpr}`;
-    for (const queued of this.outbox.splice(0)) this.port.postMessage(queued.message, queued.transfer);
+    if (this.initializing) return;
+    this.initializing = true;
+    void this.initialize(canvas, width, height, dpr);
+  }
+
+  private async initialize(canvas: OffscreenCanvas, width: number, height: number, dpr: number) {
+    try {
+      const response = await fetch(nagaWasmUrl);
+      if (!response.ok) throw new Error(`Naga WASMを取得できませんでした (${response.status})`);
+      const nagaWasm = await response.arrayBuffer();
+      const channel = new MessageChannel();
+      this.port = channel.port1;
+      this.port.onmessage = this.receive;
+      this.port.start();
+      const message: Extract<EngineRequest, { type: "init" }> = {
+        type: "init", canvas, port: channel.port2, width, height, dpr, nagaWasm,
+        ...(this.initialPreviewCache ? { previewCache: this.initialPreviewCache } : {}),
+      };
+      this.worker.postMessage(message, [canvas, channel.port2, nagaWasm]);
+      this.lastResize = `${width}:${height}:${dpr}`;
+      for (const queued of this.outbox.splice(0)) this.port.postMessage(queued.message, queued.transfer);
+    } catch (error) {
+      this.onMessage({ type: "error", message: error instanceof Error ? error.message : "レンダラーを初期化できませんでした" });
+    } finally {
+      this.initializing = false;
+    }
   }
 
   attachCanvas(canvas: OffscreenCanvas, width: number, height: number, dpr: number) {
@@ -223,6 +247,18 @@ export class EngineClient {
       this.pendingShaders.set(requestId, { resolve, reject });
       this.post({ type: "compile-glsl", requestId, source });
     });
+  }
+
+  loadRendererPlugin(plugin: RendererPluginBundle) {
+    const requestId = crypto.randomUUID();
+    return new Promise<RendererPluginInfo>((resolve, reject) => {
+      this.pendingPlugins.set(requestId, { resolve, reject });
+      this.post({ type: "plugin-load", requestId, plugin });
+    });
+  }
+
+  unloadRendererPlugin(pluginId: string) {
+    this.post({ type: "plugin-unload", pluginId });
   }
 
   private flushPendingPick() {

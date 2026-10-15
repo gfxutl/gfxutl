@@ -13,8 +13,24 @@ import { createRenderPipeline, shadowTypeFrom, ThreeRendererCore, toneMappingFro
 import { ThreeSceneCore } from "./three-scene-core";
 import { registerLocalFont } from "./three-geometry-factory";
 import { MediaBuffer } from "./media-buffer";
+import { RendererPluginRuntime } from "./renderer-plugin-runtime";
 
 const worker = self as unknown as DedicatedWorkerGlobalScope;
+
+function denyExternalConnections() {
+  const unavailable = () => { throw new TypeError("レンダラーWorkerからの外部接続は禁止されています"); };
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: false,
+    enumerable: true,
+    writable: false,
+    value: () => Promise.reject(new TypeError("レンダラーWorkerからのfetchは禁止されています")),
+  });
+  for (const name of ["WebSocket", "EventSource", "XMLHttpRequest", "WebTransport", "RTCPeerConnection", "webkitRTCPeerConnection", "importScripts"] as const) {
+    if (name in globalThis) Object.defineProperty(globalThis, name, { configurable: false, writable: false, value: unavailable });
+  }
+}
+
+denyExternalConnections();
 let channelPort: MessagePort | null = null;
 interface PreviewAccessUnit {
   data: Uint8Array;
@@ -44,6 +60,7 @@ let cacheStatusTimer = 0;
 let lastCacheStatus = "";
 let lastMediaBufferStatus = "";
 let nagaModulePromise: Promise<typeof import("../naga-wasm/pkg/naga_wasm.js")> | null = null;
+let nagaWasm: ArrayBuffer | null = null;
 const postProcessTime = uniform(0);
 let sceneSettings: SceneSettings = {
   background: { color: 0xffffff, alpha: 1, fogEnabled: false, fogColor: 0xffffff, fogNear: 5, fogFar: 30, environmentIntensity: 1, environmentRotation: 0, backgroundBlurriness: 0 },
@@ -189,10 +206,17 @@ function send(message: EngineResponse, transfer: Transferable[] = []) {
   channelPort?.postMessage(message, transfer);
 }
 
+const pluginRuntime = new RendererPluginRuntime({
+  context: () => graphics ? { renderer: graphics.renderer, scene: graphics.scene, camera: graphics.camera } : undefined,
+  requestRender: () => graphics?.render(),
+  state: (plugin) => send({ type: "plugin-state", plugin }),
+});
+
 async function compileGlslWithNaga(source: string) {
+  if (!nagaWasm) throw new Error("Naga WASMが初期化されていません");
   nagaModulePromise ??= import("../naga-wasm/pkg/naga_wasm.js");
   const naga = await nagaModulePromise;
-  await naga.default();
+  await naga.default(nagaWasm);
   return naga.compile_glsl_to_wgsl(source);
 }
 
@@ -211,6 +235,7 @@ function cacheStatus(immediate = false) {
 }
 
 async function initialize(message: Extract<EngineRequest, { type: "init" }>) {
+  nagaWasm = message.nagaWasm;
   if (message.previewCache) {
     ramPreviewEnabled = message.previewCache.enabled;
     cache.setMaxBytes(Math.max(1, message.previewCache.maxBytes));
@@ -1268,6 +1293,7 @@ async function renderRealtime(time: number, _shouldCache: boolean, clips: Render
   updateParticleSurfaces(time, frame);
   const { retiredFrames, readyClipIds, samplesToClose } = await updateVideoSurfaces(time, frame);
   applyTimelineHierarchy(frame.activeClips);
+  await pluginRuntime.runFrame({ time, fps: previewFps, mode: playbackActive ? "playback" : "realtime" });
   const renderStartedAt = performance.now();
   graphics.render();
   const renderedAt = performance.now();
@@ -2056,6 +2082,11 @@ async function handleMessage(message: EngineRequest) {
     }
     if (message.type === "pick") send({ type: "pick-result", requestId: message.requestId, clipId: pickSceneObject(message.ndcX, message.ndcY) });
     if (message.type === "compile-glsl") send({ type: "glsl-compiled", requestId: message.requestId, wgsl: await compileGlslWithNaga(message.source) });
+    if (message.type === "plugin-load") {
+      const plugin = await pluginRuntime.load(message.plugin);
+      send({ type: "plugin-state", requestId: message.requestId, plugin });
+    }
+    if (message.type === "plugin-unload") await pluginRuntime.unload(message.pluginId);
     if (message.type === "clear-cache") {
       resetPreviewDecoder();
       cache.clear();

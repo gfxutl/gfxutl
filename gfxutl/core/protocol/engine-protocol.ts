@@ -1,3 +1,5 @@
+import type { RendererPluginBundle, RendererPluginInfo } from "../plugins/plugin-types";
+
 export interface ExportSettings {
   format: "mp4" | "webm";
   videoCodec: "avc" | "hevc" | "vp8" | "vp9" | "av1";
@@ -373,7 +375,7 @@ export interface MediaReadGraph {
 }
 
 export type EngineRequest =
-  | { type: "init"; canvas: OffscreenCanvas; port: MessagePort; width: number; height: number; dpr: number; previewCache?: { enabled: boolean; maxBytes: number } }
+  | { type: "init"; canvas: OffscreenCanvas; port: MessagePort; width: number; height: number; dpr: number; nagaWasm: ArrayBuffer; previewCache?: { enabled: boolean; maxBytes: number } }
   | { type: "attach-canvas"; canvas: OffscreenCanvas; width: number; height: number; dpr: number }
   | { type: "resize"; width: number; height: number; dpr: number }
   | { type: "render"; sequence: number; time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; focusClipId?: string; timelinePatch?: TimelinePatch; sceneSettingsPatch?: SceneSettingsPatch }
@@ -390,6 +392,8 @@ export type EngineRequest =
   | { type: "font-register"; fontId: string; buffer: ArrayBuffer }
   | { type: "pick"; requestId: string; ndcX: number; ndcY: number }
   | { type: "compile-glsl"; requestId: string; source: string }
+  | { type: "plugin-load"; requestId: string; plugin: RendererPluginBundle }
+  | { type: "plugin-unload"; pluginId: string }
   | { type: "export"; requestId: string; settings: ExportSettings; duration: number; clips: RenderClip[]; sceneSettings: SceneSettings; audioChannels: "stereo" | "mono" }
   | { type: "export-still"; requestId: string; width: number; height: number; time: number; clips: RenderClip[]; sceneSettings: SceneSettings }
   | { type: "preview-cache-settings"; enabled: boolean; maxBytes: number }
@@ -418,6 +422,7 @@ export type EngineResponse =
   | { type: "video-frame-ready"; clipId: string; timestamp: number }
   | { type: "pick-result"; requestId: string; clipId?: string }
   | { type: "glsl-compiled"; requestId: string; wgsl: string }
+  | { type: "plugin-state"; plugin: RendererPluginInfo; requestId?: string }
   | { type: "cache"; usedBytes: number; maxBytes: number; entries: number }
   | { type: "media-buffer-state"; usedBytes: number; maxBytes: number; instanceCount: number; residentAssetIds: string[]; requestedAssetIds: string[]; skippedAssetIds: string[] }
   | {

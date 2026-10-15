@@ -1,3 +1,5 @@
+import type { RendererPluginInfo } from "../plugins/plugin-types";
+
 export type TrackKind = "video" | "audio" | "title" | "object" | "group";
 
 export type ClipPropertyActionKind = "transform" | "sceneGraph" | "keyframes" | "crop" | "effects" | "postProcess" | "masks" | "audio" | "speed";
@@ -178,6 +180,7 @@ export interface EditorState {
   assets: MediaAsset[];
   clips: TimelineClip[];
   fonts: FontFaceInfo[];
+  plugins: RendererPluginInfo[];
   cache: CacheState;
   mediaBuffer: MediaBufferStatus;
   engine: "initializing" | "webgpu" | "webgl2" | "unsupported";

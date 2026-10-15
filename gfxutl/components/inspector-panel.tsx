@@ -25,6 +25,7 @@ import { COMPOSITION_SIZE_PRESETS } from "../core/interface/composition-size";
 import { Button } from "./ui/button";
 import { Slider } from "./ui/slider";
 import { FontPicker } from "./font-picker";
+import { PluginPanel } from "./plugin-panel";
 
 const GEOMETRY_OPTIONS: GeometryKind[] = ["box", "capsule", "circle", "cone", "cylinder", "dodecahedron", "icosahedron", "octahedron", "plane", "ring", "sphere", "tetrahedron", "torus", "torusKnot", "lathe", "shape", "extrude", "tube", "polyhedron", "edges", "wireframe", "buffer"];
 const THREE_RAD_TO_DEG = 180 / Math.PI;
@@ -161,7 +162,7 @@ function SceneKeyframeEditor({ scene, currentTime, fps }: { scene: SceneSettings
 
 export function InspectorPanel() {
   const { state, controller } = useEditor();
-  const [tab, setTab] = useState<"properties" | "inspector" | "metadata">("properties");
+  const [tab, setTab] = useState<"properties" | "inspector" | "metadata" | "plugins">("properties");
   const selected = state.clips.find((clip) => clip.id === state.selectedClipId);
   const background = state.backgroundSelected ? state.background : null;
   const asset = state.assets.find((item) => item.id === selected?.assetId) ?? state.assets.find((item) => item.id === state.selectedAssetId);
@@ -175,11 +176,12 @@ export function InspectorPanel() {
         <button className={tab === "properties" ? "active" : ""} onClick={() => setTab("properties")}>プロパティ</button>
         <button className={tab === "inspector" ? "active" : ""} onClick={() => setTab("inspector")}>インスペクター</button>
         <button className={tab === "metadata" ? "active" : ""} onClick={() => setTab("metadata")}>メタデータ</button>
+        <button className={tab === "plugins" ? "active" : ""} onClick={() => setTab("plugins")}>プラグイン</button>
       </div>
-      {tab !== "inspector" && <div className="selected-clip">
+      {tab !== "inspector" && tab !== "plugins" && <div className="selected-clip">
         <div><strong>{selected?.name ?? background?.name ?? asset?.name ?? "項目未選択"}</strong></div>
       </div>}
-      {tab === "inspector" ? <RealtimeLayerInspector clips={state.clips} currentTime={state.currentTime} fps={state.fps} selectedClipId={state.selectedClipId} onSelect={controller.selectClip} /> : tab === "metadata" ? background ? <div className="metadata-view"><div className="metadata-row"><span>名前</span><strong>背景オブジェクト</strong></div><div className="metadata-row"><span>種類</span><strong>SCENE BACKGROUND</strong></div><div className="metadata-row"><span>表示範囲</span><strong>プロジェクト全体</strong></div></div> : <MetadataView clip={selected} asset={asset} fps={state.fps} /> : background ? <div className="inspector-section background-inspector">
+      {tab === "plugins" ? <PluginPanel /> : tab === "inspector" ? <RealtimeLayerInspector clips={state.clips} currentTime={state.currentTime} fps={state.fps} selectedClipId={state.selectedClipId} onSelect={controller.selectClip} /> : tab === "metadata" ? background ? <div className="metadata-view"><div className="metadata-row"><span>名前</span><strong>背景オブジェクト</strong></div><div className="metadata-row"><span>種類</span><strong>SCENE BACKGROUND</strong></div><div className="metadata-row"><span>表示範囲</span><strong>プロジェクト全体</strong></div></div> : <MetadataView clip={selected} asset={asset} fps={state.fps} /> : background ? <div className="inspector-section background-inspector">
         <div className="section-title"><span>背景</span><small>THREE.SCENE</small></div>
         <div className="section-body">
           <label className="select-field"><span>サイズ</span><select aria-label="サイズプリセット" value={COMPOSITION_SIZE_PRESETS.some(({ width, height }) => width === background.width && height === background.height) ? `${background.width}x${background.height}` : "custom"} onChange={(event) => {

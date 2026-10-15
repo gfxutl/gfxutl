@@ -10,6 +10,8 @@ import { MediaReadPlanner } from "./media-read-graph";
 import { resolveAudioProcessing } from "./audio-processing";
 import { DEFAULT_COMPOSITION_SIZE, normalizeBackgroundSize, normalizeCompositionDimension } from "./composition-size";
 import { DEFAULT_SEQUENCE_DURATION, sequenceEnd } from "./sequence-duration";
+import { readRendererPluginPackage } from "../plugins/plugin-package";
+import { bundleRendererPlugin } from "../plugins/plugin-bundler";
 
 type Listener = () => void;
 
@@ -54,6 +56,12 @@ function loadSettings(): EditorSettings {
 
 const loadedSettings = loadSettings();
 
+function upsertPlugin(plugins: EditorState["plugins"], plugin: EditorState["plugins"][number]) {
+  const index = plugins.findIndex((item) => item.id === plugin.id);
+  if (index < 0) return [...plugins, plugin];
+  return plugins.map((item, itemIndex) => itemIndex === index ? plugin : item);
+}
+
 const initialState: EditorState = {
   projectName: "Untitled Project",
   canUndo: false,
@@ -76,6 +84,7 @@ const initialState: EditorState = {
   assets: [],
   clips: [],
   fonts: [],
+  plugins: [],
   cache: { usedBytes: 0, maxBytes: loadedSettings.ramPreviewMaxBytes, entries: 0, codec: "H.264" },
   mediaBuffer: { usedBytes: 0, maxBytes: 128 * MiB, entries: 0, pending: 0, instances: 0 },
   engine: "initializing",
@@ -177,6 +186,7 @@ export class EditorController {
   private lastHistorySignature = "";
   private lastHistoryAt = 0;
   private projectFileHandle?: FileSystemFileHandle;
+  private pluginDirectories = new Map<string, FileSystemDirectoryHandle>();
 
   constructor(worker: Worker) {
     this.engine = new EngineClient(worker, (message) => this.onEngineMessage(message));
@@ -677,6 +687,8 @@ export class EditorController {
       if (message.videoFramesReady) this.update({ videoFramesRendered: this.state.videoFramesRendered + message.videoFramesReady });
       if (message.rendererStats) this.update({ rendererStats: message.rendererStats });
       if (message.previewSource) this.recordPreviewMetric(message.previewSource);
+    } else if (message.type === "plugin-state") {
+      this.update({ plugins: upsertPlugin(this.state.plugins, message.plugin) });
     } else if (message.type === "error") {
       this.toast(message.message);
     }
@@ -1527,6 +1539,63 @@ export class EditorController {
       });
     this.fontPreviewLoads.set(fontId, pending);
     return pending;
+  };
+
+  loadRendererPlugin = async () => {
+    const pickDirectory = window.showDirectoryPicker;
+    if (!pickDirectory) {
+      this.toast("このブラウザはディレクトリ選択に対応していません");
+      return;
+    }
+    let pendingPlugin: Awaited<ReturnType<typeof readRendererPluginPackage>> | undefined;
+    try {
+      const directory = await pickDirectory({ mode: "read" });
+      const plugin = pendingPlugin = await readRendererPluginPackage(directory);
+      this.pluginDirectories.set(plugin.id, directory);
+      this.update({ plugins: upsertPlugin(this.state.plugins, {
+        id: plugin.id, name: plugin.name, version: plugin.version, entry: plugin.entry,
+        status: "bundling", moduleCount: plugin.files.length,
+      }) });
+      const loaded = await this.engine.loadRendererPlugin(await bundleRendererPlugin(plugin));
+      this.update({ plugins: upsertPlugin(this.state.plugins, loaded) });
+      if (loaded.status === "active") this.toast(`${loaded.name} を読み込みました`);
+      else this.toast(`${loaded.name}: ${loaded.error ?? "プラグインを読み込めませんでした"}`);
+    } catch (error) {
+      if (pendingPlugin) this.update({ plugins: upsertPlugin(this.state.plugins, {
+        id: pendingPlugin.id, name: pendingPlugin.name, version: pendingPlugin.version, entry: pendingPlugin.entry,
+        status: "error", moduleCount: pendingPlugin.files.length,
+        error: error instanceof Error ? error.message : "プラグインを読み込めませんでした",
+      }) });
+      if ((error as DOMException).name !== "AbortError") this.toast(error instanceof Error ? error.message : "プラグインを読み込めませんでした");
+    }
+  };
+
+  reloadRendererPlugin = async (pluginId: string) => {
+    const directory = this.pluginDirectories.get(pluginId);
+    if (!directory) {
+      this.toast("このプラグインのディレクトリをもう一度選択してください");
+      return;
+    }
+    try {
+      const plugin = await readRendererPluginPackage(directory);
+      this.update({ plugins: upsertPlugin(this.state.plugins, {
+        id: pluginId, name: plugin.name, version: plugin.version, entry: plugin.entry,
+        status: "bundling", moduleCount: plugin.files.length,
+      }) });
+      const loaded = await this.engine.loadRendererPlugin(await bundleRendererPlugin({ ...plugin, id: pluginId }));
+      this.update({ plugins: upsertPlugin(this.state.plugins, loaded) });
+      if (loaded.status === "active") this.toast(`${loaded.name} を再読み込みしました`);
+    } catch (error) {
+      const current = this.state.plugins.find((plugin) => plugin.id === pluginId);
+      if (current) this.update({ plugins: upsertPlugin(this.state.plugins, { ...current, status: "error", error: error instanceof Error ? error.message : "プラグインを再読み込みできませんでした" }) });
+      this.toast(error instanceof Error ? error.message : "プラグインを再読み込みできませんでした");
+    }
+  };
+
+  removeRendererPlugin = (pluginId: string) => {
+    this.engine.unloadRendererPlugin(pluginId);
+    this.pluginDirectories.delete(pluginId);
+    this.update({ plugins: this.state.plugins.filter((plugin) => plugin.id !== pluginId) });
   };
 
   copySelection = async () => {
