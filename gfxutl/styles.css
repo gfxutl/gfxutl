@@ -755,7 +755,8 @@ svg { width: 16px; height: 16px; }
 .timeline-clip-status svg { width: 9px; height: 9px; }
 .timeline-clip.visual-hidden { border-style: dashed; background: color-mix(in srgb, var(--clip-color) 45%, #18191a); }
 .timeline-clip.visual-hidden .frame-strip { opacity: .16; }
-.timeline-clip .timeline-keyframe { position: absolute; z-index: 12; top: 50%; width: auto; height: 70.710678%; aspect-ratio: 1; box-sizing: border-box; border: 1px solid #111; background: #fff; transform: translate(-50%, -50%) rotate(45deg); cursor: pointer; }
+.timeline-clip .timeline-keyframe { position: absolute; z-index: 12; top: 50%; width: auto; height: 70.710678%; aspect-ratio: 1; box-sizing: border-box; border: 1px solid #111; background: #fff; opacity: 0; pointer-events: none; transform: translate(-50%, -50%) rotate(45deg); transition: opacity .08s; cursor: pointer; }
+.timeline-clip:hover .timeline-keyframe { opacity: 1; pointer-events: auto; }
 .timeline-clip .clip-trim-handle { position: absolute; z-index: 20; top: 0; bottom: 0; width: 8px; background: #ffffff12; cursor: ew-resize; touch-action: none; }
 .timeline-clip .clip-trim-handle::after { content: ""; position: absolute; top: 5px; bottom: 5px; width: 2px; border-radius: 1px; background: #fff; box-shadow: 0 0 3px #000; }
 .timeline-clip .clip-trim-handle.trim-start { left: 0; }
