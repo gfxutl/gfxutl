@@ -143,7 +143,7 @@ export class ThreeTransformHandles {
   }
 }
 
-function projectedWorldUnitsPerPixel(camera: THREE.Camera, worldPoint: THREE.Vector3, viewportHeight: number) {
+export function projectedWorldUnitsPerPixel(camera: THREE.Camera, worldPoint: THREE.Vector3, viewportHeight: number) {
   const pixels = Math.max(1, viewportHeight);
   if (camera instanceof THREE.OrthographicCamera) return Math.abs(camera.top - camera.bottom) / Math.max(0.000001, camera.zoom) / pixels;
   if (camera instanceof THREE.PerspectiveCamera) {

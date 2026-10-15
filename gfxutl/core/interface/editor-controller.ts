@@ -1,4 +1,4 @@
-import type { AudioProcessingSpec, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ClipPropertyActionKind, ContextMenuState, EditorLayout, EditorSettings, EditorState, EngineResponse, ExportSettings, FontFaceInfo, GeometryKind, KeyframeProperty, MediaAsset, RenderClip, SceneKeyframe, SceneObjectSpec, SceneSettings, TimelineClip } from "./types";
+import type { AudioProcessingSpec, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ClipPropertyActionKind, ContextMenuState, EditorLayout, EditorSettings, EditorState, EngineResponse, ExportSettings, FontFaceInfo, GeometryKind, KeyframeProperty, MediaAsset, RenderClip, SceneKeyframe, SceneObjectSpec, SceneSettings, TimelineClip } from "./types";
 import { applicableClipActionKinds, DEFAULT_POST_PROCESS_GLSL, resetPatchForClipAction, resolveClipPropertyActions, resolveColorGrading } from "./clip-actions";
 import { EngineClient } from "./engine-client";
 import { VirtualTimeline } from "./virtual-timeline";
@@ -1264,7 +1264,43 @@ export class EditorController {
   pickPreview = async (ndcX: number, ndcY: number, coalesce = false) => (await this.engine.pick(ndcX, ndcY, coalesce)).clipId;
   pickPreviewTarget = (ndcX: number, ndcY: number, coalesce = false) => this.engine.pick(ndcX, ndcY, coalesce);
   moveInspectorCamera = (operation: "orbit" | "pan", deltaX: number, deltaY: number) => this.engine.moveInspectorCamera(operation, deltaX, deltaY);
+  moveCameraAtPlayhead = (operation: "orbit" | "pan" | "dolly", deltaX: number, deltaY: number, viewportHeight: number) => {
+    if (this.state.playing || (!deltaX && !deltaY) || !Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return;
+    const time = this.state.currentTime;
+    const scene = this.state.background.scene;
+    const camera = transformCamera(evaluateCameraAtTime(scene, time), operation, deltaX, deltaY, viewportHeight);
+    const keyframes = (scene.keyframes ?? []).map((keyframe) => ({ ...keyframe, easing: keyframe.easing ? { ...keyframe.easing } : undefined }));
+    const tolerance = 0.5 / this.state.fps;
+    const selectedCameraKeyframeIds: string[] = [];
+    for (const [property, value] of cameraKeyframeValues(camera)) {
+      const existingIndex = keyframes.findIndex((keyframe) => keyframe.property === property && Math.abs(keyframe.time - time) <= tolerance);
+      if (existingIndex >= 0) {
+        keyframes[existingIndex] = { ...keyframes[existingIndex], time, value };
+        selectedCameraKeyframeIds.push(keyframes[existingIndex].id);
+      } else {
+        const keyframe = { id: crypto.randomUUID(), property, time, value, interpolation: "smooth" as const, easing: undefined };
+        keyframes.push(keyframe);
+        selectedCameraKeyframeIds.push(keyframe.id);
+      }
+    }
+    keyframes.sort((left, right) => left.time - right.time || left.property.localeCompare(right.property));
+    this.update({
+      background: { ...this.state.background, scene: { ...scene, keyframes } },
+      selectedCameraKeyframeIds,
+      selectedClipId: null,
+      selectedClipIds: [],
+      selectedAssetId: null,
+      backgroundSelected: false,
+    });
+    this.renderPreview(false);
+  };
+  finishCameraInteraction = () => {
+    this.invalidatePreviewCache();
+    this.schedulePersistence();
+    this.renderPreview(false);
+  };
   setPreviewTransformHandles = (clipId?: string) => this.engine.setTransformHandles(clipId);
+  setCameraHandles = (visible: boolean) => this.engine.setCameraHandles(visible);
 
   setLayout = (patch: Partial<EditorLayout>, persist = false) => {
     const layout = { ...this.state.layout, ...patch };
@@ -2262,6 +2298,100 @@ function evaluateSceneNumber(keyframes: readonly SceneKeyframe[], property: stri
   if (left.interpolation === "smooth") alpha = alpha * alpha * (3 - 2 * alpha);
   else if (left.interpolation === "bezier") alpha = cubicBezierAt(left.easing, alpha);
   return left.value + (right.value - left.value) * alpha;
+}
+
+function evaluateCameraAtTime(scene: SceneSettings, time: number): CameraSettings {
+  const keys = scene.keyframes ?? [];
+  const camera = scene.camera;
+  return {
+    ...camera,
+    position: camera.position.map((value, axis) => evaluateSceneNumber(keys, `camera.position.${axis}`, time, value)) as [number, number, number],
+    target: camera.target.map((value, axis) => evaluateSceneNumber(keys, `camera.target.${axis}`, time, value)) as [number, number, number],
+    near: evaluateSceneNumber(keys, "camera.near", time, camera.near),
+    far: evaluateSceneNumber(keys, "camera.far", time, camera.far),
+    fov: evaluateSceneNumber(keys, "camera.fov", time, camera.fov),
+    zoom: evaluateSceneNumber(keys, "camera.zoom", time, camera.zoom),
+    orthographicHeight: evaluateSceneNumber(keys, "camera.orthographicHeight", time, camera.orthographicHeight),
+  };
+}
+
+function transformCamera(camera: CameraSettings, operation: "orbit" | "pan" | "dolly", deltaX: number, deltaY: number, viewportHeight: number): CameraSettings {
+  const position = [...camera.position] as [number, number, number];
+  const target = [...camera.target] as [number, number, number];
+  const offset = subtractVector(position, target);
+  const distance = Math.max(0.01, vectorLength(offset));
+  if (operation === "orbit") {
+    const theta = Math.atan2(offset[0], offset[2]) - deltaX * 0.008;
+    const phi = Math.max(0.05, Math.min(Math.PI - 0.05, Math.acos(Math.max(-1, Math.min(1, offset[1] / distance))) - deltaY * 0.008));
+    const radiusAtY = distance * Math.sin(phi);
+    position[0] = target[0] + radiusAtY * Math.sin(theta);
+    position[1] = target[1] + distance * Math.cos(phi);
+    position[2] = target[2] + radiusAtY * Math.cos(theta);
+  } else if (operation === "pan") {
+    const forward = normalizeVector(subtractVector(target, position));
+    let right = normalizeVector(crossVector(forward, [0, 1, 0]));
+    if (vectorLength(right) < 0.000001) right = [1, 0, 0];
+    const up = normalizeVector(crossVector(right, forward));
+    const height = Math.max(1, viewportHeight);
+    const worldUnitsPerPixel = camera.projection === "orthographic"
+      ? Math.max(0.001, camera.orthographicHeight) / (height * Math.max(0.001, camera.zoom))
+      : 2 * distance * Math.tan(Math.max(0.01, Math.min(Math.PI - 0.01, camera.fov * Math.PI / 180)) / 2) / (height * Math.max(0.001, camera.zoom));
+    const translation = addVector(scaleVector(right, -deltaX * worldUnitsPerPixel), scaleVector(up, deltaY * worldUnitsPerPixel));
+    for (let axis = 0; axis < 3; axis++) {
+      position[axis] += translation[axis];
+      target[axis] += translation[axis];
+    }
+  } else if (camera.projection === "orthographic") {
+    return { ...camera, zoom: Math.max(0.01, Math.min(1_000, camera.zoom * Math.exp(-deltaY * 0.002))) };
+  } else {
+    const nextDistance = Math.max(0.01, Math.min(100_000, distance * Math.exp(deltaY * 0.002)));
+    const direction = scaleVector(offset, 1 / distance);
+    for (let axis = 0; axis < 3; axis++) position[axis] = target[axis] + direction[axis] * nextDistance;
+  }
+  return { ...camera, position, target };
+}
+
+function cameraKeyframeValues(camera: CameraSettings): Array<[string, number]> {
+  return [
+    ["camera.position.0", camera.position[0]],
+    ["camera.position.1", camera.position[1]],
+    ["camera.position.2", camera.position[2]],
+    ["camera.target.0", camera.target[0]],
+    ["camera.target.1", camera.target[1]],
+    ["camera.target.2", camera.target[2]],
+    ["camera.near", camera.near],
+    ["camera.far", camera.far],
+    ["camera.fov", camera.fov],
+    ["camera.zoom", camera.zoom],
+    ["camera.orthographicHeight", camera.orthographicHeight],
+  ];
+}
+
+type Vector3 = [number, number, number];
+
+function subtractVector(left: Vector3, right: Vector3): Vector3 {
+  return [left[0] - right[0], left[1] - right[1], left[2] - right[2]];
+}
+
+function addVector(left: Vector3, right: Vector3): Vector3 {
+  return [left[0] + right[0], left[1] + right[1], left[2] + right[2]];
+}
+
+function scaleVector(vector: Vector3, scale: number): Vector3 {
+  return [vector[0] * scale, vector[1] * scale, vector[2] * scale];
+}
+
+function crossVector(left: Vector3, right: Vector3): Vector3 {
+  return [left[1] * right[2] - left[2] * right[1], left[2] * right[0] - left[0] * right[2], left[0] * right[1] - left[1] * right[0]];
+}
+
+function vectorLength(vector: Vector3) {
+  return Math.hypot(vector[0], vector[1], vector[2]);
+}
+
+function normalizeVector(vector: Vector3): Vector3 {
+  const length = vectorLength(vector);
+  return length > 0.000001 ? scaleVector(vector, 1 / length) : [0, 0, 0];
 }
 
 function orderedVisualClips(clips: readonly TimelineClip[]) {

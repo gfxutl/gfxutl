@@ -14,6 +14,7 @@ import { ThreeSceneCore } from "./three-scene-core";
 import { registerLocalFont } from "./three-geometry-factory";
 import { MediaBuffer } from "./media-buffer";
 import { RendererPluginRuntime } from "./renderer-plugin-runtime";
+import { ThreeCameraHandles } from "./three-camera-handles";
 import { ThreeTransformHandles } from "./three-transform-handles";
 
 const worker = self as unknown as DedicatedWorkerGlobalScope;
@@ -48,8 +49,10 @@ let canvas: OffscreenCanvas | null = null;
 let graphics: ThreeRendererCore | null = null;
 let sceneCore: ThreeSceneCore | null = null;
 let transformHandles: ThreeTransformHandles | null = null;
+let cameraHandles: ThreeCameraHandles | null = null;
 let timelineParkingRoot: THREE.Group | null = null;
 let transformHandleClipId: string | undefined;
+let cameraHandlesVisible = false;
 let width = 1280;
 let height = 720;
 let dpr = 1;
@@ -274,6 +277,8 @@ async function replaceCanvas(nextCanvas: OffscreenCanvas, nextWidth: number, nex
   sceneCore?.dispose();
   transformHandles?.dispose();
   transformHandles = null;
+  cameraHandles?.dispose();
+  cameraHandles = null;
   timelineParkingRoot = null;
   await graphics?.dispose();
   encoder?.close();
@@ -289,6 +294,7 @@ async function replaceCanvas(nextCanvas: OffscreenCanvas, nextWidth: number, nex
   });
   sceneCore = new ThreeSceneCore(graphics.scene, (assetId, usage) => resolveImageTexture(assetId, usage));
   transformHandles = new ThreeTransformHandles(graphics.scene);
+  cameraHandles = new ThreeCameraHandles(graphics.scene);
   timelineParkingRoot = new THREE.Group();
   timelineParkingRoot.name = "editor:timeline-parking";
   timelineParkingRoot.position.set(1_000_000, 1_000_000, 1_000_000);
@@ -1106,6 +1112,13 @@ function pickSceneObject(ndcX: number, ndcY: number) {
   if (handleHit && transformHandleClipId) {
     return { clipId: transformHandleClipId, handle: handleHit.object.userData.gfxTransformHandleKind as TransformHandleKind } satisfies PreviewPickResult;
   }
+  const cameraHit = intersections.some((hit) => {
+    for (let object: THREE.Object3D | null = hit.object; object; object = object.parent) {
+      if (object.userData.gfxCameraHandle || object.name === `editor:${sceneSettings.camera.id}`) return true;
+    }
+    return false;
+  });
+  if (cameraHit) return { camera: true } satisfies PreviewPickResult;
   for (const hit of intersections) {
     let object: THREE.Object3D | null = hit.object;
     while (object) {
@@ -1436,6 +1449,7 @@ async function renderRealtime(time: number, _shouldCache: boolean, clips: Render
     graphics.previewCamera,
     height,
   );
+  cameraHandles?.sync(graphics.camera, graphics.previewCamera, height, previewView === "inspector" && !playbackActive, cameraHandlesVisible);
   await pluginRuntime.runFrame({ time, fps: previewFps, mode: playbackActive ? "playback" : "realtime" });
   const renderStartedAt = performance.now();
   graphics.render(previewView);
@@ -1457,7 +1471,10 @@ async function render(time: number, shouldCache: boolean, mode: "realtime" | "pl
   lastTimelineTime = time;
   previewFps = Math.max(1, Math.min(120, fps));
   playbackActive = mode === "playback";
-  if (playbackActive) transformHandles?.sync();
+  if (playbackActive) {
+    transformHandles?.sync();
+    cameraHandles?.sync();
+  }
   postProcessTime.value = renderTime;
   if (previewView === "camera" && !focusClipId && mode === "playback" && ramPreviewEnabled && await renderCachedPreview(renderTime, previewFps)) {
     return { previewSource: "cache" as const };
@@ -2331,6 +2348,11 @@ async function handleMessage(message: EngineRequest) {
         height,
       );
       graphics.render(previewView);
+    }
+    if (message.type === "camera-handles" && graphics) {
+      cameraHandlesVisible = message.visible;
+      cameraHandles?.sync(graphics.camera, graphics.previewCamera, height, previewView === "inspector" && !playbackActive, cameraHandlesVisible);
+      if (previewView === "inspector") graphics.render("inspector");
     }
     if (message.type === "pick") send({ type: "pick-result", requestId: message.requestId, ...pickSceneObject(message.ndcX, message.ndcY) });
     if (message.type === "compile-glsl") send({ type: "glsl-compiled", requestId: message.requestId, wgsl: await compileGlslWithNaga(message.source) });

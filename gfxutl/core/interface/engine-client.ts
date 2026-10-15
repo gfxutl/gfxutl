@@ -51,7 +51,7 @@ export class EngineClient {
       this.pendingThumbnails.get(message.requestId)?.resolve(message);
       this.pendingThumbnails.delete(message.requestId);
     } else if (message.type === "pick-result") {
-      this.pendingPicks.get(message.requestId)?.({ clipId: message.clipId, handle: message.handle });
+      this.pendingPicks.get(message.requestId)?.({ clipId: message.clipId, handle: message.handle, camera: message.camera });
       this.pendingPicks.delete(message.requestId);
     } else if (message.type === "glsl-compiled") {
       this.pendingShaders.get(message.requestId)?.resolve(message.wgsl);
@@ -260,6 +260,10 @@ export class EngineClient {
 
   setTransformHandles(clipId?: string) {
     this.post({ type: "transform-handles", clipId });
+  }
+
+  setCameraHandles(visible: boolean) {
+    this.post({ type: "camera-handles", visible });
   }
 
   compileGlsl(source: string) {

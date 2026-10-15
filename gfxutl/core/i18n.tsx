@@ -276,6 +276,7 @@ const EN: Record<string, string> = {
   "総合プレビュー": "Composite preview",
   "インスペクター視点": "Inspector",
   "カメラを含むシーン全体を俯瞰": "Overview of the complete scene, including the camera",
+  "ドラッグでカメラ回転 / Shift+ドラッグでカメラ移動 / ホイールでズーム / Ctrl+ドラッグでビュー操作": "Drag to orbit camera / Shift-drag to pan / wheel to zoom / Ctrl-drag to navigate view",
   "{name}の視点をプレビュー": "Preview the {name} viewpoint",
   "プレビューを開く": "Open preview",
   "{name}のみをプレビュー": "Preview {name} only",

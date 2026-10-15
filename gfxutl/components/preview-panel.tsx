@@ -1,5 +1,5 @@
 import { Camera16Regular as Camera, Dismiss16Regular as X, Eye16Regular as Inspector, Open16Regular as ExternalLink } from "@fluentui/react-icons";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { useEditor } from "../core/interface";
 import type { TimelineClip, TransformHandleKind } from "../core/interface";
 import type { MediaAsset } from "../core/interface";
@@ -18,8 +18,10 @@ export function PreviewPanel() {
   const pickSequenceRef = useRef(0);
   const pendingPickRef = useRef<{ x: number; y: number } | null>(null);
   const inspectorNavigationClickRef = useRef(false);
+  const cameraWheelTimerRef = useRef(0);
   const [hoveredClipId, setHoveredClipId] = useState<string | null>(null);
   const [hoveredHandle, setHoveredHandle] = useState<TransformHandleKind | null>(null);
+  const [hoveredCamera, setHoveredCamera] = useState(false);
   const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
   const [inspectorNavigation, setInspectorNavigation] = useState<"orbit" | "pan" | null>(null);
   const [poppedOut, setPoppedOut] = useState(false);
@@ -52,6 +54,7 @@ export function PreviewPanel() {
 
   useEffect(() => () => {
     if (pickFrameRef.current !== null) cancelAnimationFrame(pickFrameRef.current);
+    window.clearTimeout(cameraWheelTimerRef.current);
     popoutObserverRef.current?.disconnect();
     if (popoutRef.current && !popoutRef.current.closed) popoutRef.current.close();
   }, []);
@@ -116,7 +119,12 @@ export function PreviewPanel() {
     if (!state.playing) return;
     setHoveredClipId(null);
     setHoveredHandle(null);
+    setHoveredCamera(false);
   }, [state.playing]);
+
+  useEffect(() => {
+    if (!inspectorView) setHoveredCamera(false);
+  }, [inspectorView]);
 
   const previewObjects = useMemo(() => inspectorView ? [] : state.clips
     .filter((clip) => !state.activePreviewClipId || clip.id === state.activePreviewClipId)
@@ -129,7 +137,14 @@ export function PreviewPanel() {
     controller.setPreviewTransformHandles(!inspectorView && !state.playing && !poppedOut ? hoveredObject?.clip.id : undefined);
   }, [controller, hoveredObject?.clip.id, inspectorView, poppedOut, state.playing]);
 
-  useEffect(() => () => controller.setPreviewTransformHandles(undefined), [controller]);
+  useEffect(() => {
+    controller.setCameraHandles(inspectorView && hoveredCamera && !state.playing && !poppedOut);
+  }, [controller, hoveredCamera, inspectorView, poppedOut, state.playing]);
+
+  useEffect(() => () => {
+    controller.setPreviewTransformHandles(undefined);
+    controller.setCameraHandles(false);
+  }, [controller]);
 
   const pickPoint = async (element: HTMLElement, clientX: number, clientY: number, coalesce = false) => {
     const rect = element.getBoundingClientRect();
@@ -159,6 +174,7 @@ export function PreviewPanel() {
       if (sequence === pickSequenceRef.current) {
         setHoveredClipId(target.clipId ?? null);
         setHoveredHandle(target.handle ?? null);
+        setHoveredCamera(Boolean(inspectorView && target.camera));
       }
     });
   };
@@ -300,23 +316,27 @@ export function PreviewPanel() {
   };
 
   const beginInspectorNavigation = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!inspectorView || event.button !== 0) return;
-    const operation = event.ctrlKey ? "orbit" : event.shiftKey ? "pan" : null;
-    if (!operation) return;
+    if (!inspectorView || state.playing || poppedOut || event.button !== 0) return;
+    const operation = event.shiftKey ? "pan" : "orbit";
+    const navigateInspectorView = event.ctrlKey || event.metaKey;
     event.preventDefault();
     event.stopPropagation();
     inspectorNavigationClickRef.current = true;
     setInspectorNavigation(operation);
     const pointerId = event.pointerId;
+    const viewportHeight = event.currentTarget.clientHeight;
     let previousX = event.clientX;
     let previousY = event.clientY;
     let deltaX = 0;
     let deltaY = 0;
     let moveFrame = 0;
+    let moved = false;
     const flushMove = () => {
       moveFrame = 0;
       if (!deltaX && !deltaY) return;
-      controller.moveInspectorCamera(operation, deltaX, deltaY);
+      moved = true;
+      if (navigateInspectorView) controller.moveInspectorCamera(operation, deltaX, deltaY);
+      else controller.moveCameraAtPlayhead(operation, deltaX, deltaY, viewportHeight);
       deltaX = 0;
       deltaY = 0;
     };
@@ -332,6 +352,7 @@ export function PreviewPanel() {
       if (pointer.pointerId !== pointerId) return;
       if (moveFrame) cancelAnimationFrame(moveFrame);
       flushMove();
+      if (moved && !navigateInspectorView) controller.finishCameraInteraction();
       if (pointer.type === "pointercancel") inspectorNavigationClickRef.current = false;
       else window.setTimeout(() => { inspectorNavigationClickRef.current = false; }, 0);
       setInspectorNavigation(null);
@@ -342,6 +363,17 @@ export function PreviewPanel() {
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", end);
     window.addEventListener("pointercancel", end);
+  };
+
+  const zoomInspectorCamera = (event: ReactWheelEvent<HTMLDivElement>) => {
+    if (!inspectorView || state.playing || poppedOut) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const delta = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY * 16 : event.deltaY;
+    if (!delta) return;
+    controller.moveCameraAtPlayhead("dolly", 0, delta, event.currentTarget.clientHeight);
+    window.clearTimeout(cameraWheelTimerRef.current);
+    cameraWheelTimerRef.current = window.setTimeout(controller.finishCameraInteraction, 160);
   };
 
   const beginStageInteraction = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -380,7 +412,7 @@ export function PreviewPanel() {
         {previewTabs.map((clip) => <div key={clip.id} className={`preview-tab preview-tab-object ${state.activePreviewClipId === clip.id ? "active" : ""}`} role="tab" tabIndex={0} aria-selected={state.activePreviewClipId === clip.id} title={t("{name}のみをプレビュー", { name: clip.name })} onClick={() => controller.setPreviewTab(clip.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); controller.setPreviewTab(clip.id); } }}><span>{clip.name}</span><button type="button" aria-label={t("{name}のプレビューを閉じる", { name: clip.name })} onClick={(event) => { event.stopPropagation(); controller.closePreviewTab(clip.id); }}><X /></button></div>)}
       </div>
       {activeAudioClip && <AudioWaveformEditor clip={activeAudioClip} asset={state.assets.find((asset) => asset.id === activeAudioClip.assetId)} />}
-      <div className={`preview-stage ${inspectorView ? "inspector-view" : ""} ${inspectorNavigation ? `inspector-${inspectorNavigation}` : ""} ${activeAudioClip ? "audio-preview-hidden" : ""} ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""} ${previewCursorClass(hoveredHandle, hoveredObject)}`} ref={stageRef} style={previewStyle} onPointerDown={beginStageInteraction} onMouseMove={inspectorView ? undefined : hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; if (!draggingClipId) { setHoveredClipId(null); setHoveredHandle(null); } }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
+      <div className={`preview-stage ${inspectorView ? "inspector-view" : ""} ${inspectorNavigation ? `inspector-${inspectorNavigation}` : ""} ${activeAudioClip ? "audio-preview-hidden" : ""} ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""} ${previewCursorClass(hoveredHandle, hoveredObject)}`} ref={stageRef} style={previewStyle} title={inspectorView ? t("ドラッグでカメラ回転 / Shift+ドラッグでカメラ移動 / ホイールでズーム / Ctrl+ドラッグでビュー操作") : undefined} onPointerDown={beginStageInteraction} onWheel={zoomInspectorCamera} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; setHoveredCamera(false); if (!draggingClipId) { setHoveredClipId(null); setHoveredHandle(null); } }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
         event.preventDefault();
         const rect = event.currentTarget.getBoundingClientRect();
         controller.openContextMenu({

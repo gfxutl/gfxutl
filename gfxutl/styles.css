@@ -329,7 +329,7 @@ svg { width: 16px; height: 16px; }
 .preview-tab-object > button { width: 16px; height: 16px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 3px; background: transparent; color: inherit; cursor: pointer; }
 .preview-tab-object > button:hover { background: #30343a; }
 .preview-tab-object > button svg { width: 9px; height: 9px; }
-.preview-stage.inspector-view { touch-action: none; }
+.preview-stage.inspector-view { cursor: grab; touch-action: none; }
 .preview-stage.inspector-orbit, .preview-stage.inspector-pan { cursor: grabbing; }
 .audio-waveform-editor { min-width: 0; min-height: 0; overflow: auto; background: #0b0d0e; color: #cfd2d3; scrollbar-color: #3c4145 transparent; }
 .audio-editor-toolbar { position: sticky; z-index: 5; top: 0; height: 42px; display: flex; align-items: center; gap: 9px; padding: 0 12px; border-bottom: 1px solid #292d30; background: #121517f2; backdrop-filter: blur(9px); }
