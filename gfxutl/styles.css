@@ -733,6 +733,11 @@ svg { width: 16px; height: 16px; }
 .context-menu-label { height: 18px; display: flex; align-items: center; gap: 6px; padding: 0 7px; color: #666b70; font: 7px "IBM Plex Mono", monospace; letter-spacing: .08em; text-transform: uppercase; }
 .context-menu-label svg { width: 10px; }
 .context-menu-separator { height: 1px; margin: 3px; background: #303338; }
+.context-menu-submenu { position: relative; }
+.context-menu-submenu-panel { position: absolute; z-index: 1; top: -4px; left: calc(100% - 1px); display: none; width: 216px; padding: 4px; border: 1px solid #393d41; border-radius: 6px; background: #17191cfa; box-shadow: 0 16px 44px #000b; backdrop-filter: blur(14px); }
+.context-menu-submenu:hover > .context-menu-submenu-panel, .context-menu-submenu:focus-within > .context-menu-submenu-panel { display: block; }
+.editor-context-menu.submenu-opens-left .context-menu-submenu-panel { right: calc(100% - 1px); left: auto; }
+.editor-context-menu .context-menu-chevron { width: 9px; color: #73777c; }
 
 /* Status and overlays */
 .status-bar { z-index: 30; inset: auto 0 0 0; height: var(--status-h); border-width: 1px 0 0; background: #101214; display: flex; align-items: center; justify-content: flex-start; padding: 0 10px; color: #73777c; font-size: 8px; }

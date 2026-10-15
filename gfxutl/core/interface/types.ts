@@ -69,6 +69,8 @@ export interface TimelineClip {
   receiveShadow?: boolean;
   visible?: boolean;
   layer?: number;
+  /** Explicit front-to-back order used by the composite preview. Higher values render in front. */
+  stackOrder?: number;
   parentId?: string;
   instanceCount?: number;
   instanceSpacing?: number;

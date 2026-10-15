@@ -1,7 +1,14 @@
 import {
+  AlignCenterHorizontal16Regular as AlignCenterHorizontal,
+  AlignCenterVertical16Regular as AlignCenterVertical,
+  ArrowDown16Regular as ArrowDown,
   ArrowRedo16Regular as Redo2,
   ArrowUndo16Regular as Undo2,
+  ArrowUp16Regular as ArrowUp,
   Circle16Regular as Circle,
+  ChevronDoubleDown16Regular as ChevronDoubleDown,
+  ChevronDoubleUp16Regular as ChevronDoubleUp,
+  ChevronRight16Regular as ChevronRight,
   Clipboard16Regular as Clipboard,
   ClipboardPaste16Regular as ClipboardPaste,
   Copy16Regular as Copy,
@@ -10,6 +17,7 @@ import {
   Delete16Regular as Trash2,
   Flag16Regular as Flag,
   FolderList16Regular as FolderTree,
+  LayerDiagonal16Regular as Layers,
   Pentagon20Regular as Pentagon,
   Sparkle16Regular as Sparkles,
   Target16Regular as Magnet,
@@ -46,15 +54,18 @@ export function EditorContextMenu() {
   if (!menu) return null;
   const targetMarker = menu.markerId ? state.markers.find((marker) => marker.id === menu.markerId) : undefined;
   const placement = { time: menu.time, timelineY: menu.timelineY, positionX: menu.positionX, positionY: menu.positionY };
+  const hasPreviewSelection = state.clips.some((clip) => state.selectedClipIds.includes(clip.id) && clip.kind !== "audio" && clip.kind !== "group");
+  const menuLeft = Math.min(menu.x, window.innerWidth - 224);
+  const submenuOpensLeft = menuLeft + 440 > window.innerWidth;
   const run = (event: MouseEvent, action: () => void | Promise<unknown>) => {
     event.stopPropagation();
     void action();
   };
   return <div
-    className="editor-context-menu"
+    className={`editor-context-menu${submenuOpensLeft ? " submenu-opens-left" : ""}`}
     role="menu"
     aria-label="編集メニュー"
-    style={{ left: Math.min(menu.x, window.innerWidth - 224), top: Math.max(4, Math.min(menu.y, window.innerHeight - 396)) }}
+    style={{ left: menuLeft, top: Math.max(4, Math.min(menu.y, window.innerHeight - 396)) }}
     onPointerDown={(event) => event.stopPropagation()}
     onContextMenu={(event) => event.preventDefault()}
   >
@@ -78,13 +89,30 @@ export function EditorContextMenu() {
       <button role="menuitemcheckbox" aria-checked={state.snapEnabled} className={state.snapEnabled ? "checked" : ""} onClick={(event) => run(event, () => { controller.toggleSnap(); controller.closeContextMenu(); })}><Magnet />マグネット<kbd>{state.snapEnabled ? "ON" : "OFF"}</kbd></button>
     </>}
     <div className="context-menu-separator" />
-    <div className="context-menu-label">オブジェクトを追加</div>
-    <button role="menuitem" onClick={(event) => run(event, () => controller.addGroupObject(placement))}><FolderTree />グループ</button>
-    <button role="menuitem" onClick={(event) => run(event, () => controller.addText2DObject(placement))}><Type />2D Text</button>
-    <button role="menuitem" onClick={(event) => run(event, () => controller.addText3DObject(placement))}><Type />3D Text</button>
-    <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("shape", placement))}><Pentagon />シェイプ</button>
-    <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("box", placement))}><Box />立方体</button>
-    <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("sphere", placement))}><Circle />球体</button>
-    <button role="menuitem" onClick={(event) => run(event, () => controller.addParticleObject(placement))}><Sparkles />GPUパーティクル</button>
+    <div className="context-menu-submenu">
+      <button role="menuitem" aria-haspopup="menu"><Sparkles /><span>新規</span><ChevronRight className="context-menu-chevron" /></button>
+      <div className="context-menu-submenu-panel" role="menu" aria-label="新規オブジェクト">
+        <button role="menuitem" onClick={(event) => run(event, () => controller.addGroupObject(placement))}><FolderTree />グループ</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.addText2DObject(placement))}><Type />2D Text</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.addText3DObject(placement))}><Type />3D Text</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("shape", placement))}><Pentagon />シェイプ</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("box", placement))}><Box />立方体</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("sphere", placement))}><Circle />球体</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.addParticleObject(placement))}><Sparkles />GPUパーティクル</button>
+      </div>
+    </div>
+    {menu.scope === "preview" && <div className="context-menu-submenu">
+      <button role="menuitem" aria-haspopup="menu" disabled={!hasPreviewSelection}><Layers /><span>配置</span><ChevronRight className="context-menu-chevron" /></button>
+      {hasPreviewSelection && <div className="context-menu-submenu-panel" role="menu" aria-label="配置">
+        <button role="menuitem" onClick={(event) => run(event, () => controller.arrangePreviewSelection("front"))}><ChevronDoubleUp />最前面に配置</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.arrangePreviewSelection("forward"))}><ArrowUp />前面に配置</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.arrangePreviewSelection("backward"))}><ArrowDown />後面に配置</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.arrangePreviewSelection("back"))}><ChevronDoubleDown />最後面に配置</button>
+        <div className="context-menu-separator" />
+        <button role="menuitem" onClick={(event) => run(event, () => controller.centerPreviewSelection("both"))}><AlignCenterHorizontal />上下左右中央に配置</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.centerPreviewSelection("vertical"))}><AlignCenterHorizontal />上下中央に配置</button>
+        <button role="menuitem" onClick={(event) => run(event, () => controller.centerPreviewSelection("horizontal"))}><AlignCenterVertical />左右中央に配置</button>
+      </div>}
+    </div>}
   </div>;
 }

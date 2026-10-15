@@ -24,6 +24,12 @@ export function App() {
   }, []);
   useEffect(() => {
     const controlKeyboard = (event: KeyboardEvent) => {
+      if (event.ctrlKey && event.metaKey && (event.key === "Control" || event.key === "Meta")) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) controller.setPreviewTab(null);
+        return;
+      }
       const target = event.target as HTMLElement | null;
       const editingText = Boolean(target?.closest(
         "input, textarea, select, [role='textbox'], [role='combobox'], [role='listbox'], [contenteditable]:not([contenteditable='false'])",

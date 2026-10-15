@@ -127,28 +127,57 @@ export function PreviewPanel() {
   };
 
   const beginResize = (event: ReactPointerEvent<HTMLElement>, object: PreviewObjectBounds, handle: string) => {
+    if (event.button !== 0 || state.playing) return;
     event.preventDefault();
     event.stopPropagation();
     controller.selectClip(object.clip.id);
     const stage = stageRef.current;
     if (!stage) return;
-    const startScaleX = object.clip.scaleX ?? 100;
-    const startScaleY = object.clip.scaleY ?? 100;
+    const pointerId = event.pointerId;
+    const startScaleX = Math.max(1, object.clip.scaleX ?? 100);
+    const startScaleY = Math.max(1, object.clip.scaleY ?? 100);
+    const startWidth = Math.max(0.04, object.width);
+    const startHeight = Math.max(0.04, object.height);
+    const startPositionX = object.clip.positionX ?? 0;
+    const startPositionY = object.clip.positionY ?? 0;
     const resizeX = handle.includes("e") || handle.includes("w");
     const resizeY = handle.includes("n") || handle.includes("s");
+    const directionX = handle.includes("e") ? 1 : handle.includes("w") ? -1 : 0;
+    const directionY = handle.includes("n") ? 1 : handle.includes("s") ? -1 : 0;
+    const radians = THREE_DEGREES * object.rotation;
+    const cosine = Math.cos(radians);
+    const sine = Math.sin(radians);
+    const startPoint = previewWorldPoint(stage, event.clientX, event.clientY);
+    const startDx = startPoint.x - object.x;
+    const startDy = startPoint.y - object.y;
+    const grabOffsetX = cosine * startDx - sine * startDy - directionX * startWidth / 2;
+    const grabOffsetY = sine * startDx + cosine * startDy - directionY * startHeight / 2;
     const move = (pointer: PointerEvent) => {
+      if (pointer.pointerId !== pointerId) return;
       const point = previewWorldPoint(stage, pointer.clientX, pointer.clientY);
-      const radians = THREE_DEGREES * object.rotation;
       const dx = point.x - object.x;
       const dy = point.y - object.y;
-      const localX = Math.cos(radians) * dx - Math.sin(radians) * dy;
-      const localY = Math.sin(radians) * dx + Math.cos(radians) * dy;
+      const localX = cosine * dx - sine * dy - grabOffsetX;
+      const localY = sine * dx + cosine * dy - grabOffsetY;
+      const requestedWidth = resizeX ? Math.max(0.04, directionX * localX + startWidth / 2) : startWidth;
+      const requestedHeight = resizeY ? Math.max(0.04, directionY * localY + startHeight / 2) : startHeight;
+      const scaleX = resizeX ? Math.max(1, Math.min(5_000, startScaleX * requestedWidth / startWidth)) : startScaleX;
+      const scaleY = resizeY ? Math.max(1, Math.min(5_000, startScaleY * requestedHeight / startHeight)) : startScaleY;
+      const width = startWidth * scaleX / startScaleX;
+      const height = startHeight * scaleY / startScaleY;
+      const centerOffsetX = resizeX ? directionX * (width - startWidth) / 2 : 0;
+      const centerOffsetY = resizeY ? directionY * (height - startHeight) / 2 : 0;
+      const worldOffsetX = cosine * centerOffsetX + sine * centerOffsetY;
+      const worldOffsetY = -sine * centerOffsetX + cosine * centerOffsetY;
       controller.updateClip(object.clip.id, {
-        scaleX: resizeX ? Math.max(1, Math.min(5_000, startScaleX * Math.max(0.04, Math.abs(localX) * 2) / object.width)) : startScaleX,
-        scaleY: resizeY ? Math.max(1, Math.min(5_000, startScaleY * Math.max(0.04, Math.abs(localY) * 2) / object.height)) : startScaleY,
+        scaleX,
+        scaleY,
+        positionX: startPositionX + worldOffsetX * 100,
+        positionY: startPositionY - worldOffsetY * 100,
       });
     };
-    const end = () => {
+    const end = (pointer: PointerEvent) => {
+      if (pointer.pointerId !== pointerId) return;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", end);
       window.removeEventListener("pointercancel", end);

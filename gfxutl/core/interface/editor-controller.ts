@@ -731,8 +731,7 @@ export class EditorController {
   private getRenderClips(): RenderClip[] {
     if (this.renderClipSource === this.state.clips) return this.renderClipCache;
     const visualClips = this.state.clips.filter((clip) => clip.kind !== "group");
-    const depth = new Map([...visualClips]
-      .sort((a, b) => (a.positionZ ?? 0) - (b.positionZ ?? 0) || b.y - a.y)
+    const depth = new Map(orderedVisualClips(visualClips)
       .map((clip, index) => [clip.id, 1_000 + index]));
     this.renderClipSource = this.state.clips;
     this.renderClipCache = visualClips.map((clip) => ({
@@ -949,8 +948,21 @@ export class EditorController {
     if (previewable) this.renderPreview(false);
   };
   setPreviewTab = (clipId: string | null) => {
-    if (clipId !== null && !this.state.previewClipTabs.includes(clipId)) return;
-    this.update({ activePreviewClipId: clipId });
+    if (clipId === null) {
+      this.update({ activePreviewClipId: null });
+      this.renderPreview(false);
+      return;
+    }
+    if (!this.state.previewClipTabs.includes(clipId)) return;
+    const clip = this.state.clips.find((item) => item.id === clipId);
+    if (!clip) return;
+    this.update({
+      activePreviewClipId: clipId,
+      selectedClipId: clipId,
+      selectedClipIds: [clipId],
+      selectedAssetId: clip.assetId ?? null,
+      backgroundSelected: false,
+    });
     this.renderPreview(false);
   };
   closePreviewTab = (clipId: string) => {
@@ -1170,6 +1182,66 @@ export class EditorController {
   };
 
   finishPreviewInteraction = () => {
+    this.invalidatePreviewCache();
+    this.schedulePersistence();
+    this.renderPreview(false);
+  };
+
+  arrangePreviewSelection = (placement: "front" | "forward" | "backward" | "back") => {
+    const selected = new Set(this.state.selectedClipIds);
+    const ordered = orderedVisualClips(this.state.clips).filter((clip) => clip.kind !== "audio");
+    if (!ordered.some((clip) => selected.has(clip.id))) return;
+    let arranged = [...ordered];
+    if (placement === "front") {
+      arranged = [...arranged.filter((clip) => !selected.has(clip.id)), ...arranged.filter((clip) => selected.has(clip.id))];
+    } else if (placement === "back") {
+      arranged = [...arranged.filter((clip) => selected.has(clip.id)), ...arranged.filter((clip) => !selected.has(clip.id))];
+    } else if (placement === "forward") {
+      for (let index = arranged.length - 2; index >= 0; index -= 1) {
+        if (selected.has(arranged[index].id) && !selected.has(arranged[index + 1].id)) {
+          [arranged[index], arranged[index + 1]] = [arranged[index + 1], arranged[index]];
+        }
+      }
+    } else {
+      for (let index = 1; index < arranged.length; index += 1) {
+        if (selected.has(arranged[index].id) && !selected.has(arranged[index - 1].id)) {
+          [arranged[index], arranged[index - 1]] = [arranged[index - 1], arranged[index]];
+        }
+      }
+    }
+    if (arranged.every((clip, index) => clip.id === ordered[index].id)) { this.closeContextMenu(); return; }
+    const stackOrder = new Map(arranged.map((clip, index) => [clip.id, index]));
+    this.update({
+      clips: this.state.clips.map((clip) => stackOrder.has(clip.id) ? { ...clip, stackOrder: stackOrder.get(clip.id) } : clip),
+      contextMenu: null,
+    });
+    this.invalidatePreviewCache();
+    this.schedulePersistence();
+    this.renderPreview(false);
+  };
+
+  centerPreviewSelection = (axis: "both" | "vertical" | "horizontal") => {
+    const selected = new Set(this.state.selectedClipIds);
+    const centerX = axis === "both" || axis === "horizontal";
+    const centerY = axis === "both" || axis === "vertical";
+    let changed = false;
+    const clips = this.state.clips.map((clip) => {
+      if (!selected.has(clip.id) || clip.kind === "audio" || clip.kind === "group") return clip;
+      const deltaX = centerX ? -evaluateClipNumber(clip, "positionX", this.state.currentTime, clip.positionX ?? 0) : 0;
+      const deltaY = centerY ? -evaluateClipNumber(clip, "positionY", this.state.currentTime, clip.positionY ?? 0) : 0;
+      if (!deltaX && !deltaY) return clip;
+      changed = true;
+      return {
+        ...clip,
+        positionX: (clip.positionX ?? 0) + deltaX,
+        positionY: (clip.positionY ?? 0) + deltaY,
+        keyframes: clip.keyframes?.map((keyframe) => keyframe.property === "positionX" && centerX
+          ? { ...keyframe, value: keyframe.value + deltaX }
+          : keyframe.property === "positionY" && centerY ? { ...keyframe, value: keyframe.value + deltaY } : keyframe),
+      };
+    });
+    if (!changed) { this.closeContextMenu(); return; }
+    this.update({ clips, contextMenu: null });
     this.invalidatePreviewCache();
     this.schedulePersistence();
     this.renderPreview(false);
@@ -1853,6 +1925,18 @@ function evaluateClipNumber(clip: TimelineClip, property: KeyframeProperty, time
   if (left.interpolation === "smooth") alpha = alpha * alpha * (3 - 2 * alpha);
   else if (left.interpolation === "bezier") alpha = cubicBezierAt(left.easing, alpha);
   return left.value + (right.value - left.value) * alpha;
+}
+
+function orderedVisualClips(clips: readonly TimelineClip[]) {
+  const visualClips = clips.filter((clip) => clip.kind !== "group");
+  const legacyOrder = new Map([...visualClips]
+    .sort((a, b) => (a.positionZ ?? 0) - (b.positionZ ?? 0) || b.y - a.y)
+    .map((clip, index) => [clip.id, index]));
+  return [...visualClips].sort((a, b) => {
+    const aOrder = Number.isFinite(a.stackOrder) ? a.stackOrder! : legacyOrder.get(a.id) ?? 0;
+    const bOrder = Number.isFinite(b.stackOrder) ? b.stackOrder! : legacyOrder.get(b.id) ?? 0;
+    return aOrder - bOrder || (legacyOrder.get(a.id) ?? 0) - (legacyOrder.get(b.id) ?? 0);
+  });
 }
 
 function cubicBezierAt(easing: ClipKeyframe["easing"], x: number) {
