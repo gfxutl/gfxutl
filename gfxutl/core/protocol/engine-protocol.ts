@@ -251,7 +251,9 @@ export interface CameraSettings {
 
 export type PreviewView = "camera" | "inspector";
 export type TransformHandleKind = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "rotation";
-export interface PreviewPickResult { clipId?: string; handle?: TransformHandleKind; camera?: boolean }
+export type CameraHandleKind = "translate-x" | "translate-y" | "translate-z" | "rotate-x" | "rotate-y" | "rotate-z";
+export interface CameraHandleTransform { position: [number, number, number]; target: [number, number, number] }
+export interface PreviewPickResult { clipId?: string; handle?: TransformHandleKind; camera?: boolean; cameraHandle?: CameraHandleKind }
 
 export interface RendererSettings {
   previewScale: number;
@@ -436,6 +438,8 @@ export type EngineRequest =
   | { type: "inspector-camera"; operation: "orbit" | "pan"; deltaX: number; deltaY: number }
   | { type: "transform-handles"; clipId?: string }
   | { type: "camera-handles"; visible: boolean }
+  | { type: "camera-handle-drag"; requestId: string; phase: "start"; handle: CameraHandleKind; ndcX: number; ndcY: number }
+  | { type: "camera-handle-drag"; requestId: string; phase: "move" | "end"; ndcX: number; ndcY: number }
   | { type: "pick"; requestId: string; ndcX: number; ndcY: number }
   | { type: "compile-glsl"; requestId: string; source: string }
   | { type: "plugin-load"; requestId: string; plugin: RendererPluginBundle }
@@ -466,7 +470,8 @@ export type EngineResponse =
   | { type: "image-object-count"; count: number }
   | { type: "font-ready"; fontId: string }
   | { type: "video-frame-ready"; clipId: string; timestamp: number }
-  | { type: "pick-result"; requestId: string; clipId?: string; handle?: TransformHandleKind; camera?: boolean }
+  | { type: "pick-result"; requestId: string; clipId?: string; handle?: TransformHandleKind; camera?: boolean; cameraHandle?: CameraHandleKind }
+  | { type: "camera-handle-drag-result"; requestId: string; transform?: CameraHandleTransform }
   | { type: "glsl-compiled"; requestId: string; wgsl: string }
   | { type: "plugin-state"; plugin: RendererPluginInfo; requestId?: string }
   | { type: "cache"; usedBytes: number; maxBytes: number; entries: number }

@@ -1,4 +1,4 @@
-import type { AudioProcessingSpec, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ClipPropertyActionKind, ContextMenuState, EditorLayout, EditorSettings, EditorState, EngineResponse, ExportSettings, FontFaceInfo, GeometryKind, KeyframeProperty, MediaAsset, RenderClip, SceneKeyframe, SceneObjectSpec, SceneSettings, TimelineClip } from "./types";
+import type { AudioProcessingSpec, CameraHandleKind, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ClipPropertyActionKind, ContextMenuState, EditorLayout, EditorSettings, EditorState, EngineResponse, ExportSettings, FontFaceInfo, GeometryKind, KeyframeProperty, MediaAsset, RenderClip, SceneKeyframe, SceneObjectSpec, SceneSettings, TimelineClip } from "./types";
 import { applicableClipActionKinds, DEFAULT_POST_PROCESS_GLSL, resetPatchForClipAction, resolveClipPropertyActions, resolveColorGrading } from "./clip-actions";
 import { EngineClient } from "./engine-client";
 import { VirtualTimeline } from "./virtual-timeline";
@@ -195,6 +195,9 @@ export class EditorController {
   private lastHistoryAt = 0;
   private projectFileHandle?: FileSystemFileHandle;
   private pluginDirectories = new Map<string, FileSystemDirectoryHandle>();
+  private cameraHandleDragQueue: Promise<void> = Promise.resolve();
+  private cameraHandleDragGeneration = 0;
+  private cameraHandleDragTime = 0;
 
   constructor(worker: Worker) {
     this.engine = new EngineClient(worker, (message) => this.onEngineMessage(message));
@@ -1269,6 +1272,41 @@ export class EditorController {
     const time = this.state.currentTime;
     const scene = this.state.background.scene;
     const camera = transformCamera(evaluateCameraAtTime(scene, time), operation, deltaX, deltaY, viewportHeight);
+    this.writeCameraAtTime(camera, time);
+  };
+  beginCameraHandleInteraction = (handle: CameraHandleKind, ndcX: number, ndcY: number) => {
+    if (this.state.playing) return;
+    const generation = ++this.cameraHandleDragGeneration;
+    this.cameraHandleDragTime = this.state.currentTime;
+    this.cameraHandleDragQueue = this.cameraHandleDragQueue.then(() => this.engine.cameraHandleDrag("start", ndcX, ndcY, handle)).then(() => {
+      if (generation !== this.cameraHandleDragGeneration) return;
+    });
+  };
+  moveCameraHandleInteraction = (ndcX: number, ndcY: number) => {
+    const generation = this.cameraHandleDragGeneration;
+    const time = this.cameraHandleDragTime;
+    this.cameraHandleDragQueue = this.cameraHandleDragQueue.then(async () => {
+      const transform = await this.engine.cameraHandleDrag("move", ndcX, ndcY);
+      if (!transform || generation !== this.cameraHandleDragGeneration) return;
+      const camera = evaluateCameraAtTime(this.state.background.scene, time);
+      this.writeCameraAtTime({ ...camera, position: transform.position, target: transform.target }, time);
+    });
+  };
+  finishCameraHandleInteraction = (ndcX: number, ndcY: number, applyTransform = true) => {
+    const generation = this.cameraHandleDragGeneration;
+    const time = this.cameraHandleDragTime;
+    this.cameraHandleDragQueue = this.cameraHandleDragQueue.then(async () => {
+      const transform = await this.engine.cameraHandleDrag("end", ndcX, ndcY);
+      if (generation !== this.cameraHandleDragGeneration) return;
+      if (transform && applyTransform) {
+        const camera = evaluateCameraAtTime(this.state.background.scene, time);
+        this.writeCameraAtTime({ ...camera, position: transform.position, target: transform.target }, time);
+      }
+      if (applyTransform) this.finishCameraInteraction();
+    });
+  };
+  private writeCameraAtTime(camera: CameraSettings, time: number) {
+    const scene = this.state.background.scene;
     const keyframes = (scene.keyframes ?? []).map((keyframe) => ({ ...keyframe, easing: keyframe.easing ? { ...keyframe.easing } : undefined }));
     const tolerance = 0.5 / this.state.fps;
     const selectedCameraKeyframeIds: string[] = [];
@@ -1293,7 +1331,7 @@ export class EditorController {
       backgroundSelected: false,
     });
     this.renderPreview(false);
-  };
+  }
   finishCameraInteraction = () => {
     this.invalidatePreviewCache();
     this.schedulePersistence();

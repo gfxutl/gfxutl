@@ -1,7 +1,7 @@
 import { Camera16Regular as Camera, Dismiss16Regular as X, Eye16Regular as Inspector, Open16Regular as ExternalLink } from "@fluentui/react-icons";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { useEditor } from "../core/interface";
-import type { TimelineClip, TransformHandleKind } from "../core/interface";
+import type { CameraHandleKind, TimelineClip, TransformHandleKind } from "../core/interface";
 import type { MediaAsset } from "../core/interface";
 import { AudioWaveformEditor } from "./audio-waveform-editor";
 import { useI18n } from "../core/i18n";
@@ -18,10 +18,14 @@ export function PreviewPanel() {
   const pickSequenceRef = useRef(0);
   const pendingPickRef = useRef<{ x: number; y: number } | null>(null);
   const inspectorNavigationClickRef = useRef(false);
+  const hoveredCameraHandleRef = useRef<CameraHandleKind | null>(null);
+  const draggingCameraHandleRef = useRef<CameraHandleKind | null>(null);
   const cameraWheelTimerRef = useRef(0);
   const [hoveredClipId, setHoveredClipId] = useState<string | null>(null);
   const [hoveredHandle, setHoveredHandle] = useState<TransformHandleKind | null>(null);
   const [hoveredCamera, setHoveredCamera] = useState(false);
+  const [hoveredCameraHandle, setHoveredCameraHandle] = useState<CameraHandleKind | null>(null);
+  const [draggingCameraHandle, setDraggingCameraHandle] = useState<CameraHandleKind | null>(null);
   const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
   const [inspectorNavigation, setInspectorNavigation] = useState<"orbit" | "pan" | null>(null);
   const [poppedOut, setPoppedOut] = useState(false);
@@ -120,10 +124,16 @@ export function PreviewPanel() {
     setHoveredClipId(null);
     setHoveredHandle(null);
     setHoveredCamera(false);
+    setHoveredCameraHandle(null);
+    hoveredCameraHandleRef.current = null;
   }, [state.playing]);
 
   useEffect(() => {
-    if (!inspectorView) setHoveredCamera(false);
+    if (!inspectorView) {
+      setHoveredCamera(false);
+      setHoveredCameraHandle(null);
+      hoveredCameraHandleRef.current = null;
+    }
   }, [inspectorView]);
 
   const previewObjects = useMemo(() => inspectorView ? [] : state.clips
@@ -138,8 +148,8 @@ export function PreviewPanel() {
   }, [controller, hoveredObject?.clip.id, inspectorView, poppedOut, state.playing]);
 
   useEffect(() => {
-    controller.setCameraHandles(inspectorView && hoveredCamera && !state.playing && !poppedOut);
-  }, [controller, hoveredCamera, inspectorView, poppedOut, state.playing]);
+    controller.setCameraHandles(inspectorView && (hoveredCamera || Boolean(draggingCameraHandle)) && !state.playing && !poppedOut);
+  }, [controller, draggingCameraHandle, hoveredCamera, inspectorView, poppedOut, state.playing]);
 
   useEffect(() => () => {
     controller.setPreviewTransformHandles(undefined);
@@ -161,7 +171,7 @@ export function PreviewPanel() {
   };
 
   const hoverObject = (event: ReactMouseEvent<HTMLDivElement>) => {
-    if (state.playing || draggingClipId) return;
+    if (state.playing || draggingClipId || draggingCameraHandleRef.current) return;
     pendingPickRef.current = { x: event.clientX, y: event.clientY };
     if (pickFrameRef.current !== null) return;
     const element = event.currentTarget;
@@ -175,6 +185,9 @@ export function PreviewPanel() {
         setHoveredClipId(target.clipId ?? null);
         setHoveredHandle(target.handle ?? null);
         setHoveredCamera(Boolean(inspectorView && target.camera));
+        const cameraHandle = inspectorView ? target.cameraHandle ?? null : null;
+        hoveredCameraHandleRef.current = cameraHandle;
+        setHoveredCameraHandle(cameraHandle);
       }
     });
   };
@@ -315,6 +328,54 @@ export function PreviewPanel() {
     window.addEventListener("pointercancel", end, { once: true });
   };
 
+  const beginCameraHandleDrag = (event: ReactPointerEvent<HTMLDivElement>, handle: CameraHandleKind) => {
+    if (!inspectorView || state.playing || poppedOut || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    inspectorNavigationClickRef.current = true;
+    pickSequenceRef.current += 1;
+    const stage = event.currentTarget;
+    const pointerId = event.pointerId;
+    stage.setPointerCapture(pointerId);
+    draggingCameraHandleRef.current = handle;
+    setDraggingCameraHandle(handle);
+    const start = previewNdc(stage, event.clientX, event.clientY);
+    controller.beginCameraHandleInteraction(handle, start.x, start.y);
+    let latestX = event.clientX;
+    let latestY = event.clientY;
+    let moveFrame = 0;
+    let moved = false;
+    const flushMove = () => {
+      moveFrame = 0;
+      const point = previewNdc(stage, latestX, latestY);
+      controller.moveCameraHandleInteraction(point.x, point.y);
+    };
+    const move = (pointer: PointerEvent) => {
+      if (pointer.pointerId !== pointerId) return;
+      if (pointer.clientX === latestX && pointer.clientY === latestY) return;
+      latestX = pointer.clientX;
+      latestY = pointer.clientY;
+      moved = true;
+      if (!moveFrame) moveFrame = requestAnimationFrame(flushMove);
+    };
+    const end = (pointer: PointerEvent) => {
+      if (pointer.pointerId !== pointerId) return;
+      if (moveFrame) cancelAnimationFrame(moveFrame);
+      const point = previewNdc(stage, pointer.clientX, pointer.clientY);
+      controller.finishCameraHandleInteraction(point.x, point.y, moved);
+      draggingCameraHandleRef.current = null;
+      setDraggingCameraHandle(null);
+      if (pointer.type === "pointercancel") inspectorNavigationClickRef.current = false;
+      else window.setTimeout(() => { inspectorNavigationClickRef.current = false; }, 0);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  };
+
   const beginInspectorNavigation = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!inspectorView || state.playing || poppedOut || event.button !== 0) return;
     const operation = event.shiftKey ? "pan" : "orbit";
@@ -377,8 +438,13 @@ export function PreviewPanel() {
   };
 
   const beginStageInteraction = (event: ReactPointerEvent<HTMLDivElement>) => {
-    beginInspectorNavigation(event);
-    if (inspectorView || state.playing || event.button !== 0) return;
+    if (inspectorView) {
+      const cameraHandle = hoveredCameraHandleRef.current;
+      if (cameraHandle && !event.ctrlKey && !event.metaKey) beginCameraHandleDrag(event, cameraHandle);
+      else beginInspectorNavigation(event);
+      return;
+    }
+    if (state.playing || event.button !== 0) return;
     event.preventDefault();
     const element = event.currentTarget;
     const pointer: PreviewPointerStart = {
@@ -412,7 +478,7 @@ export function PreviewPanel() {
         {previewTabs.map((clip) => <div key={clip.id} className={`preview-tab preview-tab-object ${state.activePreviewClipId === clip.id ? "active" : ""}`} role="tab" tabIndex={0} aria-selected={state.activePreviewClipId === clip.id} title={t("{name}のみをプレビュー", { name: clip.name })} onClick={() => controller.setPreviewTab(clip.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); controller.setPreviewTab(clip.id); } }}><span>{clip.name}</span><button type="button" aria-label={t("{name}のプレビューを閉じる", { name: clip.name })} onClick={(event) => { event.stopPropagation(); controller.closePreviewTab(clip.id); }}><X /></button></div>)}
       </div>
       {activeAudioClip && <AudioWaveformEditor clip={activeAudioClip} asset={state.assets.find((asset) => asset.id === activeAudioClip.assetId)} />}
-      <div className={`preview-stage ${inspectorView ? "inspector-view" : ""} ${inspectorNavigation ? `inspector-${inspectorNavigation}` : ""} ${activeAudioClip ? "audio-preview-hidden" : ""} ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""} ${previewCursorClass(hoveredHandle, hoveredObject)}`} ref={stageRef} style={previewStyle} title={inspectorView ? t("ドラッグでカメラ回転 / Shift+ドラッグでカメラ移動 / ホイールでズーム / Ctrl+ドラッグでビュー操作") : undefined} onPointerDown={beginStageInteraction} onWheel={zoomInspectorCamera} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; setHoveredCamera(false); if (!draggingClipId) { setHoveredClipId(null); setHoveredHandle(null); } }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
+      <div className={`preview-stage ${inspectorView ? "inspector-view" : ""} ${inspectorNavigation ? `inspector-${inspectorNavigation}` : ""} ${hoveredCameraHandle ? "camera-handle-hover" : ""} ${draggingCameraHandle ? "camera-handle-dragging" : ""} ${activeAudioClip ? "audio-preview-hidden" : ""} ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""} ${previewCursorClass(hoveredHandle, hoveredObject)}`} ref={stageRef} style={previewStyle} title={inspectorView ? t("カメラギズモをドラッグして軸操作 / ドラッグでカメラ回転 / Shift+ドラッグでカメラ移動 / ホイールでズーム / Ctrl+ドラッグでビュー操作") : undefined} onPointerDown={beginStageInteraction} onWheel={zoomInspectorCamera} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; setHoveredCamera(false); hoveredCameraHandleRef.current = null; setHoveredCameraHandle(null); if (!draggingClipId) { setHoveredClipId(null); setHoveredHandle(null); } }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
         event.preventDefault();
         const rect = event.currentTarget.getBoundingClientRect();
         controller.openContextMenu({
@@ -509,6 +575,11 @@ const THREE_DEGREES = Math.PI / 180;
 function previewWorldPoint(stage: HTMLElement, clientX: number, clientY: number, worldWidth: number, worldHeight: number) {
   const rect = stage.getBoundingClientRect();
   return { x: ((clientX - rect.left) / rect.width - 0.5) * worldWidth, y: (0.5 - (clientY - rect.top) / rect.height) * worldHeight };
+}
+
+function previewNdc(stage: HTMLElement, clientX: number, clientY: number) {
+  const rect = stage.getBoundingClientRect();
+  return { x: (clientX - rect.left) / rect.width * 2 - 1, y: 1 - (clientY - rect.top) / rect.height * 2 };
 }
 
 function previewCursorClass(handle: TransformHandleKind | null, object?: PreviewObjectBounds) {

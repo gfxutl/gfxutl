@@ -7,7 +7,7 @@ import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { clone as cloneSkinned } from "three/addons/utils/SkeletonUtils.js";
 import { ALL_FORMATS, AudioSample, AudioSampleSink, AudioSampleSource, BufferTarget, CanvasSource, Input, Mp4OutputFormat, Output, VideoSampleSink, WebMOutputFormat } from "mediabunny";
-import type { AudioProcessingSpec, ClipKeyframe, EngineRequest, EngineResponse, MediaFileSource, PreviewPickResult, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, TimelinePatch, TimelineSnapshot, TransformHandleKind } from "../protocol/engine-protocol";
+import type { AudioProcessingSpec, CameraHandleKind, ClipKeyframe, EngineRequest, EngineResponse, MediaFileSource, PreviewPickResult, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, TimelinePatch, TimelineSnapshot, TransformHandleKind } from "../protocol/engine-protocol";
 import { RamPreviewCache } from "./ram-preview-cache";
 import { createRenderPipeline, shadowTypeFrom, ThreeRendererCore, toneMappingFrom } from "./three-renderer-core";
 import { ThreeSceneCore } from "./three-scene-core";
@@ -1112,6 +1112,10 @@ function pickSceneObject(ndcX: number, ndcY: number) {
   if (handleHit && transformHandleClipId) {
     return { clipId: transformHandleClipId, handle: handleHit.object.userData.gfxTransformHandleKind as TransformHandleKind } satisfies PreviewPickResult;
   }
+  const cameraHandle = intersections
+    .map((hit) => cameraHandleKind(hit.object))
+    .find((handle): handle is CameraHandleKind => Boolean(handle));
+  if (cameraHandle) return { camera: true, cameraHandle } satisfies PreviewPickResult;
   const cameraHit = intersections.some((hit) => {
     for (let object: THREE.Object3D | null = hit.object; object; object = object.parent) {
       if (object.userData.gfxCameraHandle || object.name === `editor:${sceneSettings.camera.id}`) return true;
@@ -1128,6 +1132,13 @@ function pickSceneObject(ndcX: number, ndcY: number) {
     }
   }
   return {};
+}
+
+function cameraHandleKind(hitObject: THREE.Object3D) {
+  for (let object: THREE.Object3D | null = hitObject; object; object = object.parent) {
+    if (typeof object.userData.gfxCameraHandleKind === "string") return object.userData.gfxCameraHandleKind as CameraHandleKind;
+  }
+  return undefined;
 }
 
 const PICK_COPLANAR_EPSILON = 0.0001;
@@ -2353,6 +2364,17 @@ async function handleMessage(message: EngineRequest) {
       cameraHandlesVisible = message.visible;
       cameraHandles?.sync(graphics.camera, graphics.previewCamera, height, previewView === "inspector" && !playbackActive, cameraHandlesVisible);
       if (previewView === "inspector") graphics.render("inspector");
+    }
+    if (message.type === "camera-handle-drag" && graphics) {
+      let transform;
+      if (message.phase === "start") {
+        const evaluatedCamera = evaluateSceneSettingsAtTime(sceneSettings, lastTimelineTime).camera;
+        cameraHandles?.beginDrag(message.handle, message.ndcX, message.ndcY, evaluatedCamera, graphics.previewCamera);
+      } else {
+        transform = cameraHandles?.dragTo(message.ndcX, message.ndcY, graphics.previewCamera);
+        if (message.phase === "end") cameraHandles?.endDrag();
+      }
+      send({ type: "camera-handle-drag-result", requestId: message.requestId, transform });
     }
     if (message.type === "pick") send({ type: "pick-result", requestId: message.requestId, ...pickSceneObject(message.ndcX, message.ndcY) });
     if (message.type === "compile-glsl") send({ type: "glsl-compiled", requestId: message.requestId, wgsl: await compileGlslWithNaga(message.source) });

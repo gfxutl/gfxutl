@@ -1,4 +1,4 @@
-import type { EngineRequest, EngineResponse, ExportSettings, MediaFileSource, MediaReadGraph, PreviewPickResult, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, SceneSettingsPatch, TimelinePatch, TimelineSnapshot } from "../protocol/engine-protocol";
+import type { CameraHandleKind, CameraHandleTransform, EngineRequest, EngineResponse, ExportSettings, MediaFileSource, MediaReadGraph, PreviewPickResult, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, SceneSettingsPatch, TimelinePatch, TimelineSnapshot } from "../protocol/engine-protocol";
 import type { RendererPluginBundle, RendererPluginInfo } from "../plugins/plugin-types";
 import nagaWasmUrl from "../naga-wasm/pkg/naga_wasm_bg.wasm?url";
 
@@ -15,6 +15,7 @@ export class EngineClient {
   private pendingAudio = new Map<string, { resolve: (value: AudioPreviewChunk[]) => void; reject: (reason: Error) => void }>();
   private pendingThumbnails = new Map<string, { resolve: (value: MediaThumbnail) => void; reject: (reason: Error) => void }>();
   private pendingPicks = new Map<string, (result: PreviewPickResult) => void>();
+  private pendingCameraHandleDrags = new Map<string, (transform?: CameraHandleTransform) => void>();
   private pendingShaders = new Map<string, { resolve: (wgsl: string) => void; reject: (reason: Error) => void }>();
   private pendingPlugins = new Map<string, { resolve: (plugin: RendererPluginInfo) => void; reject: (reason: Error) => void }>();
   private pickInFlight = false;
@@ -51,8 +52,11 @@ export class EngineClient {
       this.pendingThumbnails.get(message.requestId)?.resolve(message);
       this.pendingThumbnails.delete(message.requestId);
     } else if (message.type === "pick-result") {
-      this.pendingPicks.get(message.requestId)?.({ clipId: message.clipId, handle: message.handle, camera: message.camera });
+      this.pendingPicks.get(message.requestId)?.({ clipId: message.clipId, handle: message.handle, camera: message.camera, cameraHandle: message.cameraHandle });
       this.pendingPicks.delete(message.requestId);
+    } else if (message.type === "camera-handle-drag-result") {
+      this.pendingCameraHandleDrags.get(message.requestId)?.(message.transform);
+      this.pendingCameraHandleDrags.delete(message.requestId);
     } else if (message.type === "glsl-compiled") {
       this.pendingShaders.get(message.requestId)?.resolve(message.wgsl);
       this.pendingShaders.delete(message.requestId);
@@ -71,6 +75,7 @@ export class EngineClient {
       this.pendingAudio.get(message.requestId)?.reject(new Error(message.message));
       this.pendingThumbnails.get(message.requestId)?.reject(new Error(message.message));
       this.pendingPicks.get(message.requestId)?.({});
+      this.pendingCameraHandleDrags.get(message.requestId)?.();
       this.pendingShaders.get(message.requestId)?.reject(new Error(message.message));
       this.pendingPlugins.get(message.requestId)?.reject(new Error(message.message));
       this.pending.delete(message.requestId);
@@ -78,6 +83,7 @@ export class EngineClient {
       this.pendingAudio.delete(message.requestId);
       this.pendingThumbnails.delete(message.requestId);
       this.pendingPicks.delete(message.requestId);
+      this.pendingCameraHandleDrags.delete(message.requestId);
       this.pendingShaders.delete(message.requestId);
       this.pendingPlugins.delete(message.requestId);
     }
@@ -264,6 +270,19 @@ export class EngineClient {
 
   setCameraHandles(visible: boolean) {
     this.post({ type: "camera-handles", visible });
+  }
+
+  cameraHandleDrag(phase: "start" | "move" | "end", ndcX: number, ndcY: number, handle?: CameraHandleKind) {
+    const requestId = crypto.randomUUID();
+    return new Promise<CameraHandleTransform | undefined>((resolve) => {
+      this.pendingCameraHandleDrags.set(requestId, resolve);
+      if (phase === "start" && handle) this.post({ type: "camera-handle-drag", requestId, phase, handle, ndcX, ndcY });
+      else if (phase !== "start") this.post({ type: "camera-handle-drag", requestId, phase, ndcX, ndcY });
+      else {
+        this.pendingCameraHandleDrags.delete(requestId);
+        resolve(undefined);
+      }
+    });
   }
 
   compileGlsl(source: string) {
