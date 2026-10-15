@@ -2,15 +2,15 @@ import type { RendererPluginInfo } from "../plugins/plugin-types";
 
 export type TrackKind = "video" | "audio" | "title" | "object" | "group";
 
-export type ClipPropertyActionKind = "transform" | "sceneGraph" | "keyframes" | "crop" | "effects" | "postProcess" | "masks" | "audio" | "speed";
+export type ClipPropertyActionKind = "transform" | "sceneGraph" | "keyframes" | "crop" | "colorGrading" | "effects" | "postProcess" | "masks" | "audio" | "speed";
 
 export interface ClipPropertyAction {
   id: string;
   kind: ClipPropertyActionKind;
 }
 
-import type { AudioProcessingSpec, ClipEffect, ClipKeyframe, ClipMask, ClipPostProcess, ExportSettings, GeometrySpec, SceneMaterialSpec, SceneSettings, SourceIoProfile } from "../protocol/engine-protocol";
-export type { AudioProcessingSpec, BackgroundSettings, BlendMode, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, EngineRequest, EngineResponse, ExportSettings, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, RendererSettings, RendererStats, RenderClip, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, SceneSettingsPatch, SourceIoProfile, TimelinePatch, ToneMappingKind } from "../protocol/engine-protocol";
+import type { AudioProcessingSpec, ClipEffect, ClipKeyframe, ClipMask, ClipPostProcess, ColorGradingSpec, ExportSettings, GeometrySpec, SceneMaterialSpec, SceneSettings, SourceIoProfile } from "../protocol/engine-protocol";
+export type { AudioProcessingSpec, BackgroundSettings, BlendMode, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ColorGradingSpec, EngineRequest, EngineResponse, ExportSettings, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, RendererSettings, RendererStats, RenderClip, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, SceneSettingsPatch, SourceIoProfile, TimelinePatch, ToneMappingKind } from "../protocol/engine-protocol";
 
 export interface MediaAsset {
   id: string;
@@ -62,6 +62,7 @@ export interface TimelineClip {
   audioProcessing?: AudioProcessingSpec;
   ripple?: boolean;
   effects?: ClipEffect[];
+  colorGrading?: ColorGradingSpec;
   postProcess?: ClipPostProcess;
   masks?: ClipMask[];
   keyframes?: ClipKeyframe[];
@@ -169,6 +170,7 @@ export interface EditorState {
   currentTime: number;
   playing: boolean;
   zoom: number;
+  timelineVerticalZoom: number;
   snapEnabled: boolean;
   selectedClipId: string | null;
   selectedClipIds: string[];
@@ -191,7 +193,7 @@ export interface EditorState {
   notice: string | null;
   layout: EditorLayout;
   settings: EditorSettings;
-  leftPanelTab: "media" | "export" | "settings";
+  leftPanelTab: "media" | "export" | "settings" | "plugins";
   exportSettings: ExportSettings;
   exportStatus: "idle" | "exporting" | "done" | "error";
   exportProgress: number;

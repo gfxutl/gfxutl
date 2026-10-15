@@ -19,13 +19,12 @@ import { oneDark } from "@codemirror/theme-one-dark";
 import { drawSelection, dropCursor, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
 import { useEffect, useRef, useState } from "react";
 import { useEditor } from "../core/interface";
-import type { ClipEffect, ClipEffectKind, ClipMask, ClipPropertyAction, ClipPropertyActionKind, GeometryKind, GeometrySpec, KeyframeProperty, MaterialKind, MediaAsset, SceneSettings, TimelineClip } from "../core/interface";
-import { applicableClipActionKinds, CLIP_ACTION_LABELS, DEFAULT_POST_PROCESS_GLSL, resolveClipPropertyActions } from "../core/interface/clip-actions";
+import type { ClipEffect, ClipEffectKind, ClipMask, ClipPropertyAction, ClipPropertyActionKind, ColorGradingSpec, GeometryKind, GeometrySpec, KeyframeProperty, MaterialKind, MediaAsset, SceneSettings, TimelineClip } from "../core/interface";
+import { applicableClipActionKinds, CLIP_ACTION_LABELS, DEFAULT_POST_PROCESS_GLSL, resolveClipPropertyActions, resolveColorGrading } from "../core/interface/clip-actions";
 import { COMPOSITION_SIZE_PRESETS } from "../core/interface/composition-size";
 import { Button } from "./ui/button";
 import { Slider } from "./ui/slider";
 import { FontPicker } from "./font-picker";
-import { PluginPanel } from "./plugin-panel";
 
 const GEOMETRY_OPTIONS: GeometryKind[] = ["box", "capsule", "circle", "cone", "cylinder", "dodecahedron", "icosahedron", "octahedron", "plane", "ring", "sphere", "tetrahedron", "torus", "torusKnot", "lathe", "shape", "extrude", "tube", "polyhedron", "edges", "wireframe", "buffer"];
 const THREE_RAD_TO_DEG = 180 / Math.PI;
@@ -35,6 +34,18 @@ function keyframeProperties(clip: TimelineClip): Array<[KeyframeProperty, string
   const properties = [...BASE_KEYFRAME_PROPERTIES];
   if (clip.kind === "video") properties.push(["cropLeft", "クロップ 左"], ["cropRight", "クロップ 右"], ["cropTop", "クロップ 上"], ["cropBottom", "クロップ 下"]);
   if (clip.kind === "video" || clip.kind === "audio") properties.push(["volume", "音量"], ["pan", "パン"], ["speed", "速度"]);
+  if (clip.kind === "video" && resolveClipPropertyActions(clip).some((action) => action.kind === "colorGrading")) {
+    const labels: Array<[Exclude<keyof ColorGradingSpec, "enabled">, string]> = [
+      ["exposure", "カラー · 露出"], ["temperature", "カラー · 色温度"], ["tint", "カラー · 色かぶり"],
+      ["contrast", "カラー · コントラスト"], ["highlights", "カラー · ハイライト"], ["shadows", "カラー · シャドウ"],
+      ["whites", "カラー · 白レベル"], ["blacks", "カラー · 黒レベル"], ["saturation", "カラー · 彩度"],
+      ["vibrance", "カラー · 自然な彩度"], ["hue", "カラー · 色相"], ["fade", "カラー · フェード"],
+      ["liftRed", "Lift · R"], ["liftGreen", "Lift · G"], ["liftBlue", "Lift · B"],
+      ["gammaRed", "Gamma · R"], ["gammaGreen", "Gamma · G"], ["gammaBlue", "Gamma · B"],
+      ["gainRed", "Gain · R"], ["gainGreen", "Gain · G"], ["gainBlue", "Gain · B"],
+    ];
+    for (const [key, label] of labels) properties.push([`colorGrading.${key}`, label]);
+  }
   if (clip.kind === "title") {
     properties.push(["fontSize", "文字サイズ"], ["textOutlineWidth", "輪郭の太さ"]);
     if (clip.textMode !== "2d") properties.push(["textDepth", "文字の奥行き"]);
@@ -50,6 +61,7 @@ function keyframeProperties(clip: TimelineClip): Array<[KeyframeProperty, string
 }
 
 function keyframeValue(clip: TimelineClip, property: KeyframeProperty) {
+  if (property.startsWith("colorGrading.")) return Number(resolveColorGrading(clip.colorGrading)[property.slice(13) as keyof ColorGradingSpec] ?? 0);
   if (property.startsWith("material.")) return Number((clip.material as unknown as Record<string, unknown> | undefined)?.[property.slice(9)] ?? 0);
   if (property.startsWith("particleSystem.")) return Number((clip.particleSystem as unknown as Record<string, unknown> | undefined)?.[property.slice(15)] ?? 0);
   if (property.startsWith("effect.")) {
@@ -70,6 +82,10 @@ function defaultGeometry(id: string, kind: GeometryKind): GeometrySpec {
   if (kind === "polyhedron") return { id, kind, vertices: [1, 1, 1, -1, -1, 1, -1, 1, -1, 1, -1, -1], indices: [2, 1, 0, 0, 3, 2, 1, 3, 0, 2, 3, 1] };
   if (kind === "edges" || kind === "wireframe") return { id, kind, source: { kind: "box" as const } };
   return { id, kind };
+}
+
+function isVisualClip(clip: TimelineClip) {
+  return clip.kind === "video" || clip.kind === "title" || clip.kind === "object";
 }
 
 function ShapePathEditor({ points, onChange }: { points: Array<[number, number]>; onChange: (points: Array<[number, number]>) => void }) {
@@ -98,8 +114,8 @@ function ShapePathEditor({ points, onChange }: { points: Array<[number, number]>
   </div>;
 }
 
-function NumberField({ label, value, suffix = "", onChange }: { label: string; value: number; suffix?: string; onChange: (value: number) => void }) {
-  return <label className="number-field"><span>{label}</span><div><input type="number" value={value} onChange={(event) => onChange(Number(event.target.value))} />{suffix && <small>{suffix}</small>}</div></label>;
+function NumberField({ label, value, suffix = "", disabled = false, onChange }: { label: string; value: number; suffix?: string; disabled?: boolean; onChange: (value: number) => void }) {
+  return <label className="number-field"><span>{label}</span><div><input type="number" value={value} disabled={disabled} onChange={(event) => onChange(Number(event.target.value))} />{suffix && <small>{suffix}</small>}</div></label>;
 }
 
 function TextureField({ label, assets, value, onChange }: { label: string; assets: MediaAsset[]; value?: string; onChange: (value?: string) => void }) {
@@ -162,7 +178,7 @@ function SceneKeyframeEditor({ scene, currentTime, fps }: { scene: SceneSettings
 
 export function InspectorPanel() {
   const { state, controller } = useEditor();
-  const [tab, setTab] = useState<"properties" | "inspector" | "metadata" | "plugins">("properties");
+  const [tab, setTab] = useState<"properties" | "inspector" | "metadata">("properties");
   const selected = state.clips.find((clip) => clip.id === state.selectedClipId);
   const background = state.backgroundSelected ? state.background : null;
   const asset = state.assets.find((item) => item.id === selected?.assetId) ?? state.assets.find((item) => item.id === state.selectedAssetId);
@@ -176,12 +192,11 @@ export function InspectorPanel() {
         <button className={tab === "properties" ? "active" : ""} onClick={() => setTab("properties")}>プロパティ</button>
         <button className={tab === "inspector" ? "active" : ""} onClick={() => setTab("inspector")}>インスペクター</button>
         <button className={tab === "metadata" ? "active" : ""} onClick={() => setTab("metadata")}>メタデータ</button>
-        <button className={tab === "plugins" ? "active" : ""} onClick={() => setTab("plugins")}>プラグイン</button>
       </div>
-      {tab !== "inspector" && tab !== "plugins" && <div className="selected-clip">
+      {tab !== "inspector" && <div className="selected-clip">
         <div><strong>{selected?.name ?? background?.name ?? asset?.name ?? "項目未選択"}</strong></div>
       </div>}
-      {tab === "plugins" ? <PluginPanel /> : tab === "inspector" ? <RealtimeLayerInspector clips={state.clips} currentTime={state.currentTime} fps={state.fps} selectedClipId={state.selectedClipId} onSelect={controller.selectClip} /> : tab === "metadata" ? background ? <div className="metadata-view"><div className="metadata-row"><span>名前</span><strong>背景オブジェクト</strong></div><div className="metadata-row"><span>種類</span><strong>SCENE BACKGROUND</strong></div><div className="metadata-row"><span>表示範囲</span><strong>プロジェクト全体</strong></div></div> : <MetadataView clip={selected} asset={asset} fps={state.fps} /> : background ? <div className="inspector-section background-inspector">
+      {tab === "inspector" ? <RealtimeLayerInspector clips={state.clips} currentTime={state.currentTime} fps={state.fps} selectedClipId={state.selectedClipId} onSelect={controller.selectClip} onToggleVisibility={(id, visible) => controller.updateClip(id, { visible })} /> : tab === "metadata" ? background ? <div className="metadata-view"><div className="metadata-row"><span>名前</span><strong>背景オブジェクト</strong></div><div className="metadata-row"><span>種類</span><strong>SCENE BACKGROUND</strong></div><div className="metadata-row"><span>表示範囲</span><strong>プロジェクト全体</strong></div></div> : <MetadataView clip={selected} asset={asset} fps={state.fps} /> : background ? <div className="inspector-section background-inspector">
         <div className="section-title"><span>背景</span><small>THREE.SCENE</small></div>
         <div className="section-body">
           <label className="select-field"><span>サイズ</span><select aria-label="サイズプリセット" value={COMPOSITION_SIZE_PRESETS.some(({ width, height }) => width === background.width && height === background.height) ? `${background.width}x${background.height}` : "custom"} onChange={(event) => {
@@ -246,7 +261,20 @@ export function InspectorPanel() {
           <small>境界をまたぐ配置は禁止されます。オブジェクトは完全に内側へ入ると自動的にこのグループへ所属し、外側へ出ると所属が解除されます。</small>
         </div>
       </div> : <>
-      <div className="property-base-heading"><span>素体</span><small>{selected.kind.toUpperCase()} OBJECT</small></div>
+      <div className="property-base-heading">
+        <span>素体</span>
+        <div>
+          {isVisualClip(selected) && <button
+            type="button"
+            className={`object-visibility-toggle ${selected.visible === false ? "off" : ""}`}
+            aria-label={`${selected.name}を${selected.visible === false ? "表示" : "非表示"}にする`}
+            aria-pressed={selected.visible !== false}
+            title={selected.visible === false ? "非表示（クリックで表示）" : "表示中（クリックで非表示）"}
+            onClick={() => controller.updateClip(selected.id, { visible: selected.visible === false })}
+          >{selected.visible === false ? <EyeOff /> : <Eye />}<span>{selected.visible === false ? "非表示" : "表示"}</span></button>}
+          <small>{selected.kind.toUpperCase()} OBJECT</small>
+        </div>
+      </div>
       {selected.kind === "title" && <div className="inspector-section text-inspector">
         <div className="section-title"><span>{selected.textMode === "2d" ? "2D Text" : "3D Text"}</span><small>{selected.textMode === "2d" ? "CANVAS 2D" : "THREE.TEXT"}</small></div>
         <div className="section-body">
@@ -366,7 +394,6 @@ function ClipPropertyActionBody({ action, clip, allClips }: { action: ClipProper
     </>;
     case "sceneGraph": return <>
       <label className="select-field"><span>親オブジェクト</span><select value={clip.parentId ?? ""} onChange={(event) => controller.updateClip(clip.id, { parentId: event.target.value || undefined })}><option value="">Scene root</option>{allClips.filter((item) => item.id !== clip.id && (item.kind === "title" || item.kind === "object")).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
-      <label className="checkbox-field"><input type="checkbox" checked={clip.visible ?? true} onChange={(event) => controller.updateClip(clip.id, { visible: event.target.checked })} /> 表示</label>
       <NumberField label="レイヤー" value={clip.layer ?? 0} onChange={(layer) => controller.updateClip(clip.id, { layer: Math.max(0, Math.min(31, Math.floor(layer))) })} />
     </>;
     case "keyframes": return <>
@@ -380,12 +407,68 @@ function ClipPropertyActionBody({ action, clip, allClips }: { action: ClipProper
       </div>)}</div>
     </>;
     case "crop": return <div className="field-grid crop-grid"><NumberField label="左" value={clip.cropLeft ?? 0} onChange={(cropLeft) => controller.updateClip(clip.id, { cropLeft })} /><NumberField label="右" value={clip.cropRight ?? 0} onChange={(cropRight) => controller.updateClip(clip.id, { cropRight })} /><NumberField label="上" value={clip.cropTop ?? 0} onChange={(cropTop) => controller.updateClip(clip.id, { cropTop })} /><NumberField label="下" value={clip.cropBottom ?? 0} onChange={(cropBottom) => controller.updateClip(clip.id, { cropBottom })} /></div>;
+    case "colorGrading": return <ColorGradingEditor clip={clip} />;
     case "effects": return <EffectStack clipId={clip.id} effects={clip.effects ?? []} embedded />;
     case "postProcess": return <PostProcessEditor clip={clip} />;
     case "masks": return <MaskStack clipId={clip.id} masks={clip.masks ?? []} embedded />;
     case "audio": return <><label className="range-field"><span>音量</span><Slider value={clip.volume ?? 0} min={-60} max={12} onChange={(event) => controller.updateClip(clip.id, { volume: Number(event.target.value) })} /><output>{(clip.volume ?? 0).toFixed(1)} dB</output></label><label className="range-field"><span>パン</span><Slider value={clip.pan ?? 0} min={-100} max={100} onChange={(event) => controller.updateClip(clip.id, { pan: Number(event.target.value) })} /><output>{clip.pan ? `${clip.pan > 0 ? "R" : "L"} ${Math.abs(clip.pan)}` : "中央"}</output></label></>;
     case "speed": return <div className="speed-row"><div><input type="number" aria-label="速度" value={clip.speed ?? 100} min={1} max={1000} onChange={(event) => controller.updateClip(clip.id, { speed: Number(event.target.value) })} /><span>%</span></div><label><input type="checkbox" checked={clip.ripple ?? true} onChange={(event) => controller.updateClip(clip.id, { ripple: event.target.checked })} /> リップル</label></div>;
   }
+}
+
+type ColorGradingNumberKey = Exclude<keyof ColorGradingSpec, "enabled">;
+
+const COLOR_GRADING_PRESETS: Record<string, Partial<ColorGradingSpec>> = {
+  neutral: {},
+  warm: { temperature: 24, tint: 5, contrast: 8, vibrance: 12, highlights: -8 },
+  cool: { temperature: -24, tint: -3, contrast: 10, saturation: -4, shadows: 8 },
+  cinema: { contrast: 18, highlights: -20, shadows: 14, blacks: -10, saturation: -8, vibrance: 18, fade: 7, liftBlue: 5, gainRed: 7 },
+  faded: { contrast: -12, highlights: -14, shadows: 24, blacks: 18, saturation: -18, fade: 28 },
+};
+
+function ColorGradingEditor({ clip }: { clip: TimelineClip }) {
+  const { controller } = useEditor();
+  const grading = resolveColorGrading(clip.colorGrading);
+  const update = (patch: Partial<ColorGradingSpec>) => controller.updateClip(clip.id, { colorGrading: { ...grading, ...patch } });
+  const slider = (key: ColorGradingNumberKey, label: string, minimum: number, maximum: number, suffix = "", step = 1) => <label className="range-field" key={key}>
+    <span>{label}</span>
+    <Slider aria-label={label} value={grading[key]} min={minimum} max={maximum} step={step} disabled={!grading.enabled} onChange={(event) => update({ [key]: Number(event.target.value) })} />
+    <output>{grading[key]}{suffix}</output>
+  </label>;
+  const channel = (key: ColorGradingNumberKey, label: string) => <NumberField key={key} label={label} value={grading[key]} suffix="%" disabled={!grading.enabled} onChange={(value) => update({ [key]: Math.max(-100, Math.min(100, value)) })} />;
+  return <div className={`color-grading-editor ${grading.enabled ? "" : "disabled"}`}>
+    <div className="color-grading-toolbar">
+      <label><input type="checkbox" checked={grading.enabled} onChange={(event) => update({ enabled: event.target.checked })} /> 有効</label>
+      <select aria-label="カラープリセット" defaultValue="" onChange={(event) => { update({ ...resolveColorGrading(), ...COLOR_GRADING_PRESETS[event.target.value], enabled: grading.enabled }); event.currentTarget.value = ""; }}>
+        <option value="" disabled>プリセット</option><option value="neutral">ニュートラル</option><option value="warm">ウォーム</option><option value="cool">クール</option><option value="cinema">シネマ</option><option value="faded">フェード</option>
+      </select>
+      <Button size="sm" variant="ghost" onClick={() => update({ ...resolveColorGrading(), enabled: grading.enabled })}>リセット</Button>
+    </div>
+    <div className="color-grading-group"><strong>基本補正</strong>
+      {slider("exposure", "露出", -5, 5, " EV", 0.1)}
+      {slider("temperature", "色温度", -100, 100)}
+      {slider("tint", "色かぶり", -100, 100)}
+      {slider("contrast", "コントラスト", -100, 100)}
+    </div>
+    <div className="color-grading-group"><strong>トーン</strong>
+      {slider("highlights", "ハイライト", -100, 100)}
+      {slider("shadows", "シャドウ", -100, 100)}
+      {slider("whites", "白レベル", -100, 100)}
+      {slider("blacks", "黒レベル", -100, 100)}
+    </div>
+    <div className="color-grading-group"><strong>カラー</strong>
+      {slider("saturation", "彩度", -100, 100)}
+      {slider("vibrance", "自然な彩度", -100, 100)}
+      {slider("hue", "色相", -180, 180, "°")}
+      {slider("fade", "フェード", 0, 100, "%")}
+    </div>
+    <div className="color-grading-group color-wheels"><strong>Lift / Gamma / Gain</strong>
+      <small>各トーン域の RGB バランス</small>
+      <div className="color-channel-row"><b>Lift</b>{channel("liftRed", "R")}{channel("liftGreen", "G")}{channel("liftBlue", "B")}</div>
+      <div className="color-channel-row"><b>Gamma</b>{channel("gammaRed", "R")}{channel("gammaGreen", "G")}{channel("gammaBlue", "B")}</div>
+      <div className="color-channel-row"><b>Gain</b>{channel("gainRed", "R")}{channel("gainGreen", "G")}{channel("gainBlue", "B")}</div>
+    </div>
+  </div>;
 }
 
 const POST_PROCESS_PRESETS = {
@@ -471,12 +554,13 @@ function GlslCodeEditor({ value, onChange, onSubmit }: { value: string; onChange
   return <div className="glsl-code-editor" ref={hostRef} />;
 }
 
-function RealtimeLayerInspector({ clips, currentTime, fps, selectedClipId, onSelect }: {
+function RealtimeLayerInspector({ clips, currentTime, fps, selectedClipId, onSelect, onToggleVisibility }: {
   clips: TimelineClip[];
   currentTime: number;
   fps: number;
   selectedClipId: string | null;
   onSelect: (id: string) => void;
+  onToggleVisibility: (id: string, visible: boolean) => void;
 }) {
   const names = new Map(clips.map((clip) => [clip.id, clip.name]));
   const activeLayers = clips
@@ -495,28 +579,34 @@ function RealtimeLayerInspector({ clips, currentTime, fps, selectedClipId, onSel
         const elapsed = Math.max(0, currentTime - clip.start);
         const progress = Math.max(0, Math.min(100, elapsed / Math.max(0.001, clip.duration) * 100));
         const hidden = clip.visible === false;
-        return <button
-          type="button"
+        return <div
           className={`layer-inspector-item ${clip.id === selectedClipId ? "selected" : ""} ${hidden ? "hidden" : ""}`}
-          aria-label={`${clip.name}レイヤーを選択`}
-          aria-pressed={clip.id === selectedClipId}
-          onClick={() => onSelect(clip.id)}
           key={clip.id}
         >
-          <span className="layer-rank">{String(index + 1).padStart(2, "0")}</span>
-          <span className="layer-color" style={{ background: clip.color }} />
-          <span className="layer-main">
-            <span className="layer-name"><strong>{clip.name}</strong><small>{kindLabel[clip.kind]}{hidden ? " · 非表示" : ""}</small></span>
-            <span className="layer-progress"><i style={{ width: `${progress}%`, background: clip.color }} /></span>
-            <span className="layer-metrics">
-              <span>Y {Math.round(clip.y)}</span>
-              <span>Z {(clip.positionZ ?? 0).toFixed(1)}</span>
-              <span>3D L{clip.layer ?? 0}</span>
-              <span>{elapsed.toFixed(2)} / {clip.duration.toFixed(2)}s</span>
+          <button type="button" className="layer-inspector-select" aria-label={`${clip.name}レイヤーを選択`} aria-pressed={clip.id === selectedClipId} onClick={() => onSelect(clip.id)}>
+            <span className="layer-rank">{String(index + 1).padStart(2, "0")}</span>
+            <span className="layer-color" style={{ background: clip.color }} />
+            <span className="layer-main">
+              <span className="layer-name"><strong>{clip.name}</strong><small>{kindLabel[clip.kind]}{hidden ? " · 非表示" : ""}</small></span>
+              <span className="layer-progress"><i style={{ width: `${progress}%`, background: clip.color }} /></span>
+              <span className="layer-metrics">
+                <span>Y {Math.round(clip.y)}</span>
+                <span>Z {(clip.positionZ ?? 0).toFixed(1)}</span>
+                <span>3D L{clip.layer ?? 0}</span>
+                <span>{elapsed.toFixed(2)} / {clip.duration.toFixed(2)}s</span>
+              </span>
+              {(clip.groupId || clip.parentId) && <span className="layer-parent"><ArrowHookDownRight16Regular />{names.get(clip.groupId ?? clip.parentId!) ?? "親レイヤー"}</span>}
             </span>
-            {(clip.groupId || clip.parentId) && <span className="layer-parent"><ArrowHookDownRight16Regular />{names.get(clip.groupId ?? clip.parentId!) ?? "親レイヤー"}</span>}
-          </span>
-        </button>;
+          </button>
+          {isVisualClip(clip) && <button
+            type="button"
+            className={`layer-visibility-toggle ${hidden ? "off" : ""}`}
+            aria-label={`${clip.name}を${hidden ? "表示" : "非表示"}にする`}
+            aria-pressed={!hidden}
+            title={hidden ? "非表示（クリックで表示）" : "表示中（クリックで非表示）"}
+            onClick={() => onToggleVisibility(clip.id, hidden)}
+          >{hidden ? <EyeOff /> : <Eye />}</button>}
+        </div>;
       })}
     </div>}
   </div>;

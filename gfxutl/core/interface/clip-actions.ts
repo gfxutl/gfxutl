@@ -1,4 +1,5 @@
 import type { ClipPropertyAction, ClipPropertyActionKind, TimelineClip } from "./types";
+import type { ColorGradingSpec } from "../protocol/engine-protocol";
 
 export const DEFAULT_POST_PROCESS_GLSL = `vec4 gfxPostProcess(vec4 color, vec2 uv, float time) {
   return color;
@@ -9,6 +10,7 @@ export const CLIP_ACTION_LABELS: Record<ClipPropertyActionKind, string> = {
   sceneGraph: "シーングラフ",
   keyframes: "キーフレーム",
   crop: "クロップ",
+  colorGrading: "カラーグレーディング",
   effects: "効果",
   postProcess: "ポストプロセス",
   masks: "マスク",
@@ -16,7 +18,36 @@ export const CLIP_ACTION_LABELS: Record<ClipPropertyActionKind, string> = {
   speed: "速度",
 };
 
-const DEFAULT_ORDER: ClipPropertyActionKind[] = ["transform", "sceneGraph", "keyframes", "crop", "effects", "postProcess", "masks", "audio", "speed"];
+const DEFAULT_ORDER: ClipPropertyActionKind[] = ["transform", "sceneGraph", "keyframes", "crop", "colorGrading", "effects", "postProcess", "masks", "audio", "speed"];
+
+export const DEFAULT_COLOR_GRADING: Readonly<ColorGradingSpec> = {
+  enabled: true,
+  exposure: 0,
+  temperature: 0,
+  tint: 0,
+  contrast: 0,
+  highlights: 0,
+  shadows: 0,
+  whites: 0,
+  blacks: 0,
+  saturation: 0,
+  vibrance: 0,
+  hue: 0,
+  fade: 0,
+  liftRed: 0,
+  liftGreen: 0,
+  liftBlue: 0,
+  gammaRed: 0,
+  gammaGreen: 0,
+  gammaBlue: 0,
+  gainRed: 0,
+  gainGreen: 0,
+  gainBlue: 0,
+};
+
+export function resolveColorGrading(value?: Partial<ColorGradingSpec>): ColorGradingSpec {
+  return { ...DEFAULT_COLOR_GRADING, ...value };
+}
 
 export function applicableClipActionKinds(clip: TimelineClip): ClipPropertyActionKind[] {
   if (clip.kind === "group") return [];
@@ -24,6 +55,7 @@ export function applicableClipActionKinds(clip: TimelineClip): ClipPropertyActio
     if (kind === "transform") return true;
     if (kind === "sceneGraph") return clip.kind === "title" || clip.kind === "object";
     if (kind === "keyframes") return clip.kind !== "audio";
+    if (kind === "colorGrading") return clip.kind === "video";
     if (kind === "crop" || kind === "audio" || kind === "speed") return clip.kind !== "title" && clip.kind !== "object";
     if (kind === "effects") return clip.kind !== "audio" && !clip.particleSystem;
     if (kind === "postProcess") return clip.kind === "video";
@@ -52,6 +84,7 @@ export function resetPatchForClipAction(kind: ClipPropertyActionKind): Partial<T
     case "sceneGraph": return { parentId: undefined, visible: true, layer: 0 };
     case "keyframes": return { keyframes: [] };
     case "crop": return { cropLeft: 0, cropRight: 0, cropTop: 0, cropBottom: 0 };
+    case "colorGrading": return { colorGrading: undefined };
     case "effects": return { effects: [] };
     case "postProcess": return { postProcess: undefined };
     case "masks": return { masks: [] };

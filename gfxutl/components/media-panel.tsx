@@ -27,6 +27,7 @@ import { Button } from "./ui/button";
 import { Tooltip } from "./ui/tooltip";
 import { ExportPanel } from "./export-panel";
 import { SettingsPanel } from "./settings-panel";
+import { PluginPanel } from "./plugin-panel";
 
 type ExplorerNode = {
   id: string;
@@ -328,8 +329,9 @@ export function MediaPanel() {
       <button className={state.leftPanelTab === "media" ? "active" : ""} onClick={() => controller.setLeftPanelTab("media")}>メディア</button>
       <button className={state.leftPanelTab === "export" ? "active" : ""} onClick={() => controller.setLeftPanelTab("export")}>出力</button>
       <button className={state.leftPanelTab === "settings" ? "active" : ""} onClick={() => controller.setLeftPanelTab("settings")}>設定</button>
+      <button className={state.leftPanelTab === "plugins" ? "active" : ""} onClick={() => controller.setLeftPanelTab("plugins")}>プラグイン</button>
     </div>
-    {state.leftPanelTab === "export" ? <ExportPanel /> : state.leftPanelTab === "settings" ? <SettingsPanel /> : <div className="media-explorer">
+    {state.leftPanelTab === "plugins" ? <PluginPanel /> : state.leftPanelTab === "export" ? <ExportPanel /> : state.leftPanelTab === "settings" ? <SettingsPanel /> : <div className="media-explorer">
       <div className="media-toolbar">
         <Button size="icon" onClick={() => void openDirectory()} aria-label="フォルダを開く" title="メディアフォルダを開く"><FolderOpen /></Button>
         <Tooltip label="単体ファイルを読み込む"><Button size="icon" variant="ghost" onClick={controller.openMedia} aria-label="ファイルを読み込む"><Plus /></Button></Tooltip>

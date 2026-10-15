@@ -1,11 +1,11 @@
 import type { AudioProcessingSpec, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ClipPropertyActionKind, ContextMenuState, EditorLayout, EditorSettings, EditorState, EngineResponse, ExportSettings, FontFaceInfo, GeometryKind, KeyframeProperty, MediaAsset, RenderClip, SceneKeyframe, SceneObjectSpec, SceneSettings, TimelineClip } from "./types";
-import { applicableClipActionKinds, DEFAULT_POST_PROCESS_GLSL, resetPatchForClipAction, resolveClipPropertyActions } from "./clip-actions";
+import { applicableClipActionKinds, DEFAULT_POST_PROCESS_GLSL, resetPatchForClipAction, resolveClipPropertyActions, resolveColorGrading } from "./clip-actions";
 import { EngineClient } from "./engine-client";
 import { VirtualTimeline } from "./virtual-timeline";
 import { assignTimelineGroups, expandGroupToValidBoundary, hasGroupBoundaryCrossing, MIN_GROUP_HEIGHT, placeTimelineClip, timelineGroupDescendants } from "./timeline-groups";
 import { loadHandleProjects, saveHandleProject } from "../persistence/handle-project-store";
 import { createProjectDocument, parseProjectDocument, type ProjectDocument } from "../project/project-document";
-import { clampTimelineZoom } from "./timeline-zoom";
+import { clampTimelineVerticalZoom, clampTimelineZoom } from "./timeline-zoom";
 import { MediaReadPlanner } from "./media-read-graph";
 import { resolveAudioProcessing } from "./audio-processing";
 import { DEFAULT_COMPOSITION_SIZE, normalizeBackgroundSize, normalizeCompositionDimension } from "./composition-size";
@@ -73,6 +73,7 @@ const initialState: EditorState = {
   currentTime: 0,
   playing: false,
   zoom: 1,
+  timelineVerticalZoom: 1,
   snapEnabled: true,
   selectedClipId: null,
   selectedClipIds: [],
@@ -164,6 +165,7 @@ export class EditorController {
   private lastPlaybackFrame = -1;
   private renderClipSource: readonly TimelineClip[] | null = null;
   private renderClipCache: RenderClip[] = [];
+  private renderClipContextSignature = "";
   private previewMetricTimer = 0;
   private pendingPreviewFrames = 0;
   private pendingCachedFrames = 0;
@@ -760,11 +762,18 @@ export class EditorController {
   }
 
   private getRenderClips(): RenderClip[] {
-    if (this.renderClipSource === this.state.clips) return this.renderClipCache;
+    const renderClipContextSignature = [
+      this.state.background.width,
+      this.state.background.height,
+      this.state.background.scene.camera.orthographicHeight,
+      this.state.background.scene.camera.zoom,
+    ].join(":");
+    if (this.renderClipSource === this.state.clips && this.renderClipContextSignature === renderClipContextSignature) return this.renderClipCache;
     const visualClips = this.state.clips.filter((clip) => clip.kind !== "group");
     const depth = new Map(orderedVisualClips(visualClips)
       .map((clip, index) => [clip.id, 1_000 + index]));
     this.renderClipSource = this.state.clips;
+    this.renderClipContextSignature = renderClipContextSignature;
     this.renderClipCache = visualClips.map((clip) => ({
       id: clip.id,
       assetId: clip.assetId,
@@ -793,6 +802,7 @@ export class EditorController {
       cropTop: clip.cropTop ?? 0,
       cropBottom: clip.cropBottom ?? 0,
       effects: clip.effects ?? [],
+      colorGrading: resolveColorGrading(clip.colorGrading),
       postProcess: clip.postProcess,
       masks: clip.masks ?? [],
       keyframes: clip.keyframes ?? [],
@@ -809,6 +819,10 @@ export class EditorController {
     if (clip.kind !== "title" && clip.kind !== "object") return undefined;
     if (clip.particleSystem) return undefined;
     const isText2D = clip.kind === "title" && clip.textMode === "2d";
+    const visual = applySceneClipEffects(clip);
+    const previewPixelsPerWorldUnit = this.state.background.height
+      / Math.max(0.001, this.state.background.scene.camera.orthographicHeight)
+      * Math.max(0.001, this.state.background.scene.camera.zoom);
     const geometry = clip.kind === "title"
       ? isText2D
         ? {
@@ -816,6 +830,7 @@ export class EditorController {
             fontId: clip.fontId, fontFamily: clip.fontFamily, size: clip.fontSize ?? 1.2,
             color: clip.textColor ?? 0x202020, outlineColor: clip.textOutlineColor ?? 0xffffff,
             outlineWidth: clip.textOutlineWidth ?? 0,
+            rasterPixelsPerUnit: previewPixelsPerWorldUnit * Math.max(visual.scaleX, visual.scaleY),
           }
         : {
             id: `${clip.id}:text`, kind: "text" as const, text: clip.text ?? clip.name,
@@ -824,7 +839,6 @@ export class EditorController {
           }
       : clip.geometry;
     if (!geometry) return undefined;
-    const visual = applySceneClipEffects(clip);
     const instanceCount = Math.max(1, Math.min(1_000, Math.floor(clip.instanceCount ?? 1)));
     const instanceSpacing = clip.instanceSpacing ?? 2.5;
     return {
@@ -928,6 +942,7 @@ export class EditorController {
 
   nudge = (frames: number) => this.setTime(this.state.currentTime + frames / this.state.fps);
   setZoom = (zoom: number) => this.update({ zoom: clampTimelineZoom(zoom) });
+  setTimelineVerticalZoom = (zoom: number) => this.update({ timelineVerticalZoom: clampTimelineVerticalZoom(zoom) });
   toggleSnap = () => this.update({ snapEnabled: !this.state.snapEnabled });
   toggleLoopPlayback = () => this.update({ loopPlayback: !this.state.loopPlayback });
   addMarker = (time = this.state.currentTime, label?: string) => {
@@ -1327,6 +1342,7 @@ export class EditorController {
     } : undefined;
     this.updateClip(id, {
       ...resetPatchForClipAction(kind),
+      ...(kind === "colorGrading" ? { colorGrading: resolveColorGrading() } : {}),
       ...(postProcess ? { postProcess } : {}),
       propertyActions: [...actions, { id: crypto.randomUUID(), kind }],
     });
@@ -1341,6 +1357,7 @@ export class EditorController {
     if (!action) return;
     this.updateClip(id, {
       ...resetPatchForClipAction(action.kind),
+      ...(action.kind === "colorGrading" ? { keyframes: (clip.keyframes ?? []).filter((keyframe) => !keyframe.property.startsWith("colorGrading.")) } : {}),
       propertyActions: actions.filter((item) => item.id !== actionId),
     });
   };

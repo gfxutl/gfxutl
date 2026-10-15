@@ -3,6 +3,8 @@ import {
   ChevronDoubleLeft16Regular as ChevronsLeft,
   ChevronDoubleRight16Regular as ChevronsRight,
   Cube16Regular,
+  Eye16Regular as Eye,
+  EyeOff16Regular as EyeOff,
   FolderList16Regular,
   FullScreenMaximize16Regular as Expand,
   MusicNote216Regular,
@@ -11,11 +13,12 @@ import {
   Pause16Regular as Pause,
   Play16Regular as Play,
   Previous16Regular as SkipBack,
+  SpeakerMute16Regular as SpeakerMute,
   TextT12Regular,
   VideoClip16Regular,
 } from "@fluentui/react-icons";
-import { memo, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { clampTimelineZoom, MIN_GROUP_HEIGHT, timelineClipHeight, timelineGroupDescendants, useEditor } from "../core/interface";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { clampTimelineVerticalZoom, clampTimelineZoom, MIN_GROUP_HEIGHT, timelineClipHeight, timelineGroupDescendants, useEditor } from "../core/interface";
 import type { TimelineClip } from "../core/interface";
 
 const MIN_WORKSPACE_HEIGHT = 720;
@@ -32,17 +35,30 @@ interface AlignmentSuggestion {
   targetEdge: TimelineEdge;
 }
 
+function isVisualClip(clip: TimelineClip) {
+  return clip.kind === "video" || clip.kind === "title" || clip.kind === "object";
+}
+
+function zoomAnchorScrollLeft(time: number, pointerX: number, zoom: number, duration: number, viewportWidth: number) {
+  const desired = time * BASE_PX_PER_SECOND * zoom - pointerX;
+  const maximum = Math.max(0, duration * BASE_PX_PER_SECOND * zoom + 160 - viewportWidth);
+  return Math.max(0, Math.min(maximum, desired));
+}
+
 export function TimelinePanel() {
   const { state, controller } = useEditor();
   const pxPerSecond = BASE_PX_PER_SECOND * state.zoom;
   const panelRef = useRef<HTMLElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const pendingZoomAnchorRef = useRef<{ zoom: number; time: number; pointerX: number } | null>(null);
+  const pendingVerticalZoomAnchorRef = useRef<{ zoom: number; y: number; pointerY: number } | null>(null);
   const [dropPoint, setDropPoint] = useState<{ x: number; y: number } | null>(null);
   const [selectionBox, setSelectionBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const [cursorGuideX, setCursorGuideX] = useState<number | null>(null);
   const [alignmentSuggestion, setAlignmentSuggestion] = useState<AlignmentSuggestion | null>(null);
   const resizableAssetIds = useMemo(() => new Set(state.assets.filter((asset) => asset.kind === "image").map((asset) => asset.id)), [state.assets]);
-  const workspaceHeight = useMemo(() => Math.max(MIN_WORKSPACE_HEIGHT, ...state.clips.map((clip) => clip.y + timelineClipHeight(clip) + 48)), [state.clips]);
+  const logicalWorkspaceHeight = useMemo(() => Math.max(...state.clips.map((clip) => clip.y + timelineClipHeight(clip) + 48), MIN_WORKSPACE_HEIGHT), [state.clips]);
+  const workspaceHeight = Math.max(MIN_WORKSPACE_HEIGHT, logicalWorkspaceHeight * state.timelineVerticalZoom);
   const nestingDepths = useMemo(() => timelineNestingDepths(state.clips), [state.clips]);
   const orderedClips = useMemo(() => [...state.clips].sort((a, b) => {
     if (a.kind !== b.kind && (a.kind === "group" || b.kind === "group")) return a.kind === "group" ? -1 : 1;
@@ -50,31 +66,71 @@ export function TimelinePanel() {
   }), [nestingDepths, state.clips]);
   const workspaceWidth = state.duration * pxPerSecond + 160;
 
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current;
+    const anchor = pendingZoomAnchorRef.current;
+    if (!scroll || !anchor || anchor.zoom !== state.zoom) return;
+    scroll.scrollLeft = zoomAnchorScrollLeft(anchor.time, anchor.pointerX, state.zoom, state.duration, scroll.clientWidth);
+    pendingZoomAnchorRef.current = null;
+  }, [state.duration, state.zoom]);
+
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current;
+    const anchor = pendingVerticalZoomAnchorRef.current;
+    if (!scroll || !anchor || anchor.zoom !== state.timelineVerticalZoom) return;
+    const desired = anchor.y * state.timelineVerticalZoom - anchor.pointerY;
+    scroll.scrollTop = Math.max(0, Math.min(scroll.scrollHeight - scroll.clientHeight, desired));
+    pendingVerticalZoomAnchorRef.current = null;
+  }, [state.timelineVerticalZoom, workspaceHeight]);
+
   useEffect(() => {
     const panel = panelRef.current;
     const scroll = scrollRef.current;
     if (!panel || !scroll) return;
     const zoomAtPointer = (event: WheelEvent) => {
+      if (event.shiftKey) {
+        event.preventDefault();
+        const rect = scroll.getBoundingClientRect();
+        const pointerY = Math.max(0, Math.min(scroll.clientHeight, event.clientY - rect.top));
+        const snapshot = controller.getSnapshot();
+        const currentZoom = snapshot.timelineVerticalZoom;
+        const pendingAnchor = pendingVerticalZoomAnchorRef.current;
+        const currentScrollTop = pendingAnchor?.zoom === currentZoom
+          ? Math.max(0, pendingAnchor.y * currentZoom - pendingAnchor.pointerY)
+          : scroll.scrollTop;
+        const yAtPointer = (currentScrollTop + pointerY) / currentZoom;
+        const wheelDelta = event.deltaY || event.deltaX;
+        const delta = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? wheelDelta * 16 : wheelDelta;
+        const nextZoom = clampTimelineVerticalZoom(currentZoom * Math.exp(-delta * 0.0025));
+        if (nextZoom === currentZoom) return;
+        pendingVerticalZoomAnchorRef.current = { zoom: nextZoom, y: yAtPointer, pointerY };
+        controller.setTimelineVerticalZoom(nextZoom);
+        return;
+      }
       // Browsers expose a trackpad pinch as a ctrlKey WheelEvent. A physical
       // mouse reaches the same path only while the user is holding Ctrl.
       if (!event.ctrlKey) return;
       event.preventDefault();
       const rect = scroll.getBoundingClientRect();
-      const pointerX = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
-      const timeAtPointer = (scroll.scrollLeft + pointerX) / (BASE_PX_PER_SECOND * state.zoom);
+      const pointerX = Math.max(0, Math.min(scroll.clientWidth, event.clientX - rect.left));
+      const snapshot = controller.getSnapshot();
+      const currentZoom = snapshot.zoom;
+      const pendingAnchor = pendingZoomAnchorRef.current;
+      const currentScrollLeft = pendingAnchor?.zoom === currentZoom
+        ? zoomAnchorScrollLeft(pendingAnchor.time, pendingAnchor.pointerX, currentZoom, snapshot.duration, scroll.clientWidth)
+        : scroll.scrollLeft;
+      const timeAtPointer = (currentScrollLeft + pointerX) / (BASE_PX_PER_SECOND * currentZoom);
       const delta = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY * 16 : event.deltaY;
-      const nextZoom = clampTimelineZoom(state.zoom * Math.exp(-delta * 0.0025));
-      if (nextZoom === state.zoom) return;
+      const nextZoom = clampTimelineZoom(currentZoom * Math.exp(-delta * 0.0025));
+      if (nextZoom === currentZoom) return;
+      pendingZoomAnchorRef.current = { zoom: nextZoom, time: timeAtPointer, pointerX };
       controller.setZoom(nextZoom);
-      requestAnimationFrame(() => {
-        scroll.scrollLeft = Math.max(0, timeAtPointer * BASE_PX_PER_SECOND * nextZoom - pointerX);
-      });
     };
     // Capture on the whole panel so pinch gestures that begin over an overlay
     // (including the transport pill) still control the timeline zoom.
     panel.addEventListener("wheel", zoomAtPointer, { passive: false, capture: true });
     return () => panel.removeEventListener("wheel", zoomAtPointer, { capture: true });
-  }, [controller, state.zoom]);
+  }, [controller]);
 
   const positionFromPointer = (clientX: number, clientY: number) => {
     const scroll = scrollRef.current;
@@ -82,7 +138,7 @@ export function TimelinePanel() {
     const rect = scroll.getBoundingClientRect();
     return {
       time: Math.max(0, (clientX - rect.left + scroll.scrollLeft) / pxPerSecond),
-      y: Math.max(0, clientY - rect.top + scroll.scrollTop),
+      y: Math.max(0, (clientY - rect.top + scroll.scrollTop) / state.timelineVerticalZoom),
     };
   };
 
@@ -100,7 +156,7 @@ export function TimelinePanel() {
       if (!dragged && Math.hypot(pointer.clientX - event.clientX, pointer.clientY - event.clientY) < 4) return;
       dragged = true;
       const box = { left: Math.min(originX, x), top: Math.min(origin.y, point.y), width: Math.abs(x - originX), height: Math.abs(point.y - origin.y) };
-      setSelectionBox(box);
+      setSelectionBox({ ...box, top: box.top * state.timelineVerticalZoom, height: box.height * state.timelineVerticalZoom });
       const ids = state.clips.filter((clip) => {
         const left = clip.start * pxPerSecond;
         const right = left + Math.max(MIN_CLIP_WIDTH, clip.duration * pxPerSecond);
@@ -165,7 +221,7 @@ export function TimelinePanel() {
       <div className="timeline-scroll free-timeline-scroll" ref={scrollRef}>
         <div
           className={`timeline-workspace ${dropPoint ? "drop-active" : ""}`}
-          style={{ width: workspaceWidth, height: workspaceHeight }}
+          style={{ width: workspaceWidth, height: workspaceHeight, "--timeline-grid-y": `${26 * state.timelineVerticalZoom}px` } as React.CSSProperties}
           onPointerDown={beginSelection}
           onMouseMove={(event) => setCursorGuideX(positionFromPointer(event.clientX, event.clientY).time * pxPerSecond)}
           onMouseLeave={() => setCursorGuideX(null)}
@@ -178,18 +234,18 @@ export function TimelinePanel() {
             controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "timeline", time: point.time, timelineY: point.y, positionX: 0, positionY: 0 });
           }}
         >
-          {dropPoint && <div className="asset-drop-ghost" style={{ left: dropPoint.x, top: dropPoint.y }}><span>ここに配置</span></div>}
+          {dropPoint && <div className="asset-drop-ghost" style={{ left: dropPoint.x, top: dropPoint.y * state.timelineVerticalZoom }}><span>ここに配置</span></div>}
           {cursorGuideX !== null && <div className="timeline-cursor-guide" style={{ left: cursorGuideX }} />}
           {alignmentSuggestion && <div
             className="timeline-alignment-guide"
             data-target-clip-id={alignmentSuggestion.targetId}
             data-moving-edge={alignmentSuggestion.movingEdge}
             data-target-edge={alignmentSuggestion.targetEdge}
-            style={{ left: alignmentSuggestion.x, top: alignmentSuggestion.top, height: alignmentSuggestion.height }}
+            style={{ left: alignmentSuggestion.x, top: alignmentSuggestion.top * state.timelineVerticalZoom, height: alignmentSuggestion.height * state.timelineVerticalZoom }}
           ><span>端を揃える</span></div>}
           {selectionBox && <div className="timeline-selection-box" style={selectionBox} />}
           {state.markers.map((marker) => <button key={marker.id} className="timeline-marker" title={`${marker.label} · クリックで移動 / ダブルクリックで改名 / Shift+クリックで削除`} style={{ left: marker.time * pxPerSecond, "--marker-color": marker.color } as React.CSSProperties} onPointerDown={(event) => event.stopPropagation()} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const point = positionFromPointer(event.clientX, event.clientY); controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "timeline", time: marker.time, timelineY: point.y, positionX: 0, positionY: 0, markerId: marker.id }); }} onDoubleClick={(event) => { event.stopPropagation(); const label = window.prompt("マーカー名", marker.label); if (label?.trim()) controller.updateMarker(marker.id, { label: label.trim() }); }} onClick={(event) => { event.stopPropagation(); if (event.shiftKey) controller.removeMarker(marker.id); else controller.setTime(marker.time); }}><i /><span>{marker.label}</span></button>)}
-          {orderedClips.map((clip) => <Clip key={clip.id} clip={clip} waveformPeaks={clip.assetId ? state.assets.find((asset) => asset.id === clip.assetId)?.waveformPeaks : undefined} pxPerSecond={pxPerSecond} selected={state.selectedClipIds.includes(clip.id)} durationResizable={clip.kind === "group" || clip.kind === "title" || clip.kind === "object" || Boolean(clip.assetId && resizableAssetIds.has(clip.assetId))} childCount={state.clips.filter((item) => item.groupId === clip.id).length} nestingDepth={nestingDepths.get(clip.id) ?? 0} fps={state.fps} snapEnabled={state.snapEnabled} onAlignmentSuggestion={setAlignmentSuggestion} controller={controller} />)}
+          {orderedClips.map((clip) => <Clip key={clip.id} clip={clip} waveformPeaks={clip.assetId ? state.assets.find((asset) => asset.id === clip.assetId)?.waveformPeaks : undefined} pxPerSecond={pxPerSecond} verticalZoom={state.timelineVerticalZoom} selected={state.selectedClipIds.includes(clip.id)} durationResizable={clip.kind === "group" || clip.kind === "title" || clip.kind === "object" || Boolean(clip.assetId && resizableAssetIds.has(clip.assetId))} childCount={state.clips.filter((item) => item.groupId === clip.id).length} nestingDepth={nestingDepths.get(clip.id) ?? 0} fps={state.fps} snapEnabled={state.snapEnabled} onAlignmentSuggestion={setAlignmentSuggestion} controller={controller} />)}
           <div className="playhead free-playhead" style={{ left: state.currentTime * pxPerSecond }}><div className="playhead-cap" /><i /></div>
         </div>
       </div>
@@ -215,10 +271,12 @@ function requestPreviewAction(action: "popout" | "fullscreen") {
   window.dispatchEvent(new CustomEvent("gfxutl:preview-action", { detail: action }));
 }
 
-const Clip = memo(function Clip({ clip, waveformPeaks, pxPerSecond, selected, durationResizable, childCount, nestingDepth, fps, snapEnabled, onAlignmentSuggestion, controller }: { clip: TimelineClip; waveformPeaks?: number[]; pxPerSecond: number; selected: boolean; durationResizable: boolean; childCount: number; nestingDepth: number; fps: number; snapEnabled: boolean; onAlignmentSuggestion: (suggestion: AlignmentSuggestion | null) => void; controller: typeof import("../core/interface").editorController }) {
+const Clip = memo(function Clip({ clip, waveformPeaks, pxPerSecond, verticalZoom, selected, durationResizable, childCount, nestingDepth, fps, snapEnabled, onAlignmentSuggestion, controller }: { clip: TimelineClip; waveformPeaks?: number[]; pxPerSecond: number; verticalZoom: number; selected: boolean; durationResizable: boolean; childCount: number; nestingDepth: number; fps: number; snapEnabled: boolean; onAlignmentSuggestion: (suggestion: AlignmentSuggestion | null) => void; controller: typeof import("../core/interface").editorController }) {
   const [dragging, setDragging] = useState(false);
   const [resizing, setResizing] = useState(false);
   const drag = useRef<{ pointerId: number; startX: number; startY: number; originalStart: number; originalY: number; lastStart: number; lastY: number } | null>(null);
+  const visual = isVisualClip(clip);
+  const muted = (clip.kind === "video" || clip.kind === "audio") && (clip.volume ?? 0) <= -60;
 
   const beginDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return;
@@ -235,7 +293,7 @@ const Clip = memo(function Clip({ clip, waveformPeaks, pxPerSecond, selected, du
     const active = drag.current;
     if (!active || active.pointerId !== event.pointerId) return;
     const rawStart = active.originalStart + (event.clientX - active.startX) / pxPerSecond;
-    active.lastY = Math.max(0, active.originalY + event.clientY - active.startY);
+    active.lastY = Math.max(0, active.originalY + (event.clientY - active.startY) / verticalZoom);
     const snapshot = controller.getSnapshot();
     const excludedIds = timelineGroupDescendants(snapshot.clips, snapshot.selectedClipIds.includes(clip.id) ? snapshot.selectedClipIds : [clip.id]);
     const alignment = findTimelineAlignment({ start: Math.max(0, rawStart), duration: clip.duration, y: active.lastY, height: timelineClipHeight(clip) }, snapshot.clips, excludedIds, pxPerSecond);
@@ -314,7 +372,7 @@ const Clip = memo(function Clip({ clip, waveformPeaks, pxPerSecond, selected, du
     const move = (pointer: PointerEvent) => {
       const rawDeltaTime = (pointer.clientX - originX) / pxPerSecond;
       const deltaTime = !snapEnabled || pointer.shiftKey ? rawDeltaTime : Math.round(rawDeltaTime * fps) / fps;
-      const deltaY = pointer.clientY - originY;
+      const deltaY = (pointer.clientY - originY) / verticalZoom;
       let left = originalStart;
       let right = originalEnd;
       let top = originalTop;
@@ -369,7 +427,7 @@ const Clip = memo(function Clip({ clip, waveformPeaks, pxPerSecond, selected, du
 
   return (
     <button
-      className={`timeline-clip free-clip clip-${clip.kind} ${selected ? "selected" : ""} ${dragging ? "dragging" : ""} ${resizing ? "resizing" : ""} ${clip.groupId ? "nested" : ""}`}
+      className={`timeline-clip free-clip clip-${clip.kind} ${selected ? "selected" : ""} ${dragging ? "dragging" : ""} ${resizing ? "resizing" : ""} ${clip.groupId ? "nested" : ""} ${visual && clip.visible === false ? "visual-hidden" : ""} ${visual || muted ? "has-status" : ""} ${visual && muted ? "has-two-status" : ""}`}
       data-clip-id={clip.id}
       data-group-id={clip.groupId ?? ""}
       data-start={clip.start}
@@ -389,10 +447,14 @@ const Clip = memo(function Clip({ clip, waveformPeaks, pxPerSecond, selected, du
         const time = clip.start + Math.min(clip.duration, Math.max(0, (event.clientX - rect.left) / pxPerSecond));
         controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "clip", time, timelineY: clip.y, positionX: clip.positionX ?? 0, positionY: clip.positionY ?? 0 });
       }}
-      style={{ left: clip.start * pxPerSecond, top: clip.y, width: Math.max(MIN_CLIP_WIDTH, clip.duration * pxPerSecond), height: timelineClipHeight(clip), zIndex: dragging ? 30_000 : clip.kind === "group" ? 100 + nestingDepth * 100 + (selected ? 1 : 0) : Math.max(1_000, 10_000 + nestingDepth * 100 - Math.round(clip.y)), "--clip-color": clip.color } as React.CSSProperties}
+      style={{ left: clip.start * pxPerSecond, top: clip.y * verticalZoom, width: Math.max(MIN_CLIP_WIDTH, clip.duration * pxPerSecond), height: timelineClipHeight(clip) * verticalZoom, zIndex: dragging ? 30_000 : clip.kind === "group" ? 100 + nestingDepth * 100 + (selected ? 1 : 0) : Math.max(1_000, 10_000 + nestingDepth * 100 - Math.round(clip.y)), "--clip-color": clip.color } as React.CSSProperties}
     >
       {(dragging || resizing) && <output className="clip-drag-readout">{resizing ? `${clip.duration.toFixed(2)}s` : `${clip.start.toFixed(2)}s · y ${Math.round(clip.y)}`}</output>}
       <span className="timeline-clip-kind">{clip.kind === "group" ? <FolderList16Regular /> : clip.kind === "title" ? <TextT12Regular /> : clip.kind === "audio" ? <MusicNote216Regular /> : clip.kind === "object" ? <Cube16Regular /> : <VideoClip16Regular />}</span><strong>{clip.name}{clip.kind === "group" ? ` · ${childCount}` : ""}</strong>
+      {(muted || visual) && <span className="timeline-clip-status" role="img" aria-label={[muted ? "ミュート" : "", visual ? clip.visible === false ? "非表示" : "表示" : ""].filter(Boolean).join("、")}>
+        {muted && <span title="ミュート"><SpeakerMute /></span>}
+        {visual && <span title={clip.visible === false ? "非表示" : "表示"}>{clip.visible === false ? <EyeOff /> : <Eye />}</span>}
+      </span>}
       {selected && (clip.keyframes ?? []).map((keyframe) => <i className="timeline-keyframe" key={keyframe.id} title={`${keyframe.property}: ${keyframe.value} · ドラッグで時刻変更`} style={{ left: `${Math.max(0, Math.min(100, keyframe.time / Math.max(0.001, clip.duration) * 100))}%` }} onPointerDown={(event) => beginKeyframeDrag(keyframe.id, keyframe.time, event)} onClick={(event) => { event.stopPropagation(); controller.setTime(clip.start + keyframe.time); controller.selectClip(clip.id); }} />)}
       {clip.kind === "audio" && <div className="waveform" data-waveform-source={waveformPeaks?.length ? "media" : "pending"}>{(waveformPeaks?.length ? waveformPeaks : Array.from({ length: 24 }, () => 0.08)).map((peak, i) => <i key={i} style={{ height: `${Math.max(4, Math.min(100, peak * 100))}%` }} />)}</div>}
       {clip.kind === "video" && <div className="frame-strip">{Array.from({ length: Math.max(3, Math.floor(clip.duration / 3)) }, (_, i) => <i key={i} />)}</div>}
@@ -403,6 +465,7 @@ const Clip = memo(function Clip({ clip, waveformPeaks, pxPerSecond, selected, du
 }, (previous, next) => previous.clip === next.clip
   && previous.waveformPeaks === next.waveformPeaks
   && previous.pxPerSecond === next.pxPerSecond
+  && previous.verticalZoom === next.verticalZoom
   && previous.selected === next.selected
   && previous.durationResizable === next.durationResizable
   && previous.childCount === next.childCount

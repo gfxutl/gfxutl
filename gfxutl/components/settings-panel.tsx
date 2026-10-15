@@ -10,6 +10,7 @@ import {
 } from "@fluentui/react-icons";
 import { useEditor } from "../core/interface";
 import { Button } from "./ui/button";
+import { Slider } from "./ui/slider";
 
 const MiB = 1024 * 1024;
 
@@ -44,7 +45,7 @@ export function SettingsPanel() {
         <span>容量上限</span>
         <div className="settings-number"><input aria-label="RAMプレビュー容量" type="number" min={32} max={2048} step={32} value={maxMb} onChange={(event) => controller.updateSettings({ ramPreviewMaxBytes: Number(event.target.value) * MiB })} /><small>MB</small></div>
       </label>
-      <input className="settings-range" aria-label="RAMプレビュー容量スライダー" type="range" min={32} max={2048} step={32} value={maxMb} onChange={(event) => controller.updateSettings({ ramPreviewMaxBytes: Number(event.target.value) * MiB })} />
+      <Slider className="settings-range" aria-label="RAMプレビュー容量スライダー" min={32} max={2048} step={32} value={maxMb} onChange={(event) => controller.updateSettings({ ramPreviewMaxBytes: Number(event.target.value) * MiB })} />
       <div className={`settings-cache-state ${settings.ramPreviewEnabled ? "" : "disabled"}`}>
         <span>{settings.ramPreviewEnabled ? `${usedMb.toFixed(1)} MB 使用中` : "RAMプレビューは無効です"}</span>
         <strong>{state.cache.entries} フレーム</strong>

@@ -51,6 +51,8 @@ export interface GeometrySpec {
   color?: number;
   outlineColor?: number;
   outlineWidth?: number;
+  /** Raster density used by Canvas-backed geometry, measured in output pixels per world unit. */
+  rasterPixelsPerUnit?: number;
   curveSegments?: number;
   bevelEnabled?: boolean;
   bevelThickness?: number;
@@ -123,6 +125,32 @@ export interface ClipEffect {
   params: Record<string, number>;
 }
 
+/** Non-destructive, per-video color correction evaluated before the effect stack. */
+export interface ColorGradingSpec {
+  enabled: boolean;
+  exposure: number;
+  temperature: number;
+  tint: number;
+  contrast: number;
+  highlights: number;
+  shadows: number;
+  whites: number;
+  blacks: number;
+  saturation: number;
+  vibrance: number;
+  hue: number;
+  fade: number;
+  liftRed: number;
+  liftGreen: number;
+  liftBlue: number;
+  gammaRed: number;
+  gammaGreen: number;
+  gammaBlue: number;
+  gainRed: number;
+  gainGreen: number;
+  gainBlue: number;
+}
+
 export interface ClipPostProcess {
   id: string;
   name: string;
@@ -179,6 +207,7 @@ export type KeyframeProperty =
   | "instanceCount" | "instanceSpacing"
   | `material.${"color" | "emissive" | "emissiveIntensity" | "roughness" | "metalness" | "clearcoat" | "clearcoatRoughness" | "transmission" | "thickness" | "ior" | "sheen" | "shininess" | "opacity" | "alphaTest" | "pointSize"}`
   | `particleSystem.${"count" | "size" | "spread" | "speed" | "color"}`
+  | `colorGrading.${Exclude<keyof ColorGradingSpec, "enabled">}`
   | `mask.${string}.${"x" | "y" | "width" | "height" | "feather" | "opacity"}`
   | `effect.${string}.${string}`;
 export interface ClipKeyframe {
@@ -322,6 +351,7 @@ export interface RenderClip {
   cropTop: number;
   cropBottom: number;
   effects: ClipEffect[];
+  colorGrading: ColorGradingSpec;
   postProcess?: ClipPostProcess;
   masks: ClipMask[];
   keyframes: ClipKeyframe[];

@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 
 import * as THREE from "three/webgpu";
-import { abs, cos, distance, float, Fn, glslFn, hue, instanceIndex, length, max, pow, saturation, sin, smoothstep, storage, texture as textureNode, uniform, uv, vec2, vec3, vec4, vertexIndex, wgslFn } from "three/tsl";
+import { abs, cos, distance, float, Fn, glslFn, hue, instanceIndex, length, luminance, max, min, pow, saturation, sin, smoothstep, storage, texture as textureNode, uniform, uv, vec2, vec3, vec4, vertexIndex, wgslFn } from "three/tsl";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
@@ -460,7 +460,51 @@ function fittedPlaneSize(aspect: number) {
 }
 
 function visualEffectSignature(clip: RenderClip) {
-  return JSON.stringify([clip.effects.filter((effect) => effect.enabled && effect.kind !== "transform" && effect.kind !== "opacity"), clip.masks, clip.postProcess]);
+  return JSON.stringify([clip.colorGrading, clip.effects.filter((effect) => effect.enabled && effect.kind !== "transform" && effect.kind !== "opacity"), clip.masks, clip.postProcess]);
+}
+
+function applyColorGrading(input: any, grading: RenderClip["colorGrading"]) {
+  if (!grading.enabled) return input;
+  const temperature = THREE.MathUtils.clamp(grading.temperature / 100, -1, 1);
+  const tint = THREE.MathUtils.clamp(grading.tint / 100, -1, 1);
+  const lift = vec3(grading.liftRed / 100 * 0.2, grading.liftGreen / 100 * 0.2, grading.liftBlue / 100 * 0.2);
+  const gamma = vec3(
+    1 / Math.max(0.1, 1 + grading.gammaRed / 100),
+    1 / Math.max(0.1, 1 + grading.gammaGreen / 100),
+    1 / Math.max(0.1, 1 + grading.gammaBlue / 100),
+  );
+  const gain = vec3(
+    Math.max(0, 1 + grading.gainRed / 100),
+    Math.max(0, 1 + grading.gainGreen / 100),
+    Math.max(0, 1 + grading.gainBlue / 100),
+  );
+  let rgb = input
+    .mul(2 ** THREE.MathUtils.clamp(grading.exposure, -10, 10))
+    .mul(vec3(1 + temperature * 0.18 + tint * 0.04, 1 - tint * 0.1, 1 - temperature * 0.18 + tint * 0.04))
+    .add(lift);
+  rgb = pow(max(rgb, vec3(0)), gamma).mul(gain);
+  rgb = rgb.sub(0.5).mul(Math.max(0, 1 + grading.contrast / 100)).add(0.5);
+
+  const luma = luminance(rgb);
+  const shadowMask = float(1).sub(smoothstep(0.05, 0.55, luma));
+  const highlightMask = smoothstep(0.45, 0.95, luma);
+  const blackMask = float(1).sub(smoothstep(0, 0.22, luma));
+  const whiteMask = smoothstep(0.78, 1, luma);
+  rgb = rgb
+    .add(shadowMask.mul(grading.shadows / 100 * 0.28))
+    .add(highlightMask.mul(grading.highlights / 100 * 0.28))
+    .add(blackMask.mul(grading.blacks / 100 * 0.18))
+    .add(whiteMask.mul(grading.whites / 100 * 0.18));
+
+  rgb = saturation(rgb, Math.max(0, 1 + grading.saturation / 100));
+  const channelMax = max(rgb.r, max(rgb.g, rgb.b));
+  const channelMin = min(rgb.r, min(rgb.g, rgb.b));
+  const vibrance = grading.vibrance / 100;
+  rgb = saturation(rgb, max(0, float(1).add(float(vibrance).mul(float(1).sub(channelMax.sub(channelMin))))));
+  rgb = hue(rgb, THREE.MathUtils.degToRad(grading.hue));
+  const fade = THREE.MathUtils.clamp(grading.fade / 100, 0, 1);
+  rgb = rgb.mul(1 - fade * 0.16).add(vec3(fade * 0.12));
+  return max(rgb, vec3(0));
 }
 
 function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
@@ -475,7 +519,7 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
   // WebGPU and the WebGL2 fallback without rebuilding the material.
   const sampled: any = textureNode(texture, texUv);
   sampled.setUpdateMatrix(true);
-  let rgb = sampled.rgb;
+  let rgb = applyColorGrading(sampled.rgb, clip.colorGrading);
   let alpha: any = sampled.a;
   let combinedMask: any = null;
   for (const mask of clip.masks) {
@@ -663,7 +707,7 @@ async function updateVideoSurfaces(time: number, frame: RenderFrameIndex) {
       }
     }
     if (!surface) continue;
-    surface.mesh.visible = true;
+    surface.mesh.visible = clip.visible;
     applyVisualTransform(surface.mesh, surface.mesh.material, clip);
     const frameWidth = Math.max(1, surface.frame?.displayWidth ?? 1);
     const frameHeight = Math.max(1, surface.frame?.displayHeight ?? 1);
@@ -728,7 +772,7 @@ function updateImageSurfaces(frame: RenderFrameIndex) {
     const existed = imageSurfaces.has(clip.id);
     const surface = ensureImageSurface(clip, runtime);
     changed ||= !existed;
-    surface.mesh.visible = true;
+    surface.mesh.visible = clip.visible;
     applyVisualTransform(surface.mesh, surface.mesh.material, clip);
     applyTextureCrop(surface, clip, runtime.width, runtime.height);
     activeCount++;
@@ -1080,6 +1124,7 @@ function evaluateClipAtTime(clip: RenderClip, timelineTime: number) {
   if (!clip.keyframes.length) return clip;
   const evaluated = {
     ...clip,
+    colorGrading: { ...clip.colorGrading },
     effects: structuredClone(clip.effects),
     masks: structuredClone(clip.masks),
     particleSystem: clip.particleSystem ? { ...clip.particleSystem } : undefined,
@@ -1154,6 +1199,11 @@ function evaluateClipAtTime(clip: RenderClip, timelineTime: number) {
 }
 
 function setAnimatedClipProperty(clip: RenderClip & Record<string, unknown>, property: string, value: number) {
+  if (property.startsWith("colorGrading.")) {
+    const key = property.slice("colorGrading.".length);
+    if (key && key !== "enabled") (clip.colorGrading as unknown as Record<string, number>)[key] = value;
+    return;
+  }
   if (property.startsWith("material.")) {
     const key = property.slice("material.".length);
     const material = clip.sceneObject?.material as unknown as Record<string, number> | undefined;

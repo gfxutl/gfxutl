@@ -40,13 +40,14 @@ function createCanvasTextGeometry(spec: GeometrySpec) {
   const text = spec.text || "Text";
   const lines = text.split("\n");
   const size = Math.max(0.001, spec.size ?? 1.2);
-  const idealOutlinePixels = Math.max(0, (spec.outlineWidth ?? 0) / size * FONT_PIXELS);
-  const idealPadding = Math.max(8, Math.ceil(idealOutlinePixels + FONT_PIXELS * 0.08));
+  const fontPixels = Math.max(16, Math.ceil(spec.rasterPixelsPerUnit === undefined ? FONT_PIXELS : size * spec.rasterPixelsPerUnit));
+  const idealOutlinePixels = Math.max(0, (spec.outlineWidth ?? 0) / size * fontPixels);
+  const idealPadding = Math.max(2, Math.ceil(idealOutlinePixels + fontPixels * 0.08));
   const probe = createCanvas(1, 1);
   const probeContext = contextFor(probe);
-  probeContext.font = canvasFont(FONT_PIXELS, spec.fontId, spec.fontFamily);
+  probeContext.font = canvasFont(fontPixels, spec.fontId, spec.fontFamily);
   const contentWidth = Math.max(1, ...lines.map((line) => probeContext.measureText(line || " ").width));
-  const idealLinePixels = FONT_PIXELS * LINE_HEIGHT;
+  const idealLinePixels = fontPixels * LINE_HEIGHT;
   const idealWidth = contentWidth + idealPadding * 2;
   const idealHeight = lines.length * idealLinePixels + idealPadding * 2;
   const rasterScale = Math.min(1, MAX_CANVAS_SIDE / idealWidth, MAX_CANVAS_SIDE / idealHeight);
@@ -58,7 +59,7 @@ function createCanvasTextGeometry(spec: GeometrySpec) {
   const canvas = createCanvas(width, height);
   const context = contextFor(canvas);
   context.clearRect(0, 0, width, height);
-  context.font = canvasFont(FONT_PIXELS * rasterScale, spec.fontId, spec.fontFamily);
+  context.font = canvasFont(fontPixels * rasterScale, spec.fontId, spec.fontFamily);
   context.textAlign = "center";
   context.textBaseline = "middle";
   context.lineJoin = "round";
@@ -80,9 +81,9 @@ function createCanvasTextGeometry(spec: GeometrySpec) {
   texture.generateMipmaps = true;
   texture.needsUpdate = true;
 
-  const geometry = new THREE.PlaneGeometry(idealWidth / FONT_PIXELS * size, idealHeight / FONT_PIXELS * size);
+  const geometry = new THREE.PlaneGeometry(idealWidth / fontPixels * size, idealHeight / fontPixels * size);
   Object.defineProperty(geometry, "type", { value: "GfxCanvasTextGeometry", configurable: true });
-  geometry.userData.gfxCanvasText = { text, width, height, lineCount: lines.length, rasterScale, fontFamily: spec.fontFamily ?? "sans-serif" };
+  geometry.userData.gfxCanvasText = { text, width, height, lineCount: lines.length, rasterScale, fontPixels, rasterPixelsPerUnit: spec.rasterPixelsPerUnit, fontFamily: spec.fontFamily ?? "sans-serif" };
   geometry.userData.gfxCanvasTextTexture = texture;
   geometry.addEventListener("dispose", () => texture.dispose());
   return geometry;
