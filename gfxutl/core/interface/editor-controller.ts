@@ -1473,7 +1473,7 @@ export class EditorController {
     const fps = Math.max(1, Math.min(240, Math.round(patch.fps ?? this.state.fps)));
     const contentEnd = this.state.clips.length ? Math.max(...this.state.clips.map((clip) => clip.start + clip.duration)) : 1 / fps;
     const duration = Math.max(contentEnd, 1 / fps, Number.isFinite(patch.duration) ? patch.duration! : this.state.duration);
-    this.update({ fps, duration });
+    this.update({ fps, duration, currentTime: Math.min(this.state.currentTime, duration) });
     this.schedulePersistence();
     this.renderPreview(false);
   };

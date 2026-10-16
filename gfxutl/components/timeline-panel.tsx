@@ -128,6 +128,10 @@ export function TimelinePanel() {
   }, [orderedClips, pxPerSecond, state.selectedClipIds, state.timelineVerticalZoom, timelineViewport]);
   const cameraKeyframeGroups = useMemo(() => groupCameraKeyframes(state.background.scene.keyframes ?? [], state.fps), [state.background.scene.keyframes, state.fps]);
   const assetsById = useMemo(() => new Map(state.assets.map((asset) => [asset.id, asset])), [state.assets]);
+  const minimumSequenceDuration = useMemo(() => state.clips.reduce(
+    (end, clip) => Math.max(end, Number.isFinite(clip.start + clip.duration) ? clip.start + clip.duration : 0),
+    1 / state.fps,
+  ), [state.clips, state.fps]);
   const workspaceWidth = state.duration * pxPerSecond + 160;
 
   useLayoutEffect(() => {
@@ -347,10 +351,11 @@ export function TimelinePanel() {
             controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "timeline", time: point.time, timelineY: point.y, positionX: 0, positionY: 0 });
           }}
         >
-          <TimelineRuler duration={state.duration} fps={state.fps} pxPerSecond={pxPerSecond} scrollLeft={timelineViewport.scrollLeft} viewportWidth={timelineViewport.width} cameraKeyframes={cameraKeyframeGroups} selectedCameraKeyframeIds={state.selectedCameraKeyframeIds} controller={controller} onPointerDown={beginRulerScrub} onDoubleClick={addCameraKeyframeFromRuler} />
+          <TimelineRuler duration={state.duration} minimumDuration={minimumSequenceDuration} fps={state.fps} snapEnabled={state.snapEnabled} pxPerSecond={pxPerSecond} scrollLeft={timelineViewport.scrollLeft} viewportWidth={timelineViewport.width} cameraKeyframes={cameraKeyframeGroups} selectedCameraKeyframeIds={state.selectedCameraKeyframeIds} controller={controller} onPointerDown={beginRulerScrub} onDoubleClick={addCameraKeyframeFromRuler} />
           {cursorGuideX !== null && <div className="timeline-cursor-guide" style={{ left: cursorGuideX }} />}
           {state.markers.map((marker) => <button key={marker.id} className="timeline-marker" title={`${marker.label} · ${t("クリックで移動 / ダブルクリックで改名 / Shift+クリックで削除")}`} style={{ left: marker.time * pxPerSecond, "--marker-color": marker.color } as React.CSSProperties} onPointerDown={(event) => event.stopPropagation()} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const point = positionFromPointer(event.clientX, event.clientY); controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "timeline", time: marker.time, timelineY: point.y, positionX: 0, positionY: 0, markerId: marker.id }); }} onDoubleClick={(event) => { event.stopPropagation(); controller.openMarkerRenameDialog(marker.id); }} onClick={(event) => { event.stopPropagation(); if (event.shiftKey) controller.removeMarker(marker.id); else controller.setTime(marker.time); }}><i /><span>{marker.label}</span></button>)}
           <div className="timeline-track-surface" style={{ height: workspaceHeight }}>
+            <div className="timeline-sequence-end-guide" style={{ left: state.duration * pxPerSecond }} aria-hidden="true" />
             {dropPoint && <div className="asset-drop-ghost" style={{ left: dropPoint.x, top: dropPoint.y * state.timelineVerticalZoom }}><span>{t("ここに配置")}</span></div>}
             {alignmentSuggestions.map((suggestion) => <div
               key={suggestion.axis}
@@ -386,9 +391,11 @@ function TimelinePlayhead({ pxPerSecond }: { pxPerSecond: number }) {
   return <div className="playhead free-playhead" style={{ left: currentTime * pxPerSecond }}><div className="playhead-cap" /><i /></div>;
 }
 
-function TimelineRuler({ duration, fps, pxPerSecond, scrollLeft, viewportWidth, cameraKeyframes, selectedCameraKeyframeIds, controller, onPointerDown, onDoubleClick }: {
+function TimelineRuler({ duration, minimumDuration, fps, snapEnabled, pxPerSecond, scrollLeft, viewportWidth, cameraKeyframes, selectedCameraKeyframeIds, controller, onPointerDown, onDoubleClick }: {
   duration: number;
+  minimumDuration: number;
   fps: number;
+  snapEnabled: boolean;
   pxPerSecond: number;
   scrollLeft: number;
   viewportWidth: number;
@@ -423,8 +430,75 @@ function TimelineRuler({ duration, fps, pxPerSecond, scrollLeft, viewportWidth, 
         {tick.major && <time dateTime={`PT${tick.time}S`}>{formatRulerTime(tick.time, duration, majorStep)}</time>}
       </i>)}
       {visibleCameraKeyframes.map((group) => <CameraKeyframeMarker key={group.keyframes.map((keyframe) => keyframe.id).join(":")} group={group} duration={duration} fps={fps} pxPerSecond={pxPerSecond} selected={group.keyframes.some((keyframe) => selectedCameraKeyframeIds.includes(keyframe.id))} controller={controller} />)}
+      <SequenceEndHandle duration={duration} minimumDuration={minimumDuration} fps={fps} snapEnabled={snapEnabled} pxPerSecond={pxPerSecond} controller={controller} />
     </div>
   );
+}
+
+function SequenceEndHandle({ duration, minimumDuration, fps, snapEnabled, pxPerSecond, controller }: {
+  duration: number;
+  minimumDuration: number;
+  fps: number;
+  snapEnabled: boolean;
+  pxPerSecond: number;
+  controller: typeof import("../core/interface").editorController;
+}) {
+  const { t } = useI18n();
+  const [dragging, setDragging] = useState(false);
+  const drag = useRef<{ pointerId: number; originX: number; originDuration: number; lastDuration: number } | null>(null);
+
+  const resolveDuration = (clientX: number, shiftKey: boolean) => {
+    const active = drag.current;
+    if (!active) return duration;
+    const rawDuration = active.originDuration + (clientX - active.originX) / pxPerSecond;
+    const snappedDuration = !snapEnabled || shiftKey ? rawDuration : Math.round(rawDuration * fps) / fps;
+    return Math.max(minimumDuration, snappedDuration);
+  };
+
+  const beginDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    drag.current = { pointerId: event.pointerId, originX: event.clientX, originDuration: duration, lastDuration: duration };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragging(true);
+  };
+
+  const moveDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const active = drag.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    active.lastDuration = resolveDuration(event.clientX, event.shiftKey);
+    controller.updateSequenceSettings({ duration: active.lastDuration });
+  };
+
+  const endDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const active = drag.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    if (event.type !== "pointercancel") {
+      active.lastDuration = resolveDuration(event.clientX, event.shiftKey);
+      controller.updateSequenceSettings({ duration: active.lastDuration });
+    }
+    drag.current = null;
+    setDragging(false);
+  };
+
+  const label = t("シーケンス終端 {time}s", { time: duration.toFixed(3) });
+  return <button
+    type="button"
+    className={`timeline-sequence-end ${dragging ? "dragging" : ""}`}
+    style={{ left: duration * pxPerSecond }}
+    title={`${label} · ${t("ドラッグでシーケンス長を変更 / Shiftでスナップ解除")}`}
+    aria-label={label}
+    onPointerDown={beginDrag}
+    onPointerMove={moveDrag}
+    onPointerUp={endDrag}
+    onPointerCancel={endDrag}
+    onClick={(event) => event.stopPropagation()}
+    onDoubleClick={(event) => event.stopPropagation()}
+  >
+    <i />
+    {dragging && <output>{duration.toFixed(2)}s</output>}
+  </button>;
 }
 
 function CameraKeyframeMarker({ group, duration, fps, pxPerSecond, selected, controller }: {

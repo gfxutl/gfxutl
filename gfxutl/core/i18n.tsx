@@ -341,6 +341,8 @@ const EN: Record<string, string> = {
   "タイムライン再生コントロール": "Timeline playback controls",
   "タイムライン時間ルーラー": "Timeline time ruler",
   "ダブルクリックでカメラキーフレームを追加": "Double-click to add a camera keyframe",
+  "シーケンス終端 {time}s": "Sequence end at {time}s",
+  "ドラッグでシーケンス長を変更 / Shiftでスナップ解除": "Drag to change sequence duration / hold Shift to disable snapping",
   "カメラキーフレーム {time}s（{count}項目）": "Camera keyframe at {time}s ({count} properties)",
   "カメラキーフレーム": "Camera keyframe",
   "{name} キーフレーム": "{name} keyframe",
