@@ -115,7 +115,7 @@ export interface SceneObjectSpec {
   primitive?: "mesh" | "points" | "line" | "sprite";
 }
 
-export type ClipEffectKind = "transform" | "brightness" | "tint" | "opacity" | "contrast" | "saturation" | "gamma" | "hue" | "chromaKey" | "vignette" | "pixelate";
+export type ClipEffectKind = "transform" | "meshDeform" | "brightness" | "tint" | "opacity" | "contrast" | "saturation" | "gamma" | "hue" | "chromaKey" | "vignette" | "pixelate";
 
 export interface ClipEffect {
   id: string;

@@ -1,6 +1,6 @@
 import * as THREE from "three/webgpu";
-import { distance, float, hue, length, max, normalLocal, positionLocal, pow, saturation, smoothstep, texture as textureNode, uv, vec2, vec3, vec4 } from "three/tsl";
-import type { SceneMaterialSpec, SceneObjectSpec } from "../protocol/engine-protocol";
+import { distance, float, hue, length, max, normalLocal, positionLocal, pow, saturation, sin, smoothstep, texture as textureNode, uv, vec2, vec3, vec4 } from "three/tsl";
+import type { ClipEffect, SceneMaterialSpec, SceneObjectSpec } from "../protocol/engine-protocol";
 import { createGeometry } from "./three-geometry-factory";
 import { loadBuiltInObjectClass } from "./built-in-objects/object-loader";
 
@@ -82,6 +82,7 @@ export class ThreeSceneCore {
       if (record.outline) updateOutlineMaterial(record.outline.material, spec.material);
       record.materialSignature = materialSignature;
     }
+    record.fill.frustumCulled = !(spec.material?.effects ?? []).some((effect) => effect.enabled && effect.kind === "meshDeform");
     const instancesSignature = JSON.stringify(spec.instances ?? []);
     if (record.fill instanceof THREE.InstancedMesh && record.instancesSignature !== instancesSignature) {
       updateInstances(record.fill, spec.instances ?? []);
@@ -353,11 +354,14 @@ function applyMaterialTextures(material: THREE.Material, spec: SceneMaterialSpec
 }
 
 function applyMaterialEffects(material: THREE.Material, spec: SceneMaterialSpec) {
-  const nodeMaterial = material as THREE.Material & { colorNode?: unknown; map?: THREE.Texture | null };
+  const nodeMaterial = material as THREE.Material & { colorNode?: unknown; positionNode?: unknown; map?: THREE.Texture | null };
   if (!("colorNode" in nodeMaterial)) return;
-  const effects = (spec.effects ?? []).filter((effect) => effect.enabled && effect.kind !== "transform" && effect.kind !== "opacity");
+  const enabledEffects = (spec.effects ?? []).filter((effect) => effect.enabled);
+  nodeMaterial.positionNode = meshDeformedPosition(enabledEffects);
+  const effects = enabledEffects.filter((effect) => effect.kind !== "transform" && effect.kind !== "opacity" && effect.kind !== "meshDeform");
   if (!effects.length) {
     if (nodeMaterial.colorNode !== null) { nodeMaterial.colorNode = null; material.needsUpdate = true; }
+    else material.needsUpdate = true;
     return;
   }
   let sampleUv: any = uv();
@@ -393,6 +397,21 @@ function applyMaterialEffects(material: THREE.Material, spec: SceneMaterialSpec)
   }
   nodeMaterial.colorNode = vec4(rgb, alpha);
   material.needsUpdate = true;
+}
+
+function meshDeformedPosition(effects: readonly ClipEffect[]) {
+  let displaced: any = positionLocal;
+  let active = false;
+  for (const effect of effects) {
+    if (effect.kind !== "meshDeform") continue;
+    active = true;
+    const angle = THREE.MathUtils.degToRad(effect.params.angle ?? 0);
+    const coordinate = displaced.x.mul(Math.cos(angle)).add(displaced.y.mul(Math.sin(angle)));
+    const wave = sin(coordinate.mul(Math.max(0, effect.params.frequency ?? 2)).add(THREE.MathUtils.degToRad(effect.params.phase ?? 0)))
+      .mul((effect.params.amount ?? 25) / 100);
+    displaced = displaced.add(vec3(-Math.sin(angle), Math.cos(angle), 0).mul(wave));
+  }
+  return active ? displaced : null;
 }
 
 function updateOutlineMaterial(material: THREE.Material | THREE.Material[], spec: SceneMaterialSpec = {}) {

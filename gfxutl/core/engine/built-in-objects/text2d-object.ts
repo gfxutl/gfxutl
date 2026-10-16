@@ -81,7 +81,7 @@ function createCanvasTextGeometry(spec: GeometrySpec) {
   texture.generateMipmaps = true;
   texture.needsUpdate = true;
 
-  const geometry = new THREE.PlaneGeometry(idealWidth / fontPixels * size, idealHeight / fontPixels * size);
+  const geometry = new THREE.PlaneGeometry(idealWidth / fontPixels * size, idealHeight / fontPixels * size, 32, 16);
   Object.defineProperty(geometry, "type", { value: "GfxCanvasTextGeometry", configurable: true });
   geometry.userData.gfxCanvasText = { text, width, height, lineCount: lines.length, rasterScale, fontPixels, rasterPixelsPerUnit: spec.rasterPixelsPerUnit, fontFamily: spec.fontFamily ?? "sans-serif" };
   geometry.userData.gfxCanvasTextTexture = texture;

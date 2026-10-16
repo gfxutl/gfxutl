@@ -2514,6 +2514,7 @@ function cubicBezierAt(easing: ClipKeyframe["easing"], x: number) {
 function createEffect(kind: ClipEffectKind): ClipEffect {
   const definitions: Record<ClipEffectKind, Omit<ClipEffect, "id" | "kind">> = {
     transform: { name: t("変形"), enabled: true, params: { x: 0, y: 0, scale: 100, rotation: 0 } },
+    meshDeform: { name: t("メッシュ変形"), enabled: true, params: { amount: 25, frequency: 2, angle: 0, phase: 0 } },
     brightness: { name: t("明るさ"), enabled: true, params: { amount: 0 } },
     tint: { name: t("色調"), enabled: true, params: { red: 100, green: 100, blue: 100 } },
     opacity: { name: t("透明度"), enabled: true, params: { amount: 100 } },

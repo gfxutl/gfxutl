@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 
 import * as THREE from "three/webgpu";
-import { abs, cos, distance, float, Fn, glslFn, hue, instanceIndex, length, luminance, max, min, pow, saturation, sin, smoothstep, storage, texture as textureNode, uniform, uv, vec2, vec3, vec4, vertexIndex, wgslFn } from "three/tsl";
+import { abs, cos, distance, float, Fn, glslFn, hue, instanceIndex, length, luminance, max, min, positionLocal, pow, saturation, sin, smoothstep, storage, texture as textureNode, uniform, uv, vec2, vec3, vec4, vertexIndex, wgslFn } from "three/tsl";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
@@ -126,6 +126,14 @@ interface ModelSurface {
   duration: number;
   objects: THREE.Object3D[];
   materials: Array<THREE.Material & { color?: THREE.Color }>;
+  deformGeometries: ModelDeformGeometry[];
+  deformSignature: string;
+}
+
+interface ModelDeformGeometry {
+  geometry: THREE.BufferGeometry;
+  position: THREE.BufferAttribute | THREE.InterleavedBufferAttribute;
+  basePositions: Float32Array;
 }
 
 interface ParticleSurface {
@@ -615,7 +623,27 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
   const material = new THREE.MeshBasicNodeMaterial({ transparent: alphaMasked || clip.opacity < 100, depthTest: true, depthWrite: !alphaMasked && clip.opacity >= 100, toneMapped: false });
   material.userData.gfxAlphaMasked = alphaMasked;
   material.colorNode = outputColor;
+  material.positionNode = meshDeformedPosition(clip.effects);
   return material;
+}
+
+function meshDeformedPosition(effects: readonly ClipEffect[]) {
+  let displaced: any = positionLocal;
+  let active = false;
+  for (const effect of effects) {
+    if (!effect.enabled || effect.kind !== "meshDeform") continue;
+    active = true;
+    const angle = THREE.MathUtils.degToRad(effect.params.angle ?? 0);
+    const coordinate = displaced.x.mul(Math.cos(angle)).add(displaced.y.mul(Math.sin(angle)));
+    const wave = sin(coordinate.mul(Math.max(0, effect.params.frequency ?? 2)).add(THREE.MathUtils.degToRad(effect.params.phase ?? 0)))
+      .mul((effect.params.amount ?? 25) / 100);
+    displaced = displaced.add(vec3(-Math.sin(angle), Math.cos(angle), 0).mul(wave));
+  }
+  return active ? displaced : null;
+}
+
+function createVisualPlaneGeometry(width: number, height: number) {
+  return new THREE.PlaneGeometry(width, height, 48, 27);
 }
 
 function refreshVisualMaterial(surface: VideoSurface | ImageSurface, clip: RenderClip) {
@@ -641,7 +669,7 @@ function ensureVideoSurface(clip: RenderClip, aspect: number) {
       texture.generateMipmaps = false;
       const material = createVisualMaterial(texture, clip);
       const fitted = fittedPlaneSize(aspect);
-      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(fitted.width, fitted.height), material);
+      const mesh = new THREE.Mesh(createVisualPlaneGeometry(fitted.width, fitted.height), material);
       mesh.name = `media:${clip.id}`;
       mesh.position.z = 2;
       mesh.renderOrder = 1_000;
@@ -653,7 +681,7 @@ function ensureVideoSurface(clip: RenderClip, aspect: number) {
   } else if (Math.abs(surface.aspect - aspect) > 0.001) {
     surface.mesh.geometry.dispose();
     const fitted = fittedPlaneSize(aspect);
-    surface.mesh.geometry = new THREE.PlaneGeometry(fitted.width, fitted.height);
+    surface.mesh.geometry = createVisualPlaneGeometry(fitted.width, fitted.height);
     surface.aspect = aspect;
   }
   refreshVisualMaterial(surface, clip);
@@ -688,6 +716,7 @@ function applyVisualTransform(mesh: THREE.Object3D, material: THREE.Material, cl
   mesh.rotation.z = rotation;
   mesh.scale.set(Math.max(0.001, scaleX), Math.max(0.001, scaleY), 1);
   mesh.renderOrder = clip.renderOrder;
+  mesh.frustumCulled = !clip.effects.some((effect) => effect.enabled && effect.kind === "meshDeform");
   material.opacity = THREE.MathUtils.clamp(opacity, 0, 1);
   material.transparent = Boolean(material.userData.gfxAlphaMasked) || material.opacity < 1;
   material.depthWrite = !material.userData.gfxAlphaMasked && material.opacity >= 1;
@@ -808,7 +837,7 @@ function ensureImageSurface(clip: RenderClip, runtime: ImageRuntime) {
       texture.needsUpdate = true;
       const material = createVisualMaterial(texture, clip);
       const fitted = fittedPlaneSize(aspect);
-      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(fitted.width, fitted.height), material);
+      const mesh = new THREE.Mesh(createVisualPlaneGeometry(fitted.width, fitted.height), material);
       mesh.name = `media:${clip.id}`;
       graphics?.scene.add(mesh);
       timelineRoots.set(clip.id, mesh);
@@ -860,6 +889,7 @@ function removeModelSurface(id: string) {
 function disposeModelSurface(id: string, surface: ModelSurface) {
   surface.mixer?.stopAllAction();
   surface.materials.forEach((material) => material.dispose());
+  surface.deformGeometries.forEach(({ geometry }) => geometry.dispose());
   surface.root.removeFromParent();
   modelSurfaces.delete(id);
   if (timelineRoots.get(id) === surface.root) timelineRoots.delete(id);
@@ -877,6 +907,7 @@ function ensureModelSurface(clip: RenderClip, runtime: ModelRuntime) {
     const model = cloneSkinned(runtime.scene) as THREE.Group;
     const objects: THREE.Object3D[] = [];
     const materials: Array<THREE.Material & { color?: THREE.Color }> = [];
+    const deformGeometries: ModelDeformGeometry[] = [];
     // THREE-OPT: flatten the cloned model once; frame updates no longer traverse its scene graph.
     model.traverse((object) => {
       objects.push(object);
@@ -884,6 +915,18 @@ function ensureModelSurface(clip: RenderClip, runtime: ModelRuntime) {
       if (!mesh.isMesh) return;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
+      mesh.geometry = mesh.geometry.clone();
+      const position = mesh.geometry.getAttribute("position");
+      if (position) {
+        const basePositions = new Float32Array(position.count * 3);
+        for (let index = 0; index < position.count; index++) {
+          const offset = index * 3;
+          basePositions[offset] = position.getX(index);
+          basePositions[offset + 1] = position.getY(index);
+          basePositions[offset + 2] = position.getZ(index);
+        }
+        deformGeometries.push({ geometry: mesh.geometry, position, basePositions });
+      }
       if (Array.isArray(mesh.material)) mesh.material = mesh.material.map((material) => material.clone());
       else mesh.material = mesh.material.clone();
       const meshMaterials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
@@ -901,7 +944,7 @@ function ensureModelSurface(clip: RenderClip, runtime: ModelRuntime) {
     timelineRoots.set(clip.id, root);
     const mixer = runtime.animations.length ? new THREE.AnimationMixer(model) : undefined;
     runtime.animations.forEach((animation) => mixer?.clipAction(animation).play());
-    return { assetId, root, mixer, duration: runtime.duration, objects, materials };
+    return { assetId, root, mixer, duration: runtime.duration, objects, materials, deformGeometries, deformSignature: "" };
   }, (value) => disposeModelSurface(clip.id, value));
   modelSurfaces.set(clip.id, surface);
   void graphics?.precompile();
@@ -941,6 +984,36 @@ function applyModelTransform(surface: ModelSurface, clip: RenderClip) {
     material.opacity = THREE.MathUtils.clamp((material.userData.gfxBaseOpacity ?? 1) * opacity, 0, 1);
     material.transparent = material.opacity < 1;
     if (material.color && material.userData.gfxBaseColor !== undefined) material.color.setHex(material.userData.gfxBaseColor).multiply(tint).offsetHSL(0, 0, brightness);
+  }
+  applyModelMeshDeformation(surface, clip.effects);
+}
+
+function applyModelMeshDeformation(surface: ModelSurface, effects: readonly ClipEffect[]) {
+  const deformations = effects.filter((effect) => effect.enabled && effect.kind === "meshDeform");
+  const signature = JSON.stringify(deformations);
+  if (signature === surface.deformSignature) return;
+  surface.deformSignature = signature;
+  for (const target of surface.deformGeometries) {
+    const { position, basePositions } = target;
+    for (let index = 0; index < position.count; index++) {
+      const offset = index * 3;
+      let x = basePositions[offset];
+      let y = basePositions[offset + 1];
+      const z = basePositions[offset + 2];
+      for (const effect of deformations) {
+        const angle = THREE.MathUtils.degToRad(effect.params.angle ?? 0);
+        const coordinate = x * Math.cos(angle) + y * Math.sin(angle);
+        const displacement = Math.sin(coordinate * Math.max(0, effect.params.frequency ?? 2) + THREE.MathUtils.degToRad(effect.params.phase ?? 0))
+          * (effect.params.amount ?? 25) / 100;
+        x -= Math.sin(angle) * displacement;
+        y += Math.cos(angle) * displacement;
+      }
+      position.setXYZ(index, x, y, z);
+    }
+    position.needsUpdate = true;
+    if (target.geometry.getAttribute("normal")) target.geometry.computeVertexNormals();
+    target.geometry.computeBoundingBox();
+    target.geometry.computeBoundingSphere();
   }
 }
 
