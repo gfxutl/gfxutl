@@ -3,7 +3,8 @@ import { distance, float, hue, length, max, mix, normalLocal, positionLocal, pow
 import type { ClipEffect, SceneMaterialSpec, SceneObjectSpec } from "../protocol/engine-protocol";
 import { createGeometry } from "./three-geometry-factory";
 import { loadBuiltInObjectClass } from "./built-in-objects/object-loader";
-import { filterRegionMask, filterRegionVertexMask } from "./filter-region-nodes";
+import { createFilterRegionNodeCache } from "./filter-region-nodes";
+import { isNeutralClipEffect } from "./effect-optimization";
 
 interface SceneRecord {
   root: THREE.Object3D;
@@ -77,13 +78,13 @@ export class ThreeSceneCore {
     }
 
     // THREE-OPT: retain materials and touch GPU-facing uniforms only when their spec changed.
-    const materialSignature = JSON.stringify(spec.material ?? {});
+    const materialSignature = optimizedMaterialSignature(spec.material);
     if (record.materialSignature !== materialSignature) {
       updateMaterial(record.fill.material, spec.material, this.resolveTexture);
       if (record.outline) updateOutlineMaterial(record.outline.material, spec.material);
       record.materialSignature = materialSignature;
     }
-    record.fill.frustumCulled = !(spec.material?.effects ?? []).some((effect) => effect.enabled && effect.kind === "meshDeform");
+    record.fill.frustumCulled = !(spec.material?.effects ?? []).some((effect) => effect.enabled && !isNeutralClipEffect(effect) && effect.kind === "meshDeform");
     const instancesSignature = JSON.stringify(spec.instances ?? []);
     if (record.fill instanceof THREE.InstancedMesh && record.instancesSignature !== instancesSignature) {
       updateInstances(record.fill, spec.instances ?? []);
@@ -246,8 +247,15 @@ function materialBlending(blending: SceneMaterialSpec["blending"]) {
   return ({ normal: THREE.NormalBlending, add: THREE.AdditiveBlending, multiply: THREE.MultiplyBlending, subtract: THREE.SubtractiveBlending, none: THREE.NoBlending })[blending ?? "normal"];
 }
 
+function optimizedMaterialSignature(spec: SceneMaterialSpec = {}) {
+  return JSON.stringify({
+    ...spec,
+    effects: spec.effects?.filter((effect) => effect.enabled && !isNeutralClipEffect(effect)),
+  });
+}
+
 function hasEffectAlpha(spec: SceneMaterialSpec) {
-  return (spec.effects ?? []).some((effect) => effect.enabled && (effect.kind === "chromaKey" || (effect.kind === "opacity" && Boolean(effect.filterRegion))));
+  return (spec.effects ?? []).some((effect) => effect.enabled && !isNeutralClipEffect(effect) && (effect.kind === "chromaKey" || (effect.kind === "opacity" && Boolean(effect.filterRegion))));
 }
 
 function commonMaterialOptions(spec: SceneMaterialSpec = {}) {
@@ -363,8 +371,9 @@ function applyMaterialTextures(material: THREE.Material, spec: SceneMaterialSpec
 function applyMaterialEffects(material: THREE.Material, spec: SceneMaterialSpec) {
   const nodeMaterial = material as THREE.Material & { colorNode?: unknown; positionNode?: unknown; map?: THREE.Texture | null };
   if (!("colorNode" in nodeMaterial)) return;
-  const enabledEffects = (spec.effects ?? []).filter((effect) => effect.enabled);
-  nodeMaterial.positionNode = meshDeformedPosition(enabledEffects);
+  const enabledEffects = (spec.effects ?? []).filter((effect) => effect.enabled && !isNeutralClipEffect(effect));
+  const filterMasks = createFilterRegionNodeCache();
+  nodeMaterial.positionNode = meshDeformedPosition(enabledEffects, filterMasks);
   const effects = enabledEffects.filter((effect) => effect.kind !== "transform" && effect.kind !== "meshDeform");
   if (!effects.length) {
     if (nodeMaterial.colorNode !== null) { nodeMaterial.colorNode = null; material.needsUpdate = true; }
@@ -377,7 +386,7 @@ function applyMaterialEffects(material: THREE.Material, spec: SceneMaterialSpec)
     if (effect.kind !== "pixelate") continue;
     const cells = Math.max(1, effect.params.size ?? 8);
     const pixelated = textureNode(nodeMaterial.map, uv().mul(cells).floor().add(0.5).div(cells)).mul(vec4(color.r, color.g, color.b, 1));
-    rgba = effect.filterRegion ? mix(rgba, pixelated, filterRegionMask(effect.filterRegion)) : pixelated;
+    rgba = effect.filterRegion ? mix(rgba, pixelated, filterMasks.fragment(effect.filterRegion)) : pixelated;
   }
   let rgb: any = rgba.rgb;
   let alpha: any = rgba.a;
@@ -405,7 +414,7 @@ function applyMaterialEffects(material: THREE.Material, spec: SceneMaterialSpec)
       nextRgb = rgb.mul(float(1).sub(edge.mul(amount)));
     }
     if (effect.filterRegion) {
-      const regionMask = filterRegionMask(effect.filterRegion);
+      const regionMask = filterMasks.fragment(effect.filterRegion);
       rgb = mix(previousRgb, nextRgb, regionMask);
       alpha = mix(previousAlpha, nextAlpha, regionMask);
     } else {
@@ -417,7 +426,7 @@ function applyMaterialEffects(material: THREE.Material, spec: SceneMaterialSpec)
   material.needsUpdate = true;
 }
 
-function meshDeformedPosition(effects: readonly ClipEffect[]) {
+function meshDeformedPosition(effects: readonly ClipEffect[], filterMasks = createFilterRegionNodeCache()) {
   let displaced: any = positionLocal;
   let active = false;
   for (const effect of effects) {
@@ -427,7 +436,7 @@ function meshDeformedPosition(effects: readonly ClipEffect[]) {
     const coordinate = displaced.x.mul(Math.cos(angle)).add(displaced.y.mul(Math.sin(angle)));
     const wave = sin(coordinate.mul(Math.max(0, effect.params.frequency ?? 2)).add(THREE.MathUtils.degToRad(effect.params.phase ?? 0)))
       .mul((effect.params.amount ?? 25) / 100);
-    const regionMask = effect.filterRegion ? filterRegionVertexMask(effect.filterRegion, displaced) : float(1);
+    const regionMask = effect.filterRegion ? filterMasks.vertex(effect.filterRegion) : float(1);
     displaced = displaced.add(vec3(-Math.sin(angle), Math.cos(angle), 0).mul(wave).mul(regionMask));
   }
   return active ? displaced : null;

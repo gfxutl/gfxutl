@@ -376,7 +376,7 @@ export interface RenderClip {
   /** Timeline filters above this clip, ordered from nearest to topmost. */
   filterStack: RenderFilter[];
   /** Active filter shaders composed after this clip's own shader. Worker-only. */
-  filterPostProcesses?: Array<{ shader: ClipPostProcess; region: FilterRegion }>;
+  filterPostProcesses?: Array<{ shader: ClipPostProcess; region?: FilterRegion }>;
   masks: ClipMask[];
   keyframes: ClipKeyframe[];
   particleSystem?: ParticleSystemSpec;

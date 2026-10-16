@@ -16,7 +16,8 @@ import { MediaBuffer } from "./media-buffer";
 import { RendererPluginRuntime } from "./renderer-plugin-runtime";
 import { ThreeCameraHandles } from "./three-camera-handles";
 import { ThreeTransformHandles } from "./three-transform-handles";
-import { filterRegionMask, filterRegionVertexMask } from "./filter-region-nodes";
+import { classifyFilterRegion, createFilterRegionNodeCache } from "./filter-region-nodes";
+import { isNeutralClipEffect, isNeutralColorGrading } from "./effect-optimization";
 
 const worker = self as unknown as DedicatedWorkerGlobalScope;
 
@@ -504,11 +505,17 @@ function fittedPlaneSize(aspect: number) {
 }
 
 function visualEffectSignature(clip: RenderClip) {
-  return JSON.stringify([clip.colorGrading, clip.effects.filter((effect) => effect.enabled && effect.kind !== "transform" && (effect.kind !== "opacity" || effect.filterRegion)), clip.masks, clip.postProcess, clip.filterPostProcesses]);
+  return JSON.stringify([
+    isNeutralColorGrading(clip.colorGrading) ? null : clip.colorGrading,
+    clip.effects.filter((effect) => effect.enabled && !isNeutralClipEffect(effect) && effect.kind !== "transform" && (effect.kind !== "opacity" || effect.filterRegion)),
+    clip.masks.filter((mask) => mask.enabled),
+    clip.postProcess?.enabled && clip.postProcess.compileStatus === "ready" ? clip.postProcess : null,
+    clip.filterPostProcesses?.filter(({ shader }) => shader.enabled && shader.compileStatus === "ready"),
+  ]);
 }
 
 function applyColorGrading(input: any, grading: RenderClip["colorGrading"]) {
-  if (!grading.enabled) return input;
+  if (isNeutralColorGrading(grading)) return input;
   const temperature = THREE.MathUtils.clamp(grading.temperature / 100, -1, 1);
   const tint = THREE.MathUtils.clamp(grading.tint / 100, -1, 1);
   const lift = vec3(grading.liftRed / 100 * 0.2, grading.liftGreen / 100 * 0.2, grading.liftBlue / 100 * 0.2);
@@ -552,6 +559,18 @@ function applyColorGrading(input: any, grading: RenderClip["colorGrading"]) {
 }
 
 function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
+  const filterMasks = createFilterRegionNodeCache();
+  const activeEffects = clip.effects.filter((effect) => effect.enabled && !isNeutralClipEffect(effect));
+  const activeMasks = clip.masks.filter((mask) => mask.enabled);
+  const hasActiveShader = Boolean(clip.postProcess?.enabled && clip.postProcess.compileStatus === "ready")
+    || Boolean(clip.filterPostProcesses?.some(({ shader }) => shader.enabled && shader.compileStatus === "ready"));
+  const hasFragmentEffects = activeEffects.some((effect) => effect.kind !== "transform" && effect.kind !== "meshDeform" && (effect.kind !== "opacity" || Boolean(effect.filterRegion)));
+  if (isNeutralColorGrading(clip.colorGrading) && !activeMasks.length && !hasFragmentEffects && !hasActiveShader) {
+    const material = new THREE.MeshBasicNodeMaterial({ map: texture, transparent: clip.opacity < 100, depthTest: true, depthWrite: clip.opacity >= 100, toneMapped: false });
+    material.userData.gfxAlphaMasked = false;
+    material.positionNode = meshDeformedPosition(activeEffects, filterMasks);
+    return material;
+  }
   const sampleTexture = (coordinates: any) => {
     const node: any = textureNode(texture, coordinates);
     // An explicit UV node disables TextureNode's transform matrix by default.
@@ -560,18 +579,17 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
     return node;
   };
   let sampled: any = sampleTexture(uv());
-  for (const effect of clip.effects) {
-    if (!effect.enabled || effect.kind !== "pixelate") continue;
+  for (const effect of activeEffects) {
+    if (effect.kind !== "pixelate") continue;
     const cells = Math.max(1, effect.params.size ?? 8);
     const texUv = uv().mul(cells).floor().add(0.5).div(cells);
     const pixelated = sampleTexture(texUv);
-    sampled = effect.filterRegion ? mix(sampled, pixelated, filterRegionMask(effect.filterRegion)) : pixelated;
+    sampled = effect.filterRegion ? mix(sampled, pixelated, filterMasks.fragment(effect.filterRegion)) : pixelated;
   }
   let rgb = applyColorGrading(sampled.rgb, clip.colorGrading);
   let alpha: any = sampled.a;
   let combinedMask: any = null;
-  for (const mask of clip.masks) {
-    if (!mask.enabled) continue;
+  for (const mask of activeMasks) {
     const point = uv().sub(vec2(mask.x / 100, 1 - mask.y / 100));
     const halfWidth = Math.max(0.0001, mask.width / 200);
     const halfHeight = Math.max(0.0001, mask.height / 200);
@@ -587,8 +605,8 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
     else combinedMask = combinedMask.mul(value);
   }
   if (combinedMask !== null) alpha = alpha.mul(combinedMask);
-  for (const effect of clip.effects) {
-    if (!effect.enabled || effect.kind === "pixelate" || effect.kind === "meshDeform" || effect.kind === "transform") continue;
+  for (const effect of activeEffects) {
+    if (effect.kind === "pixelate" || effect.kind === "meshDeform" || effect.kind === "transform") continue;
     const previousRgb = rgb;
     const previousAlpha = alpha;
     let nextRgb = rgb;
@@ -619,7 +637,7 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
       nextRgb = rgb.mul(float(1).sub(smoothstep(size * 0.5, Math.max(size * 0.5 + 0.001, 0.72), radius).mul(amount)));
     }
     if (effect.filterRegion) {
-      const regionMask = filterRegionMask(effect.filterRegion);
+      const regionMask = filterMasks.fragment(effect.filterRegion);
       rgb = mix(previousRgb, nextRgb, regionMask);
       alpha = mix(previousAlpha, nextAlpha, regionMask);
     } else {
@@ -627,7 +645,7 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
       alpha = nextAlpha;
     }
   }
-  const alphaMasked = clip.masks.some((mask) => mask.enabled) || clip.effects.some((effect) => effect.enabled && (effect.kind === "chromaKey" || (effect.kind === "opacity" && Boolean(effect.filterRegion))));
+  const alphaMasked = activeMasks.length > 0 || activeEffects.some((effect) => effect.kind === "chromaKey" || (effect.kind === "opacity" && Boolean(effect.filterRegion)));
   let outputColor: any = vec4(rgb, alpha);
   const shaders = [
     ...(clip.postProcess ? [{ shader: clip.postProcess, region: undefined }] : []),
@@ -638,7 +656,7 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
     try {
       const shaderFunction = graphics?.backend === "webgpu" ? wgslFn(shader.wgsl) : glslFn(shader.glsl);
       const filteredColor: any = shaderFunction({ color: outputColor, uv: uv(), time: postProcessTime });
-      outputColor = region ? mix(outputColor, filteredColor, filterRegionMask(region)) : filteredColor;
+      outputColor = region ? mix(outputColor, filteredColor, filterMasks.fragment(region)) : filteredColor;
     } catch (error) {
       send({ type: "error", message: `${shader.name}: ${error instanceof Error ? error.message : String(error)}` });
     }
@@ -646,21 +664,21 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
   const material = new THREE.MeshBasicNodeMaterial({ transparent: alphaMasked || clip.opacity < 100, depthTest: true, depthWrite: !alphaMasked && clip.opacity >= 100, toneMapped: false });
   material.userData.gfxAlphaMasked = alphaMasked;
   material.colorNode = outputColor;
-  material.positionNode = meshDeformedPosition(clip.effects);
+  material.positionNode = meshDeformedPosition(activeEffects, filterMasks);
   return material;
 }
 
-function meshDeformedPosition(effects: readonly ClipEffect[]) {
+function meshDeformedPosition(effects: readonly ClipEffect[], filterMasks = createFilterRegionNodeCache()) {
   let displaced: any = positionLocal;
   let active = false;
   for (const effect of effects) {
-    if (!effect.enabled || effect.kind !== "meshDeform") continue;
+    if (!effect.enabled || isNeutralClipEffect(effect) || effect.kind !== "meshDeform") continue;
     active = true;
     const angle = THREE.MathUtils.degToRad(effect.params.angle ?? 0);
     const coordinate = displaced.x.mul(Math.cos(angle)).add(displaced.y.mul(Math.sin(angle)));
     const wave = sin(coordinate.mul(Math.max(0, effect.params.frequency ?? 2)).add(THREE.MathUtils.degToRad(effect.params.phase ?? 0)))
       .mul((effect.params.amount ?? 25) / 100);
-    const regionMask = effect.filterRegion ? filterRegionVertexMask(effect.filterRegion, displaced) : float(1);
+    const regionMask = effect.filterRegion ? filterMasks.vertex(effect.filterRegion) : float(1);
     displaced = displaced.add(vec3(-Math.sin(angle), Math.cos(angle), 0).mul(wave).mul(regionMask));
   }
   return active ? displaced : null;
@@ -720,7 +738,7 @@ function applyVisualTransform(mesh: THREE.Object3D, material: THREE.Material, cl
   let rotation = -THREE.MathUtils.degToRad(clip.rotation);
   let opacity = clip.opacity / 100;
   for (const effect of clip.effects) {
-    if (!effect.enabled) continue;
+    if (!effect.enabled || isNeutralClipEffect(effect)) continue;
     if (effect.kind === "transform") {
       if (effect.filterRegion) continue;
       const localX = (effect.params.x ?? 0) / 100;
@@ -742,7 +760,7 @@ function applyVisualTransform(mesh: THREE.Object3D, material: THREE.Material, cl
   mesh.rotation.z = rotation;
   mesh.scale.set(Math.max(0.001, scaleX), Math.max(0.001, scaleY), 1);
   mesh.renderOrder = clip.renderOrder;
-  mesh.frustumCulled = !clip.effects.some((effect) => effect.enabled && effect.kind === "meshDeform");
+  mesh.frustumCulled = !clip.effects.some((effect) => effect.enabled && !isNeutralClipEffect(effect) && effect.kind === "meshDeform");
   material.opacity = THREE.MathUtils.clamp(opacity, 0, 1);
   material.transparent = Boolean(material.userData.gfxAlphaMasked) || material.opacity < 1;
   material.depthWrite = !material.userData.gfxAlphaMasked && material.opacity >= 1;
@@ -989,7 +1007,7 @@ function applyModelTransform(surface: ModelSurface, clip: RenderClip) {
   for (const effect of clip.effects) {
     // Imported glTF materials are not node materials. Never leak a regional
     // filter across the whole model when it cannot be composited per fragment.
-    if (!effect.enabled || effect.filterRegion) continue;
+    if (!effect.enabled || effect.filterRegion || isNeutralClipEffect(effect)) continue;
     if (effect.kind === "transform") {
       positionX += (effect.params.x ?? 0) / 100;
       positionY -= (effect.params.y ?? 0) / 100;
@@ -1017,7 +1035,7 @@ function applyModelTransform(surface: ModelSurface, clip: RenderClip) {
 }
 
 function applyModelMeshDeformation(surface: ModelSurface, effects: readonly ClipEffect[]) {
-  const deformations = effects.filter((effect) => effect.enabled && effect.kind === "meshDeform" && !effect.filterRegion);
+  const deformations = effects.filter((effect) => effect.enabled && !isNeutralClipEffect(effect) && effect.kind === "meshDeform" && !effect.filterRegion);
   const signature = JSON.stringify(deformations);
   if (signature === surface.deformSignature) return;
   surface.deformSignature = signature;
@@ -1404,7 +1422,8 @@ function applyRenderFilters(source: RenderClip, timelineTime: number) {
   };
   for (const filter of source.filterStack) {
     if (!filter.enabled || timelineTime < filter.start || timelineTime >= filter.start + filter.duration) continue;
-    const { effects, region } = evaluateFilter(filter, timelineTime);
+    const { effects, region, visible } = evaluateFilter(filter, timelineTime);
+    if (!visible) continue;
     evaluated.effects.push(...effects);
     if (filter.postProcess) evaluated.filterPostProcesses!.push({ shader: filter.postProcess, region });
     if (evaluated.sceneObject) applyEffectsToFilteredSceneObject(evaluated.sceneObject, effects);
@@ -1414,7 +1433,6 @@ function applyRenderFilters(source: RenderClip, timelineTime: number) {
 }
 
 function evaluateFilter(filter: RenderFilter, timelineTime: number) {
-  const effects = structuredClone(filter.effects);
   const transform = {
     positionX: filter.positionX,
     positionY: filter.positionY,
@@ -1425,15 +1443,9 @@ function evaluateFilter(filter: RenderFilter, timelineTime: number) {
     opacity: filter.opacity,
   };
   const localTime = THREE.MathUtils.clamp(timelineTime - filter.start, 0, filter.duration);
-  for (const [property, keys] of keyframeTracksFor(filter, filter.keyframes)) {
-    const value = interpolateKeyframeTrack(keys, localTime);
-    if (property.startsWith("effect.")) {
-      const [, effectId, key] = property.split(".");
-      const effect = effects.find((item) => item.id === effectId);
-      if (effect && key) effect.params[key] = value;
-    } else if (property in transform) {
-      transform[property as keyof typeof transform] = value;
-    }
+  const tracks = keyframeTracksFor(filter, filter.keyframes);
+  for (const [property, keys] of tracks) {
+    if (property in transform) transform[property as keyof typeof transform] = interpolateKeyframeTrack(keys, localTime);
   }
   const worldHeight = 9;
   const worldWidth = worldHeight * Math.max(0.000001, filter.compositionAspect);
@@ -1446,8 +1458,18 @@ function evaluateFilter(filter: RenderFilter, timelineTime: number) {
     opacity: THREE.MathUtils.clamp(transform.opacity / 100, 0, 1),
     aspect: filter.compositionAspect,
   };
-  for (const effect of effects) effect.filterRegion = region;
-  return { effects, region };
+  const classification = classifyFilterRegion(region);
+  if (classification === "outside") return { effects: [] as ClipEffect[], region, visible: false };
+  const effects = structuredClone(filter.effects);
+  for (const [property, keys] of tracks) {
+    if (!property.startsWith("effect.")) continue;
+    const [, effectId, key] = property.split(".");
+    const effect = effects.find((item) => item.id === effectId);
+    if (effect && key) effect.params[key] = interpolateKeyframeTrack(keys, localTime);
+  }
+  const activeRegion = classification === "full" && region.opacity >= 0.999 ? undefined : region;
+  for (const effect of effects) effect.filterRegion = activeRegion;
+  return { effects, region: activeRegion, visible: true };
 }
 
 function interpolateKeyframeTrack(keys: ClipKeyframe[], localTime: number) {
@@ -1468,7 +1490,7 @@ function applyEffectsToFilteredSceneObject(object: SceneObjectSpec, effects: Cli
   const rotation = [...(transform.rotation ?? [0, 0, 0])] as [number, number, number];
   const scale = [...(transform.scale ?? [1, 1, 1])] as [number, number, number];
   for (const effect of effects) {
-    if (!effect.enabled) continue;
+    if (!effect.enabled || isNeutralClipEffect(effect)) continue;
     if (effect.kind === "transform") {
       if (effect.filterRegion) continue;
       const x = (effect.params.x ?? 0) / 100;
