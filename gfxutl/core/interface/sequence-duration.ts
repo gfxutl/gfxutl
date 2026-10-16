@@ -8,5 +8,5 @@ export function sequenceEnd(clips: readonly TimelineClip[], fps: number, emptyDu
   const ends = clips
     .map((clip) => clip.start + clip.duration)
     .filter((end) => Number.isFinite(end));
-  return ends.length ? Math.max(minimumDuration, ...ends) : emptyDuration;
+  return ends.length ? Math.max(minimumDuration, emptyDuration, ...ends) : emptyDuration;
 }

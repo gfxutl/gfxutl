@@ -7,6 +7,8 @@
     "build:naga": "cargo build --manifest-path core/naga-wasm/Cargo.toml --release --target wasm32-unknown-unknown && wasm-bindgen --target web --out-dir core/naga-wasm/pkg --out-name naga_wasm core/naga-wasm/target/wasm32-unknown-unknown/release/gfxutl_naga_wasm.wasm",
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
+    "test": "node --test tests/*.test.mjs",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
@@ -19,6 +21,7 @@
     "@fluentui/react-icons": "^2.0.344",
     "@rolldown/browser": "^1.2.12",
     "@vitejs/plugin-react": "latest",
+    "@xyflow/react": "^12.12.0",
     "clsx": "latest",
     "idb-keyval": "^6.3.0",
     "mediabunny": "latest",

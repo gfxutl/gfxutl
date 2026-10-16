@@ -9,6 +9,7 @@ import {
   Dismiss16Regular as X,
   Document16Regular as File,
   DocumentImage16Regular as FileImage,
+  DocumentCode16Regular as FileCode,
   Folder16Regular as Folder,
   FolderOpen16Regular as FolderOpen,
   Grid16Regular as Grid2X2,
@@ -29,6 +30,7 @@ import { ExportPanel } from "./export-panel";
 import { SettingsPanel } from "./settings-panel";
 import { PluginPanel } from "./plugin-panel";
 import { useI18n } from "../core/i18n";
+import { createShaderGraph, parseShaderGraph } from "../core/shader-graph/shader-graph-document";
 
 type ExplorerNode = {
   id: string;
@@ -43,7 +45,7 @@ type ExplorerNode = {
   accessRequired?: boolean;
 };
 
-const SUPPORTED_EXTENSIONS = new Set(["mp4", "mov", "webm", "mkv", "wav", "mp3", "aac", "flac", "png", "jpg", "jpeg", "webp", "hdr", "exr", "glb"]);
+const SUPPORTED_EXTENSIONS = new Set(["mp4", "mov", "webm", "mkv", "wav", "mp3", "aac", "flac", "png", "jpg", "jpeg", "webp", "hdr", "exr", "glb", "gltf"]);
 
 const KindIcon = ({ kind }: { kind: MediaAsset["kind"] }) => kind === "audio" ? <AudioLines /> : kind === "image" ? <Image /> : kind === "model" ? <Box /> : <FileVideo />;
 
@@ -199,6 +201,7 @@ export function MediaPanel() {
   const [currentDirectoryId, setCurrentDirectoryId] = useState<string | null>(null);
   const [directoryError, setDirectoryError] = useState<string | null>(null);
   const importingPaths = useRef(new Set<string>());
+  const contextDirectoryRef = useRef<ExplorerNode | null>(null);
   const assetsByPath = useMemo(() => new Map(state.assets.filter((asset) => asset.sourcePath).map((asset) => [asset.sourcePath!, asset])), [state.assets]);
   const standaloneAssets = useMemo(() => state.assets.filter((asset) => !asset.sourcePath && asset.name.toLowerCase().includes(query.toLowerCase())), [state.assets, query]);
   const selectedAsset = state.assets.find((asset) => asset.id === state.selectedAssetId);
@@ -219,7 +222,7 @@ export function MediaPanel() {
     setDirectoryError(null);
     try {
       if (window.showDirectoryPicker) {
-        const handle = await window.showDirectoryPicker({ mode: "read" });
+        const handle = await window.showDirectoryPicker({ mode: "readwrite" });
         const nextRoot = createRootNode(handle, false);
         nextRoot.loading = true;
         setRoot(nextRoot);
@@ -293,6 +296,18 @@ export function MediaPanel() {
     }
   };
 
+  const openShaderNode = async (node: ExplorerNode) => {
+    if (!isShader(node.name)) return;
+    try {
+      const handle = node.handle?.kind === "file" ? node.handle : undefined;
+      const file = node.file ?? await handle?.getFile();
+      if (!file) return;
+      controller.openShaderGraph(parseShaderGraph(await file.text(), node.name, node.path, handle));
+    } catch (error) {
+      setDirectoryError(error instanceof Error ? error.message : t("シェーダーを開けませんでした"));
+    }
+  };
+
   const openGridDirectory = async (node: ExplorerNode) => {
     if (node.kind !== "directory" || node.loading) return;
     if (node.accessRequired && node.handle?.kind === "directory") {
@@ -322,11 +337,64 @@ export function MediaPanel() {
   const directoryTrail = root && currentDirectory ? findNodeTrail(root, currentDirectory.id) : [];
   const gridChildren = (currentDirectory?.children ?? []).filter((node) => !query || node.name.toLowerCase().includes(query.toLowerCase()));
 
+  useEffect(() => {
+    const create = async () => {
+      setDirectoryError(null);
+      const directory = contextDirectoryRef.current ?? currentDirectory ?? root;
+      try {
+        const usedNames = new Set((directory?.children ?? []).map((node) => node.name.toLowerCase()));
+        let index = 1;
+        let name = "shader.ts";
+        while (usedNames.has(name.toLowerCase())) name = `shader-${++index}.ts`;
+        let sourcePath: string;
+        let handle: FileSystemFileHandle | undefined;
+        if (directory?.handle?.kind === "directory") {
+          const permission = await requestDirectoryPermission(directory.handle);
+          if (permission !== "granted") throw new Error(t("フォルダへの書き込みが許可されていません"));
+          while (true) {
+            try {
+              await directory.handle.getFileHandle(name);
+              name = `shader-${++index}.ts`;
+            } catch (error) {
+              if ((error as DOMException).name === "NotFoundError") break;
+              if ((error as DOMException).name === "TypeMismatchError") { name = `shader-${++index}.ts`; continue; }
+              throw error;
+            }
+          }
+          handle = await directory.handle.getFileHandle(name, { create: true });
+          sourcePath = `${directory.path}/${name}`;
+        } else if (window.showSaveFilePicker) {
+          handle = await window.showSaveFilePicker({ suggestedName: name, types: [{ description: "TypeScript", accept: { "text/typescript": [".ts"] } }] });
+          name = handle.name;
+          sourcePath = name;
+        } else throw new Error(t("シェーダーファイルを作成できるフォルダを開いてください"));
+        const graph = createShaderGraph(name, sourcePath, handle);
+        const writable = await handle.createWritable();
+        await writable.write(graph.source);
+        await writable.close();
+        if (directory) {
+          const created: ExplorerNode = { id: sourcePath, name, path: sourcePath, kind: "file", handle };
+          setRoot((current) => current ? updateNode(current, directory.id, (node) => ({ ...node, expanded: true, children: sortNodes([...(node.children ?? []).filter((item) => item.name !== name), created]) })) : current);
+        }
+        controller.openShaderGraph(graph);
+      } catch (error) {
+        if ((error as DOMException).name !== "AbortError") setDirectoryError(error instanceof Error ? error.message : t("シェーダーを作成できませんでした"));
+      } finally {
+        contextDirectoryRef.current = null;
+      }
+    };
+    window.addEventListener("gfxutl:create-shader-graph", create);
+    return () => window.removeEventListener("gfxutl:create-shader-graph", create);
+  }, [controller, currentDirectory, root, t]);
+
   return <section className="media-panel panel" onContextMenu={(event) => {
     event.preventDefault();
     event.stopPropagation();
     const assetId = (event.target as HTMLElement).closest<HTMLElement>("[data-asset-id]")?.dataset.assetId;
     if (assetId) controller.selectAsset(assetId);
+    const explorerTarget = (event.target as HTMLElement).closest<HTMLElement>("[data-explorer-path]");
+    const targetNode = explorerTarget && root ? findNodeByPath(root, explorerTarget.dataset.explorerPath ?? "") : undefined;
+    contextDirectoryRef.current = (targetNode?.kind === "directory" ? targetNode : targetNode && root ? findParentNode(root, targetNode.id) : currentDirectory) ?? null;
     controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "media", time: state.currentTime, timelineY: 32, positionX: 0, positionY: 0 });
   }}>
     <div className="panel-tabs">
@@ -350,28 +418,29 @@ export function MediaPanel() {
         <small>{gridChildren.length}</small>
       </div>}
       {view === "tree" ? <div className="media-tree" role="tree" aria-label={t("メディアエクスプローラー")}>
-        {visibleRoot ? <ExplorerRow node={visibleRoot} depth={0} forceExpanded={Boolean(query)} assetsByPath={assetsByPath} selectedAssetId={state.selectedAssetId} onToggle={toggleDirectory} onImport={importNode} onStage={controller.stageExplorerFile} onSelect={controller.selectAsset} /> : <div className="empty-media"><FolderOpen /><strong>{t("メディアフォルダを開く")}</strong><span>{t("フォルダ階層を展開して素材を選択できます")}</span></div>}
+        {visibleRoot ? <ExplorerRow node={visibleRoot} depth={0} forceExpanded={Boolean(query)} assetsByPath={assetsByPath} selectedAssetId={state.selectedAssetId} onToggle={toggleDirectory} onImport={importNode} onOpenShader={openShaderNode} onStage={controller.stageExplorerFile} onSelect={controller.selectAsset} /> : <div className="empty-media"><FolderOpen /><strong>{t("メディアフォルダを開く")}</strong><span>{t("フォルダ階層を展開して素材を選択できます")}</span></div>}
         {standaloneAssets.length > 0 && <div className="standalone-assets"><div className="media-tree-section"><File /> {t("単体ファイル")}</div>{standaloneAssets.map((asset) => <AssetRow key={asset.id} asset={asset} depth={1} selected={state.selectedAssetId === asset.id} onSelect={controller.selectAsset} onRestore={controller.restoreMediaAccess} />)}</div>}
         {directoryError && <div className="explorer-error">{directoryError}</div>}
       </div> : <div className="media-grid-page" role="list" aria-label={t("メディアグリッド")}>
-        {currentDirectory ? gridChildren.map((node) => <ExplorerGridCard key={node.id} node={node} asset={assetsByPath.get(node.path)} selectedAssetId={state.selectedAssetId} playing={state.playing} onOpenDirectory={openGridDirectory} onImport={importNode} onStage={controller.stageExplorerFile} onSelect={controller.selectAsset} />) : <div className="empty-media"><FolderOpen /><strong>{t("メディアフォルダを開く")}</strong><span>{t("フォルダごとにページを移動して素材を表示できます")}</span></div>}
+        {currentDirectory ? gridChildren.map((node) => <ExplorerGridCard key={node.id} node={node} asset={assetsByPath.get(node.path)} selectedAssetId={state.selectedAssetId} playing={state.playing} onOpenDirectory={openGridDirectory} onImport={importNode} onOpenShader={openShaderNode} onStage={controller.stageExplorerFile} onSelect={controller.selectAsset} />) : <div className="empty-media"><FolderOpen /><strong>{t("メディアフォルダを開く")}</strong><span>{t("フォルダごとにページを移動して素材を表示できます")}</span></div>}
         {currentDirectory && gridChildren.length === 0 && <div className="empty-grid-page">{t("このフォルダに表示できる項目はありません")}</div>}
         {!root && standaloneAssets.map((asset) => <GridAssetCard key={asset.id} asset={asset} selected={state.selectedAssetId === asset.id} playing={state.playing} onSelect={controller.selectAsset} onRestore={controller.restoreMediaAccess} />)}
         {directoryError && <div className="explorer-error">{directoryError}</div>}
       </div>}
-      {selectedAsset && <div className="media-selection-preview"><MediaThumbnail asset={selectedAsset} playing={state.playing} /><div><strong>{selectedAsset.name}</strong><span>{selectedAsset.sourcePath ?? t("単体ファイル")}</span><small>{selectedAsset.width ? `${selectedAsset.width} × ${selectedAsset.height}` : formatBytes(selectedAsset.size)}</small></div></div>}
+      {selectedAsset && <div className="media-selection-preview"><MediaThumbnail asset={selectedAsset} playing={state.playing} /><div className="media-selection-meta"><input key={selectedAsset.id} aria-label={t("素材名")} defaultValue={selectedAsset.name} onBlur={(event) => controller.renameAsset(selectedAsset.id, event.target.value)} /><span>{selectedAsset.sourcePath ?? t("単体ファイル")}</span><small>{selectedAsset.width ? `${selectedAsset.width} × ${selectedAsset.height}` : formatBytes(selectedAsset.size)}</small></div>{selectedAsset.fileStatus !== "ready" && <Button size="icon" variant="ghost" aria-label={t("素材を再接続")} title={t("素材を再接続")} onClick={() => void controller.relinkAsset(selectedAsset.id)}><RefreshCw /></Button>}<Button size="icon" variant="ghost" aria-label={t("素材を削除")} title={t("素材と使用中のクリップを削除")} onClick={() => controller.removeAsset(selectedAsset.id)}><X /></Button></div>}
     </div>}
   </section>;
 }
 
-function ExplorerGridCard({ node, asset, selectedAssetId, playing, onOpenDirectory, onImport, onStage, onSelect }: {
+function ExplorerGridCard({ node, asset, selectedAssetId, playing, onOpenDirectory, onImport, onOpenShader, onStage, onSelect }: {
   node: ExplorerNode; asset?: MediaAsset; selectedAssetId: string | null; playing: boolean;
   onOpenDirectory: (node: ExplorerNode) => Promise<void>; onImport: (node: ExplorerNode) => Promise<string | null>;
+  onOpenShader: (node: ExplorerNode) => Promise<void>;
   onStage: (path: string, file?: File, handle?: FileSystemFileHandle) => void; onSelect: (id: string | null) => void;
 }) {
   const { t } = useI18n();
   if (node.kind === "directory") {
-    return <div className="explorer-grid-item" role="listitem">
+    return <div className="explorer-grid-item" role="listitem" data-explorer-path={node.path}>
       <button className={`explorer-grid-card directory-card ${node.accessRequired ? "access-required" : ""}`} aria-label={`${t("フォルダーを開く")}: ${node.name}`} onClick={() => void onOpenDirectory(node)}>
         <span className="grid-card-visual">{node.loading ? <RefreshCw className="spin" /> : <FolderOpen />}</span>
         <span className="grid-card-name">{node.name}</span>
@@ -380,10 +449,11 @@ function ExplorerGridCard({ node, asset, selectedAssetId, playing, onOpenDirecto
     </div>;
   }
   const supported = isSupported(node.name);
+  const shader = isShader(node.name);
   const unavailable = asset?.fileStatus === "permission-required" || asset?.fileStatus === "missing";
   const status = asset?.fileStatus === "loading" ? t("読込中") : unavailable ? t("再接続") : asset?.width ? `${asset.width} × ${asset.height}` : extensionLabel(node.name);
-  return <div className="explorer-grid-item" role="listitem">
-      <button data-asset-id={asset?.id} className={`explorer-grid-card media-card ${asset?.id === selectedAssetId ? "selected" : ""} ${supported ? "" : "unsupported"}`} draggable={supported} disabled={!supported} aria-label={node.name} title={supported ? node.path : t("未対応のファイル形式")} onClick={() => { if (asset?.fileStatus === "ready") onSelect(asset.id); else void onImport(node); }} onDragStart={(event) => {
+  return <div className="explorer-grid-item" role="listitem" data-explorer-path={node.path}>
+      <button data-asset-id={asset?.id} className={`explorer-grid-card media-card ${asset?.id === selectedAssetId ? "selected" : ""} ${supported || shader ? "" : "unsupported"}`} draggable={supported} disabled={!supported && !shader} aria-label={node.name} title={supported || shader ? node.path : t("未対応のファイル形式")} onClick={() => { if (shader) void onOpenShader(node); else if (asset?.fileStatus === "ready") onSelect(asset.id); else void onImport(node); }} onDragStart={(event) => {
       if (asset?.fileStatus === "ready") { setAssetDragData(event.dataTransfer, asset.id); return; }
       const handle = node.handle?.kind === "file" ? node.handle : undefined;
       onStage(node.path, node.file, handle);
@@ -417,27 +487,29 @@ function GridAssetCard({ asset, selected, playing, onSelect, onRestore }: {
   </div>;
 }
 
-function ExplorerRow({ node, depth, forceExpanded, assetsByPath, selectedAssetId, onToggle, onImport, onStage, onSelect }: {
+function ExplorerRow({ node, depth, forceExpanded, assetsByPath, selectedAssetId, onToggle, onImport, onOpenShader, onStage, onSelect }: {
   node: ExplorerNode; depth: number; forceExpanded: boolean; assetsByPath: Map<string, MediaAsset>; selectedAssetId: string | null;
   onToggle: (node: ExplorerNode) => void; onImport: (node: ExplorerNode) => Promise<string | null>;
+  onOpenShader: (node: ExplorerNode) => Promise<void>;
   onStage: (path: string, file?: File, handle?: FileSystemFileHandle) => void; onSelect: (id: string | null) => void;
 }) {
   const { t } = useI18n();
   if (node.kind === "directory") {
     const expanded = forceExpanded || node.expanded;
     return <div className="media-tree-branch">
-      <button role="treeitem" aria-expanded={expanded} className={`media-tree-row folder-row ${node.accessRequired ? "access-required" : ""}`} style={{ paddingLeft: 7 + depth * 15 }} aria-label={`${node.name} ${t("フォルダ")}`} onClick={() => void onToggle(node)}>
+      <button data-explorer-path={node.path} role="treeitem" aria-expanded={expanded} className={`media-tree-row folder-row ${node.accessRequired ? "access-required" : ""}`} style={{ paddingLeft: 7 + depth * 15 }} aria-label={`${node.name} ${t("フォルダ")}`} onClick={() => void onToggle(node)}>
         {node.loading ? <RefreshCw className="spin" /> : expanded ? <ChevronDown /> : <ChevronRight />}
         {expanded ? <FolderOpen className="folder-icon" /> : <Folder className="folder-icon" />}<span>{node.name}</span>
         {node.accessRequired && <small>{t("アクセス許可")}</small>}
       </button>
-      {expanded && <div role="group">{node.children?.map((child) => <ExplorerRow key={child.id} node={child} depth={depth + 1} forceExpanded={forceExpanded} assetsByPath={assetsByPath} selectedAssetId={selectedAssetId} onToggle={onToggle} onImport={onImport} onStage={onStage} onSelect={onSelect} />)}
+      {expanded && <div role="group">{node.children?.map((child) => <ExplorerRow key={child.id} node={child} depth={depth + 1} forceExpanded={forceExpanded} assetsByPath={assetsByPath} selectedAssetId={selectedAssetId} onToggle={onToggle} onImport={onImport} onOpenShader={onOpenShader} onStage={onStage} onSelect={onSelect} />)}
       {node.children?.length === 0 && <div className="empty-directory" style={{ paddingLeft: 31 + depth * 15 }}>{t("空のフォルダ")}</div>}</div>}
     </div>;
   }
   const asset = assetsByPath.get(node.path);
   const supported = isSupported(node.name);
-  return <button data-asset-id={asset?.id} role="treeitem" className={`media-tree-row file-row media-card ${asset?.id === selectedAssetId ? "selected" : ""} ${supported ? "" : "unsupported"}`} style={{ paddingLeft: 25 + depth * 15 }} draggable={supported} aria-label={node.name} title={supported ? node.path : t("未対応のファイル形式")} onClick={() => { if (asset?.fileStatus === "ready") onSelect(asset.id); else void onImport(node); }} onDragStart={(event) => {
+  const shader = isShader(node.name);
+  return <button data-explorer-path={node.path} data-asset-id={asset?.id} role="treeitem" className={`media-tree-row file-row media-card ${asset?.id === selectedAssetId ? "selected" : ""} ${supported || shader ? "" : "unsupported"}`} style={{ paddingLeft: 25 + depth * 15 }} draggable={supported} aria-label={node.name} title={supported || shader ? node.path : t("未対応のファイル形式")} onClick={() => { if (shader) void onOpenShader(node); else if (asset?.fileStatus === "ready") onSelect(asset.id); else void onImport(node); }} onDragStart={(event) => {
     if (asset?.fileStatus === "ready") { setAssetDragData(event.dataTransfer, asset.id); return; }
     const handle = node.handle?.kind === "file" ? node.handle : undefined;
     onStage(node.path, node.file, handle);
@@ -458,6 +530,7 @@ function AssetRow({ asset, depth, selected, onSelect, onRestore }: { asset: Medi
 function FileKindIcon({ name, asset }: { name: string; asset?: MediaAsset }) {
   if (asset) return <KindIcon kind={asset.kind} />;
   const extension = extensionLabel(name).toLowerCase();
+  if (extension === "ts") return <FileCode />;
   if (["png", "jpg", "jpeg", "webp", "hdr", "exr"].includes(extension)) return <FileImage />;
   if (["wav", "mp3", "aac", "flac"].includes(extension)) return <AudioLines />;
   if (extension === "glb") return <Box />;
@@ -501,6 +574,24 @@ function findNodeTrail(node: ExplorerNode, id: string): ExplorerNode[] {
     if (trail.length) return [node, ...trail];
   }
   return [];
+}
+
+function findNodeByPath(node: ExplorerNode, path: string): ExplorerNode | undefined {
+  if (node.path === path) return node;
+  for (const child of node.children ?? []) {
+    const found = findNodeByPath(child, path);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function findParentNode(node: ExplorerNode, id: string): ExplorerNode | undefined {
+  if (node.children?.some((child) => child.id === id)) return node;
+  for (const child of node.children ?? []) {
+    const found = findParentNode(child, id);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 function filterTree(node: ExplorerNode, query: string): ExplorerNode | null {
@@ -550,19 +641,20 @@ function pickDirectoryFiles() {
 }
 
 async function queryDirectoryPermission(handle: FileSystemDirectoryHandle) {
-  const permissionHandle = handle as FileSystemDirectoryHandle & { queryPermission?: (options: { mode: "read" }) => Promise<PermissionState> };
-  return permissionHandle.queryPermission ? permissionHandle.queryPermission({ mode: "read" }) : "prompt";
+  const permissionHandle = handle as FileSystemDirectoryHandle & { queryPermission?: (options: { mode: "readwrite" }) => Promise<PermissionState> };
+  return permissionHandle.queryPermission ? permissionHandle.queryPermission({ mode: "readwrite" }) : "prompt";
 }
 
 async function requestDirectoryPermission(handle: FileSystemDirectoryHandle) {
-  const permissionHandle = handle as FileSystemDirectoryHandle & { requestPermission?: (options: { mode: "read" }) => Promise<PermissionState> };
-  return permissionHandle.requestPermission ? permissionHandle.requestPermission({ mode: "read" }) : "prompt";
+  const permissionHandle = handle as FileSystemDirectoryHandle & { requestPermission?: (options: { mode: "readwrite" }) => Promise<PermissionState> };
+  return permissionHandle.requestPermission ? permissionHandle.requestPermission({ mode: "readwrite" }) : "prompt";
 }
 
 function setAssetDragData(dataTransfer: DataTransfer, assetId: string) { dataTransfer.clearData(); dataTransfer.effectAllowed = "copy"; dataTransfer.setData("application/x-gfxutl-asset", assetId); dataTransfer.setData("text/plain", assetId); }
 function setExplorerDragData(dataTransfer: DataTransfer, path: string) { dataTransfer.clearData(); dataTransfer.effectAllowed = "copy"; dataTransfer.setData("application/x-gfxutl-path", path); dataTransfer.setData("text/plain", path); }
 function supportedExtension(extension: string) { return SUPPORTED_EXTENSIONS.has(extension); }
 function isSupported(name: string) { return supportedExtension(extensionLabel(name).toLowerCase()); }
+function isShader(name: string) { return extensionLabel(name).toLowerCase() === "ts"; }
 function isBrowserPreviewImage(name: string) { return ["png", "jpg", "jpeg", "webp"].includes(extensionLabel(name).toLowerCase()); }
 function isBrowserPreviewVideo(name: string) { return ["mp4", "mov", "webm", "mkv"].includes(extensionLabel(name).toLowerCase()); }
 function extensionLabel(name: string) { return name.includes(".") ? name.split(".").pop()!.toUpperCase() : "FILE"; }

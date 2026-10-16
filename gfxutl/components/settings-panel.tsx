@@ -31,6 +31,8 @@ export function SettingsPanel() {
     <section className="settings-group project-settings" aria-labelledby="project-settings">
       <div className="settings-group-title" id="project-settings"><FileDown /> {t("プロジェクト")}</div>
       <label className="settings-field"><span>{t("名前")}</span><input aria-label={t("プロジェクト名")} value={state.projectName} onChange={(event) => controller.renameProject(event.target.value)} /></label>
+      <label className="settings-field"><span>{t("長さ")}</span><div className="settings-number"><input aria-label={t("シーケンス長")} type="number" min={1 / state.fps} step={1 / state.fps} value={Number(state.duration.toFixed(3))} onChange={(event) => controller.updateSequenceSettings({ duration: Number(event.target.value) })} /><small>s</small></div></label>
+      <label className="settings-field"><span>{t("フレームレート")}</span><div className="settings-number"><input aria-label={t("シーケンスのフレームレート")} type="number" min={1} max={240} step={1} value={state.fps} onChange={(event) => controller.updateSequenceSettings({ fps: Number(event.target.value) })} /><small>fps</small></div></label>
       <div className="project-actions">
         <Button size="sm" variant="ghost" onClick={controller.newProject}><FilePlus2 />{t("新規")}</Button>
         <Button size="sm" variant="ghost" onClick={() => void controller.openProject()}><FolderOpen />{t("開く")}</Button>
@@ -56,6 +58,11 @@ export function SettingsPanel() {
         <strong>{t("{count} フレーム", { count: state.cache.entries })}</strong>
         <Button variant="ghost" size="icon" aria-label={t("RAMプレビューを消去")} disabled={!state.cache.entries} onClick={controller.clearCache}><Trash2 /></Button>
       </div>
+    </section>
+
+    <section className="settings-group" aria-labelledby="editing-settings">
+      <div className="settings-group-title" id="editing-settings"><Settings2 /> {t("編集")}</div>
+      <label className="settings-switch"><span><strong>{t("オートキー")}</strong><small>{t("変更した値を現在位置へ記録")}</small></span><input type="checkbox" aria-label={t("オートキーを有効化")} checked={settings.autoKeyEnabled} onChange={(event) => controller.updateSettings({ autoKeyEnabled: event.target.checked })} /><i aria-hidden="true" /></label>
     </section>
 
     <section className="settings-group" aria-labelledby="audio-channel-settings">

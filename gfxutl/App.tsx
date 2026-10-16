@@ -10,6 +10,7 @@ import { EditorContextMenu } from "./components/editor-context-menu";
 import { observeWindowControlsOverlay } from "./core/interface/window-controls-overlay";
 import { useI18n } from "./core/i18n";
 import { Button } from "./components/ui/button";
+import { ShaderGraphPanel } from "./components/shader-graph-panel";
 
 export function App() {
   const { state, controller } = useEditor();
@@ -25,6 +26,16 @@ export function App() {
     const root = document.getElementById("main");
     return root ? observeWindowControlsOverlay(root) : undefined;
   }, []);
+  useEffect(() => {
+    document.title = `${state.projectDirty ? "• " : ""}${state.projectName} — GfxUtl`;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!state.projectDirty) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [state.projectDirty, state.projectName]);
   useEffect(() => {
     const controlKeyboard = (event: KeyboardEvent) => {
       if (event.ctrlKey && event.metaKey && (event.key === "Control" || event.key === "Meta")) {
@@ -48,6 +59,25 @@ export function App() {
         event.preventDefault();
         event.stopPropagation();
         controller.redo();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "a" && !editingText) {
+        event.preventDefault();
+        event.stopPropagation();
+        controller.selectAllClips();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "d" && !editingText) {
+        event.preventDefault();
+        event.stopPropagation();
+        controller.duplicateSelection();
+        return;
+      }
+      if (!editingText && (event.key === "Delete" || event.key === "Backspace")) {
+        if (!controller.getSnapshot().selectedClipIds.length && !controller.getSnapshot().selectedClipId) return;
+        event.preventDefault();
+        event.stopPropagation();
+        controller.removeSelection();
         return;
       }
       if (!editingText && !event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "m") {
@@ -85,7 +115,7 @@ export function App() {
       <MediaPanel />
       <PreviewPanel />
       <InspectorPanel />
-      <TimelinePanel />
+      {state.activeBottomPane === "timeline" ? <TimelinePanel /> : <ShaderGraphPanel />}
       <StatusBar />
       <PanelResizers />
       <EditorContextMenu />

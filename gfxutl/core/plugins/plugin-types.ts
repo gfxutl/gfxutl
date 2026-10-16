@@ -36,5 +36,5 @@ export interface RendererPluginInfo {
 export interface RendererPluginFrame {
   time: number;
   fps: number;
-  mode: "realtime" | "playback";
+  mode: "realtime" | "playback" | "export" | "still";
 }

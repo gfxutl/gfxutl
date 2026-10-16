@@ -3,6 +3,7 @@ import {
   Gauge16Regular as Gauge,
   Settings16Regular as Settings2,
   VideoClip16Regular as FileVideo2,
+  Image16Regular as Image,
 } from "@fluentui/react-icons";
 import { useEditor } from "../core/interface";
 import { COMPOSITION_SIZE_PRESETS } from "../core/interface/composition-size";
@@ -35,7 +36,7 @@ export function ExportPanel() {
           const [width, height] = event.target.value.split("x").map(Number);
           if (Number.isFinite(width) && Number.isFinite(height)) controller.updateExportSettings({ width, height });
         }}>{COMPOSITION_SIZE_PRESETS.map((preset) => <option key={`${preset.width}x${preset.height}`} value={`${preset.width}x${preset.height}`}>{preset.width} × {preset.height}</option>)}{!hasPreset && <option value="custom">{t("カスタム")}</option>}</select></label>
-        <div className="export-dimensions"><input type="number" min={2} max={7680} step={2} value={settings.width} onChange={(event) => controller.updateExportSettings({ width: Number(event.target.value) })} /><span>×</span><input type="number" min={2} max={7680} step={2} value={settings.height} onChange={(event) => controller.updateExportSettings({ height: Number(event.target.value) })} /></div>
+        <div className="export-dimensions"><input type="number" min={2} max={7680} step={2} value={settings.width} onChange={(event) => controller.updateExportSettings({ width: Number(event.target.value) })} /><span>×</span><input type="number" min={2} max={4320} step={2} value={settings.height} onChange={(event) => controller.updateExportSettings({ height: Number(event.target.value) })} /></div>
         <label className="export-field"><span>{t("フレームレート")}</span><select value={settings.fps} onChange={(event) => controller.updateExportSettings({ fps: Number(event.target.value) })}>{[24, 25, 30, 50, 60].map((fps) => <option key={fps} value={fps}>{fps} fps</option>)}</select></label>
         <label className="export-field"><span>{t("ビットレート")}</span><div className="bitrate-input"><input type="number" min={1} max={100} value={settings.bitrate / 1_000_000} onChange={(event) => controller.updateExportSettings({ bitrate: Number(event.target.value) * 1_000_000 })} /><small>Mbps</small></div></label>
       </div>
@@ -50,7 +51,8 @@ export function ExportPanel() {
       <div className="export-estimate"><Gauge /><span>{t("推定ファイルサイズ")}</span><strong>{t("約 {value} MB", { value: estimatedMb.toFixed(1) })}</strong></div>
       {busy && <div className="export-progress"><div><i style={{ width: `${state.exportProgress * 100}%` }} /></div><span>{Math.round(state.exportProgress * 100)}%</span></div>}
       {state.exportStatus === "done" && <div className="export-done"><CheckCircle2 /> {t("書き出しが完了しました")}</div>}
-      <Button className="export-submit" disabled={busy} onClick={controller.exportVideo}>{t(busy ? "レンダリング中…" : "書き出しを開始")}</Button>
+      <Button className="export-submit" variant="outline" disabled={busy} onClick={controller.exportCurrentFrame}><Image />{t("現在フレームをPNG保存")}</Button>
+      <Button className="export-submit" variant={busy ? "outline" : "default"} onClick={busy ? controller.cancelExport : controller.exportVideo}>{t(busy ? "書き出しをキャンセル" : "書き出しを開始")}</Button>
     </div>
   );
 }

@@ -41,6 +41,7 @@ type RuntimeHost = {
 
 export class RendererPluginRuntime {
   private instances = new Map<string, PluginInstance>();
+  private frameContext?: RendererContext;
 
   constructor(private host: RuntimeHost) {}
 
@@ -87,29 +88,35 @@ export class RendererPluginRuntime {
     if (notify) this.host.requestRender();
   }
 
-  async runFrame(frame: RendererPluginFrame) {
-    for (const instance of this.instances.values()) {
-      if (!instance.onFrame) continue;
-      try {
-        await instance.onFrame(Object.freeze({ ...frame }), instance.api);
-      } catch (error) {
-        instance.info = { ...instance.info, status: "error", error: `onFrame: ${errorMessage(error)}` };
-        instance.onFrame = undefined;
-        this.host.state(instance.info);
+  async runFrame(frame: RendererPluginFrame, context?: RendererContext) {
+    this.frameContext = context;
+    try {
+      for (const instance of this.instances.values()) {
+        if (!instance.onFrame) continue;
+        try {
+          await instance.onFrame(Object.freeze({ ...frame }), instance.api);
+        } catch (error) {
+          instance.info = { ...instance.info, status: "error", error: `onFrame: ${errorMessage(error)}` };
+          instance.onFrame = undefined;
+          this.host.state(instance.info);
+        }
       }
+    } finally {
+      this.frameContext = undefined;
     }
   }
 
   private createApi(id: string, objects: Set<THREE.Object3D>): RendererPluginApi {
     const host = this.host;
+    const context = () => this.frameContext ?? host.context();
     return Object.freeze({
       version: 1 as const,
       three: THREE,
-      get renderer() { return host.context()?.renderer; },
-      get scene() { return host.context()?.scene; },
-      get camera() { return host.context()?.camera; },
+      get renderer() { return context()?.renderer; },
+      get scene() { return context()?.scene; },
+      get camera() { return context()?.camera; },
       addObject(object: THREE.Object3D) {
-        const scene = host.context()?.scene;
+        const scene = context()?.scene;
         if (!scene) throw new Error("レンダラーはまだ初期化されていません");
         object.userData.gfxutlPlugin = id;
         objects.add(object);

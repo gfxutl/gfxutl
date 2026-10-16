@@ -1,4 +1,4 @@
-import { Database16Regular as Database, Delete16Regular as Trash2, Gauge16Regular as Gauge } from "@fluentui/react-icons";
+import { Code16Regular as Code, Database16Regular as Database, Delete16Regular as Trash2, Gauge16Regular as Gauge, Timeline20Regular as Timeline } from "@fluentui/react-icons";
 import { useEditor } from "../core/interface";
 import { Button } from "./ui/button";
 import { Tooltip } from "./ui/tooltip";
@@ -15,6 +15,14 @@ export function StatusBar() {
   const gpuContext = state.engine === "webgpu" ? "WebGPU" : state.engine === "webgl2" ? "WebGL" : state.engine === "unsupported" ? t("GPU利用不可") : t("GPU初期化中");
   return (
     <footer className="status-bar panel">
+      <nav className="bottom-pane-tabs" role="tablist" aria-label={t("下部ペイン")}>
+        <button className={`bottom-pane-tab bottom-pane-tab-timeline ${state.activeBottomPane === "timeline" ? "active" : ""}`} role="tab" aria-selected={state.activeBottomPane === "timeline"} onClick={() => controller.setBottomPane("timeline")}><Timeline /><span>{t("タイムライン")}</span></button>
+        {state.shaderGraphs.map((graph) => {
+          const active = state.activeBottomPane === "shader" && state.activeShaderGraphId === graph.id;
+          return <button key={graph.id} className={`bottom-pane-tab bottom-pane-tab-object ${active ? "active" : ""}`} role="tab" aria-selected={active} onClick={() => controller.setBottomPane("shader", graph.id)} title={graph.sourcePath ?? graph.name}><Code /><span>{graph.name}{graph.dirty ? " •" : ""}</span></button>;
+        })}
+        {!state.shaderGraphs.length && <button className={`bottom-pane-tab bottom-pane-tab-object ${state.activeBottomPane === "shader" ? "active" : ""}`} role="tab" aria-selected={state.activeBottomPane === "shader"} onClick={() => controller.setBottomPane("shader")}><Code /><span>{t("シェーダーグラフ")}</span></button>}
+      </nav>
       <div className="status-center">
         <span className="gpu-context" data-gpu-context={state.engine}><i className={`engine-light ${state.engine}`} /><Gauge />{gpuContext}</span>
         <span className="renderer-stats" title={`Lines ${state.rendererStats.lines} / Points ${state.rendererStats.points} / Geometries ${state.rendererStats.geometries} / Textures ${state.rendererStats.textures}`}>

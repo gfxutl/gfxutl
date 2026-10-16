@@ -7,7 +7,7 @@ import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { clone as cloneSkinned } from "three/addons/utils/SkeletonUtils.js";
 import { ALL_FORMATS, AudioSample, AudioSampleSink, AudioSampleSource, BufferTarget, CanvasSource, Input, Mp4OutputFormat, Output, VideoSampleSink, WebMOutputFormat } from "mediabunny";
-import type { AudioProcessingSpec, CameraHandleKind, ClipEffect, ClipKeyframe, EngineRequest, EngineResponse, MediaFileSource, PreviewPickResult, PreviewView, RenderClip, RenderFilter, SceneObjectSpec, SceneSettings, TimelinePatch, TimelineSnapshot, TransformHandleKind } from "../protocol/engine-protocol";
+import type { AudioProcessingSpec, CameraHandleKind, ClipEffect, ClipKeyframe, ClipPostProcess, EngineRequest, EngineResponse, FilterRegion, MediaFileSource, PreviewPickResult, PreviewView, RenderClip, RenderFilter, SceneObjectSpec, SceneSettings, TimelinePatch, TimelineSnapshot, TransformHandleKind } from "../protocol/engine-protocol";
 import { RamPreviewCache } from "./ram-preview-cache";
 import { createRenderPipeline, shadowTypeFrom, ThreeRendererCore, toneMappingFrom } from "./three-renderer-core";
 import { ThreeSceneCore } from "./three-scene-core";
@@ -18,8 +18,10 @@ import { ThreeCameraHandles } from "./three-camera-handles";
 import { ThreeTransformHandles } from "./three-transform-handles";
 import { classifyFilterRegion, createFilterRegionNodeCache } from "./filter-region-nodes";
 import { isNeutralClipEffect, isNeutralColorGrading } from "./effect-optimization";
+import { cameraForTime, clipTransitionGain } from "../interface/sequencer-state";
 
 const worker = self as unknown as DedicatedWorkerGlobalScope;
+const canceledExports = new Set<string>();
 
 function denyExternalConnections() {
   const unavailable = () => { throw new TypeError("レンダラーWorkerからの外部接続は禁止されています"); };
@@ -125,6 +127,7 @@ interface ModelSurface {
   assetId: string;
   root: THREE.Group;
   mixer?: THREE.AnimationMixer;
+  animationName?: string;
   duration: number;
   objects: THREE.Object3D[];
   materials: Array<THREE.Material & { color?: THREE.Color }>;
@@ -510,6 +513,7 @@ function visualEffectSignature(clip: RenderClip) {
     clip.effects.filter((effect) => effect.enabled && !isNeutralClipEffect(effect) && effect.kind !== "transform" && (effect.kind !== "opacity" || effect.filterRegion)),
     clip.masks.filter((mask) => mask.enabled),
     clip.postProcess?.enabled && clip.postProcess.compileStatus === "ready" ? clip.postProcess : null,
+    clip.propertyActionOrder,
     clip.filterPostProcesses?.filter(({ shader }) => shader.enabled && shader.compileStatus === "ready"),
   ]);
 }
@@ -586,73 +590,58 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
     const pixelated = sampleTexture(texUv);
     sampled = effect.filterRegion ? mix(sampled, pixelated, filterMasks.fragment(effect.filterRegion)) : pixelated;
   }
-  let rgb = applyColorGrading(sampled.rgb, clip.colorGrading);
-  let alpha: any = sampled.a;
-  let combinedMask: any = null;
-  for (const mask of activeMasks) {
-    const point = uv().sub(vec2(mask.x / 100, 1 - mask.y / 100));
-    const halfWidth = Math.max(0.0001, mask.width / 200);
-    const halfHeight = Math.max(0.0001, mask.height / 200);
-    const edge = mask.shape === "ellipse"
-      ? length(point.div(vec2(halfWidth, halfHeight)))
-      : max(abs(point.x).div(halfWidth), abs(point.y).div(halfHeight));
-    const feather = Math.max(0.0001, mask.feather / 100);
-    let value: any = float(1).sub(smoothstep(Math.max(0, 1 - feather), 1, edge)).mul(THREE.MathUtils.clamp(mask.opacity / 100, 0, 1));
-    if (mask.inverted) value = float(1).sub(value);
-    if (combinedMask === null) combinedMask = mask.mode === "subtract" ? float(1).sub(value) : value;
-    else if (mask.mode === "add") combinedMask = max(combinedMask, value);
-    else if (mask.mode === "subtract") combinedMask = combinedMask.mul(float(1).sub(value));
-    else combinedMask = combinedMask.mul(value);
-  }
-  if (combinedMask !== null) alpha = alpha.mul(combinedMask);
-  for (const effect of activeEffects) {
-    if (effect.kind === "pixelate" || effect.kind === "meshDeform" || effect.kind === "transform") continue;
-    const previousRgb = rgb;
-    const previousAlpha = alpha;
-    let nextRgb = rgb;
-    let nextAlpha = alpha;
-    if (effect.kind === "brightness") {
-      nextRgb = rgb.mul(Math.max(0, 1 + (effect.params.amount ?? 0) / 100));
-    } else if (effect.kind === "tint") {
-      nextRgb = rgb.mul(vec3((effect.params.red ?? 100) / 100, (effect.params.green ?? 100) / 100, (effect.params.blue ?? 100) / 100));
-    } else if (effect.kind === "opacity" && effect.filterRegion) {
-      nextAlpha = alpha.mul(THREE.MathUtils.clamp((effect.params.amount ?? 100) / 100, 0, 1));
-    } else if (effect.kind === "contrast") {
-      nextRgb = rgb.sub(0.5).mul(Math.max(0, 1 + (effect.params.amount ?? 0) / 100)).add(0.5);
-    } else if (effect.kind === "saturation") {
-      nextRgb = saturation(rgb, Math.max(0, (effect.params.amount ?? 100) / 100));
-    } else if (effect.kind === "gamma") {
-      nextRgb = pow(max(rgb, vec3(0)), vec3(1 / Math.max(0.01, (effect.params.amount ?? 100) / 100)));
-    } else if (effect.kind === "hue") {
-      nextRgb = hue(rgb, THREE.MathUtils.degToRad(effect.params.angle ?? 0));
-    } else if (effect.kind === "chromaKey") {
-      const key = vec3((effect.params.red ?? 0) / 100, (effect.params.green ?? 100) / 100, (effect.params.blue ?? 0) / 100);
-      const threshold = Math.max(0, (effect.params.threshold ?? 20) / 100);
-      const softness = Math.max(0.001, (effect.params.softness ?? 10) / 100);
-      nextAlpha = alpha.mul(smoothstep(threshold, threshold + softness, distance(rgb, key)));
-    } else if (effect.kind === "vignette") {
-      const amount = Math.max(0, (effect.params.amount ?? 35) / 100);
-      const size = THREE.MathUtils.clamp((effect.params.size ?? 65) / 100, 0.01, 1);
-      const radius = length(uv().sub(vec2(0.5)));
-      nextRgb = rgb.mul(float(1).sub(smoothstep(size * 0.5, Math.max(size * 0.5 + 0.001, 0.72), radius).mul(amount)));
-    }
-    if (effect.filterRegion) {
-      const regionMask = filterMasks.fragment(effect.filterRegion);
-      rgb = mix(previousRgb, nextRgb, regionMask);
-      alpha = mix(previousAlpha, nextAlpha, regionMask);
-    } else {
-      rgb = nextRgb;
-      alpha = nextAlpha;
-    }
-  }
   const alphaMasked = activeMasks.length > 0 || activeEffects.some((effect) => effect.kind === "chromaKey" || (effect.kind === "opacity" && Boolean(effect.filterRegion)));
-  let outputColor: any = vec4(rgb, alpha);
-  const shaders = [
-    ...(clip.postProcess ? [{ shader: clip.postProcess, region: undefined }] : []),
-    ...(clip.filterPostProcesses ?? []),
-  ];
-  for (const { shader, region } of shaders) {
-    if (!shader?.enabled || shader.compileStatus !== "ready" || !shader.wgsl) continue;
+  let outputColor: any = vec4(sampled.rgb, sampled.a);
+  const applyEffects = () => {
+    let rgb: any = outputColor.rgb;
+    let alpha: any = outputColor.a;
+    for (const effect of activeEffects) {
+      if (effect.kind === "pixelate" || effect.kind === "meshDeform" || effect.kind === "transform") continue;
+      const previousRgb = rgb;
+      const previousAlpha = alpha;
+      let nextRgb = rgb;
+      let nextAlpha = alpha;
+      if (effect.kind === "brightness") nextRgb = rgb.mul(Math.max(0, 1 + (effect.params.amount ?? 0) / 100));
+      else if (effect.kind === "tint") nextRgb = rgb.mul(vec3((effect.params.red ?? 100) / 100, (effect.params.green ?? 100) / 100, (effect.params.blue ?? 100) / 100));
+      else if (effect.kind === "opacity" && effect.filterRegion) nextAlpha = alpha.mul(THREE.MathUtils.clamp((effect.params.amount ?? 100) / 100, 0, 1));
+      else if (effect.kind === "contrast") nextRgb = rgb.sub(0.5).mul(Math.max(0, 1 + (effect.params.amount ?? 0) / 100)).add(0.5);
+      else if (effect.kind === "saturation") nextRgb = saturation(rgb, Math.max(0, (effect.params.amount ?? 100) / 100));
+      else if (effect.kind === "gamma") nextRgb = pow(max(rgb, vec3(0)), vec3(1 / Math.max(0.01, (effect.params.amount ?? 100) / 100)));
+      else if (effect.kind === "hue") nextRgb = hue(rgb, THREE.MathUtils.degToRad(effect.params.angle ?? 0));
+      else if (effect.kind === "chromaKey") {
+        const key = vec3((effect.params.red ?? 0) / 100, (effect.params.green ?? 100) / 100, (effect.params.blue ?? 0) / 100);
+        nextAlpha = alpha.mul(smoothstep(Math.max(0, (effect.params.threshold ?? 20) / 100), Math.max(0.001, (effect.params.threshold ?? 20) / 100 + (effect.params.softness ?? 10) / 100), distance(rgb, key)));
+      } else if (effect.kind === "vignette") {
+        const amount = Math.max(0, (effect.params.amount ?? 35) / 100);
+        const size = THREE.MathUtils.clamp((effect.params.size ?? 65) / 100, 0.01, 1);
+        nextRgb = rgb.mul(float(1).sub(smoothstep(size * 0.5, Math.max(size * 0.5 + 0.001, 0.72), length(uv().sub(vec2(0.5)))).mul(amount)));
+      }
+      if (effect.filterRegion) {
+        const regionMask = filterMasks.fragment(effect.filterRegion);
+        rgb = mix(previousRgb, nextRgb, regionMask);
+        alpha = mix(previousAlpha, nextAlpha, regionMask);
+      } else { rgb = nextRgb; alpha = nextAlpha; }
+    }
+    outputColor = vec4(rgb, alpha);
+  };
+  const applyMasks = () => {
+    let combinedMask: any = null;
+    for (const mask of activeMasks) {
+      const point = uv().sub(vec2(mask.x / 100, 1 - mask.y / 100));
+      const halfWidth = Math.max(0.0001, mask.width / 200);
+      const halfHeight = Math.max(0.0001, mask.height / 200);
+      const edge = mask.shape === "ellipse" ? length(point.div(vec2(halfWidth, halfHeight))) : max(abs(point.x).div(halfWidth), abs(point.y).div(halfHeight));
+      let value: any = float(1).sub(smoothstep(Math.max(0, 1 - Math.max(0.0001, mask.feather / 100)), 1, edge)).mul(THREE.MathUtils.clamp(mask.opacity / 100, 0, 1));
+      if (mask.inverted) value = float(1).sub(value);
+      if (combinedMask === null) combinedMask = mask.mode === "subtract" ? float(1).sub(value) : value;
+      else if (mask.mode === "add") combinedMask = max(combinedMask, value);
+      else if (mask.mode === "subtract") combinedMask = combinedMask.mul(float(1).sub(value));
+      else combinedMask = combinedMask.mul(value);
+    }
+    if (combinedMask !== null) outputColor = vec4(outputColor.rgb, outputColor.a.mul(combinedMask));
+  };
+  const applyShader = ({ shader, region }: { shader: ClipPostProcess; region?: FilterRegion }) => {
+    if (!shader?.enabled || shader.compileStatus !== "ready" || !shader.wgsl) return;
     try {
       const shaderFunction = graphics?.backend === "webgpu" ? wgslFn(shader.wgsl) : glslFn(shader.glsl);
       const filteredColor: any = shaderFunction({ color: outputColor, uv: uv(), time: postProcessTime });
@@ -660,7 +649,15 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
     } catch (error) {
       send({ type: "error", message: `${shader.name}: ${error instanceof Error ? error.message : String(error)}` });
     }
+  };
+  const order = clip.propertyActionOrder ?? ["colorGrading", "effects", "postProcess", "masks"];
+  for (const action of order) {
+    if (action === "colorGrading") outputColor = vec4(applyColorGrading(outputColor.rgb, clip.colorGrading), outputColor.a);
+    else if (action === "effects") applyEffects();
+    else if (action === "masks") applyMasks();
+    else if (action === "postProcess" && clip.postProcess) applyShader({ shader: clip.postProcess });
   }
+  for (const shader of clip.filterPostProcesses ?? []) applyShader(shader);
   const material = new THREE.MeshBasicNodeMaterial({ transparent: alphaMasked || clip.opacity < 100, depthTest: true, depthWrite: !alphaMasked && clip.opacity >= 100, toneMapped: false });
   material.userData.gfxAlphaMasked = alphaMasked;
   material.colorNode = outputColor;
@@ -986,9 +983,10 @@ function ensureModelSurface(clip: RenderClip, runtime: ModelRuntime) {
     root.add(model);
     graphics?.scene.add(root);
     timelineRoots.set(clip.id, root);
-    const mixer = runtime.animations.length ? new THREE.AnimationMixer(model) : undefined;
-    runtime.animations.forEach((animation) => mixer?.clipAction(animation).play());
-    return { assetId, root, mixer, duration: runtime.duration, objects, materials, deformGeometries, deformSignature: "" };
+    const selectedAnimation = runtime.animations.find((animation) => animation.name === clip.modelAnimation) ?? runtime.animations[0];
+    const mixer = selectedAnimation ? new THREE.AnimationMixer(model) : undefined;
+    if (selectedAnimation) mixer?.clipAction(selectedAnimation).play();
+    return { assetId, root, mixer, animationName: selectedAnimation?.name, duration: selectedAnimation?.duration ?? runtime.duration, objects, materials, deformGeometries, deformSignature: "" };
   }, (value) => disposeModelSurface(clip.id, value));
   modelSurfaces.set(clip.id, surface);
   void graphics?.precompile();
@@ -1002,8 +1000,6 @@ function applyModelTransform(surface: ModelSurface, clip: RenderClip) {
   let scaleY = clip.scale / 100 * clip.scaleY / 100;
   let rotationZ = -THREE.MathUtils.degToRad(clip.rotation);
   let opacity = clip.opacity / 100;
-  let brightness = 0;
-  const tint = modelTintScratch.setRGB(1, 1, 1);
   for (const effect of clip.effects) {
     // Imported glTF materials are not node materials. Never leak a regional
     // filter across the whole model when it cannot be composited per fragment.
@@ -1015,9 +1011,7 @@ function applyModelTransform(surface: ModelSurface, clip: RenderClip) {
       scaleX *= effectScale;
       scaleY *= effectScale;
       rotationZ -= THREE.MathUtils.degToRad(effect.params.rotation ?? 0);
-    } else if (effect.kind === "opacity") opacity *= (effect.params.amount ?? 100) / 100;
-    else if (effect.kind === "brightness") brightness += (effect.params.amount ?? 0) / 100;
-    else if (effect.kind === "tint") tint.multiply(modelEffectColorScratch.setRGB((effect.params.red ?? 100) / 100, (effect.params.green ?? 100) / 100, (effect.params.blue ?? 100) / 100));
+    }
   }
   surface.root.position.set(positionX, positionY, clip.positionZ / 100);
   surface.root.rotation.set(THREE.MathUtils.degToRad(clip.rotationX), THREE.MathUtils.degToRad(clip.rotationY), rotationZ);
@@ -1027,11 +1021,65 @@ function applyModelTransform(surface: ModelSurface, clip: RenderClip) {
   // THREE-OPT: operate on the flat Object3D/material arrays captured at instantiation.
   for (const object of surface.objects) object.renderOrder = clip.renderOrder;
   for (const material of surface.materials) {
-    material.opacity = THREE.MathUtils.clamp((material.userData.gfxBaseOpacity ?? 1) * opacity, 0, 1);
+    const color = material.color && material.userData.gfxBaseColor !== undefined ? modelTintScratch.setHex(material.userData.gfxBaseColor) : undefined;
+    let materialOpacity = opacity;
+    const actionOrder = clip.propertyActionOrder ?? ["colorGrading", "effects"];
+    for (const action of actionOrder) {
+      if (action === "colorGrading" && color) applyModelColorGrading(color, clip.colorGrading);
+      if (action !== "effects") continue;
+      for (const effect of clip.effects) {
+        if (!effect.enabled || effect.filterRegion || isNeutralClipEffect(effect)) continue;
+        if (effect.kind === "opacity") materialOpacity *= (effect.params.amount ?? 100) / 100;
+        else if (effect.kind === "brightness" && color) color.multiplyScalar(Math.max(0, 1 + (effect.params.amount ?? 0) / 100));
+        else if (effect.kind === "tint" && color) color.multiply(modelEffectColorScratch.setRGB((effect.params.red ?? 100) / 100, (effect.params.green ?? 100) / 100, (effect.params.blue ?? 100) / 100));
+        else if (effect.kind === "contrast" && color) applyColorContrast(color, Math.max(0, 1 + (effect.params.amount ?? 0) / 100));
+        else if (effect.kind === "saturation" && color) applyColorSaturation(color, Math.max(0, (effect.params.amount ?? 100) / 100));
+        else if (effect.kind === "gamma" && color) applyColorGamma(color, Math.max(0.01, (effect.params.amount ?? 100) / 100));
+        else if (effect.kind === "hue" && color) color.offsetHSL((effect.params.angle ?? 0) / 360, 0, 0);
+        else if (effect.kind === "chromaKey" && color) {
+          const key = modelEffectColorScratch.setRGB((effect.params.red ?? 0) / 100, (effect.params.green ?? 100) / 100, (effect.params.blue ?? 0) / 100);
+          const distanceToKey = Math.hypot(color.r - key.r, color.g - key.g, color.b - key.b);
+          const threshold = Math.max(0, (effect.params.threshold ?? 20) / 100);
+          const softness = Math.max(0.001, (effect.params.softness ?? 10) / 100);
+          materialOpacity *= THREE.MathUtils.smoothstep(distanceToKey, threshold, threshold + softness);
+        }
+      }
+    }
+    material.opacity = THREE.MathUtils.clamp((material.userData.gfxBaseOpacity ?? 1) * materialOpacity, 0, 1);
     material.transparent = material.opacity < 1;
-    if (material.color && material.userData.gfxBaseColor !== undefined) material.color.setHex(material.userData.gfxBaseColor).multiply(tint).offsetHSL(0, 0, brightness);
+    if (material.color && color) material.color.copy(color);
   }
   applyModelMeshDeformation(surface, clip.effects);
+}
+
+function applyModelColorGrading(color: THREE.Color, grading: RenderClip["colorGrading"]) {
+  if (isNeutralColorGrading(grading)) return;
+  const temperature = THREE.MathUtils.clamp(grading.temperature / 100, -1, 1);
+  const tint = THREE.MathUtils.clamp(grading.tint / 100, -1, 1);
+  color.multiplyScalar(2 ** THREE.MathUtils.clamp(grading.exposure, -10, 10));
+  color.multiply(modelEffectColorScratch.setRGB(1 + temperature * 0.18 + tint * 0.04, 1 - tint * 0.1, 1 - temperature * 0.18 + tint * 0.04));
+  color.r = Math.max(0, (color.r + grading.liftRed / 500) ** (1 / Math.max(0.1, 1 + grading.gammaRed / 100)) * Math.max(0, 1 + grading.gainRed / 100));
+  color.g = Math.max(0, (color.g + grading.liftGreen / 500) ** (1 / Math.max(0.1, 1 + grading.gammaGreen / 100)) * Math.max(0, 1 + grading.gainGreen / 100));
+  color.b = Math.max(0, (color.b + grading.liftBlue / 500) ** (1 / Math.max(0.1, 1 + grading.gammaBlue / 100)) * Math.max(0, 1 + grading.gainBlue / 100));
+  applyColorContrast(color, Math.max(0, 1 + grading.contrast / 100));
+  applyColorSaturation(color, Math.max(0, 1 + grading.saturation / 100));
+  color.offsetHSL(grading.hue / 360, 0, 0);
+  const fade = THREE.MathUtils.clamp(grading.fade / 100, 0, 1);
+  color.multiplyScalar(1 - fade * 0.16).addScalar(fade * 0.12);
+}
+
+function applyColorContrast(color: THREE.Color, amount: number) {
+  color.setRGB((color.r - 0.5) * amount + 0.5, (color.g - 0.5) * amount + 0.5, (color.b - 0.5) * amount + 0.5);
+}
+
+function applyColorSaturation(color: THREE.Color, amount: number) {
+  const gray = color.r * 0.2126 + color.g * 0.7152 + color.b * 0.0722;
+  color.setRGB(gray + (color.r - gray) * amount, gray + (color.g - gray) * amount, gray + (color.b - gray) * amount);
+}
+
+function applyColorGamma(color: THREE.Color, gamma: number) {
+  const exponent = 1 / gamma;
+  color.setRGB(Math.max(0, color.r) ** exponent, Math.max(0, color.g) ** exponent, Math.max(0, color.b) ** exponent);
 }
 
 function applyModelMeshDeformation(surface: ModelSurface, effects: readonly ClipEffect[]) {
@@ -1077,6 +1125,13 @@ function updateModelSurfaces(time: number, frame: RenderFrameIndex) {
     const runtime = modelRuntimes.get(clip.assetId);
     if (!runtime) continue;
     const surface = ensureModelSurface(clip, runtime);
+    const requestedAnimation = runtime.animations.find((animation) => animation.name === clip.modelAnimation) ?? runtime.animations[0];
+    if (surface.mixer && requestedAnimation && surface.animationName !== requestedAnimation.name) {
+      surface.mixer.stopAllAction();
+      surface.mixer.clipAction(requestedAnimation).reset().play();
+      surface.animationName = requestedAnimation.name;
+      surface.duration = requestedAnimation.duration;
+    }
     surface.root.visible = clip.visible;
     applyModelTransform(surface, clip);
     if (surface.mixer) {
@@ -1336,7 +1391,6 @@ function keyframeTracksFor(source: object, keyframes: readonly ClipKeyframe[]) {
 }
 
 function evaluateClipAtTime(clip: RenderClip, timelineTime: number) {
-  if (!clip.keyframes.length) return clip;
   const evaluated = {
     ...clip,
     colorGrading: { ...clip.colorGrading },
@@ -1346,6 +1400,9 @@ function evaluateClipAtTime(clip: RenderClip, timelineTime: number) {
     sceneObject: clip.sceneObject ? structuredClone(clip.sceneObject) : undefined,
   };
   const localTime = THREE.MathUtils.clamp(timelineTime - clip.start, 0, clip.duration);
+  const remaining = Math.max(0, clip.duration - localTime);
+  const transition = clipTransitionGain(clip, localTime);
+  evaluated.opacity *= transition;
   const properties = keyframeTracksFor(clip, clip.keyframes);
   for (const [property, keys] of properties) {
     // THREE-OPT: tracks are sorted once and searched without reverse-array allocations.
@@ -1563,8 +1620,9 @@ function cubicBezierAt(easing: ClipKeyframe["easing"], x: number) {
 }
 
 function evaluateSceneSettingsAtTime(settings: SceneSettings, time: number) {
-  if (!settings.keyframes?.length) return settings;
   const evaluated = structuredClone(settings);
+  evaluated.camera = structuredClone(cameraForTime(settings, time));
+  if (!settings.keyframes?.length) return evaluated;
   const properties = new Set(settings.keyframes.map((keyframe) => keyframe.property));
   for (const property of properties) {
     const keys = settings.keyframes.filter((keyframe) => keyframe.property === property).sort((a, b) => a.time - b.time);
@@ -1717,7 +1775,7 @@ async function render(time: number, shouldCache: boolean, mode: "realtime" | "pl
   if (previewView === "camera" && !focusClipId && mode === "playback" && ramPreviewEnabled && await renderCachedPreview(renderTime, previewFps)) {
     return { previewSource: "cache" as const };
   }
-  if (sceneSettings.keyframes?.length) graphics?.applySettings(evaluateSceneSettingsAtTime(sceneSettings, renderTime));
+  if (sceneSettings.keyframes?.length || sceneSettings.cameraCuts?.length) graphics?.applySettings(evaluateSceneSettingsAtTime(sceneSettings, renderTime));
   const { frameMs, videoFramesReady } = await renderRealtime(renderTime, false, clips, focusClipId);
   sendMediaBufferState();
   // Populate the RAM cache from the frame already on screen. The old prefetcher
@@ -2117,7 +2175,11 @@ function disposeModelRuntime(runtime: ModelRuntime) {
 
 async function hydrateModel(assetId: string) {
   const runtime = await mediaBuffer.instantiate<ModelRuntime>(assetId, "three-gltf", async (workerSource) => {
-    const gltf = await new GLTFLoader().parseAsync(workerSource.readAll().buffer, "");
+    const bytes = workerSource.readAll();
+    const first = bytes.find((value) => value > 0x20);
+    const source: string | ArrayBuffer = first === 0x7b ? new TextDecoder().decode(bytes) : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const gltf = await new GLTFLoader().parseAsync(source, "");
+    gltf.animations.forEach((animation, index) => { if (!animation.name) animation.name = `Animation ${index + 1}`; });
     const scene = gltf.scene;
     scene.updateMatrixWorld(true);
     const bounds = new THREE.Box3().setFromObject(scene);
@@ -2132,7 +2194,7 @@ async function hydrateModel(assetId: string) {
     return { scene, animations: gltf.animations, duration: gltf.animations.reduce((maximum, animation) => Math.max(maximum, animation.duration), 0) };
   }, disposeModelRuntime);
   modelRuntimes.set(assetId, runtime);
-  return { duration: runtime.duration || 5, codec: "glTF 2.0", sourceProfile: mediaBuffer.open(assetId).profile };
+  return { duration: runtime.duration || 5, codec: "glTF 2.0", animationNames: runtime.animations.map((animation, index) => animation.name || `Animation ${index + 1}`), sourceProfile: mediaBuffer.open(assetId).profile };
 }
 
 async function inspectModel(message: Extract<EngineRequest, { type: "inspect-model" }>) {
@@ -2182,6 +2244,10 @@ interface ExportAudioDspState {
   midGain: number;
   highGain: number;
   threshold: number;
+  compressorGainLeft: number;
+  compressorGainRight: number;
+  compressorAttackCoefficient: number;
+  compressorReleaseCoefficient: number;
   delayFrames: number;
   reverbFeedback: number;
   reverbMix: number;
@@ -2215,6 +2281,10 @@ function processExportAudio(cursor: ExportAudioCursor, left: number, right: numb
       highBandAlpha: 1 - Math.exp(-2 * Math.PI * Math.max(500, spec.midFrequencyHz * 2) * dt),
       lowGain: 10 ** (spec.lowShelfDb / 20), midGain: 10 ** (spec.midPeakDb / 20), highGain: 10 ** (spec.highShelfDb / 20),
       threshold: 10 ** (spec.compressorThresholdDb / 20),
+      compressorGainLeft: 1,
+      compressorGainRight: 1,
+      compressorAttackCoefficient: Math.exp(-1 / Math.max(1, spec.compressorAttack * sampleRate)),
+      compressorReleaseCoefficient: Math.exp(-1 / Math.max(1, spec.compressorRelease * sampleRate)),
       delayFrames: Math.max(1, Math.min(sampleRate * 2 - 1, Math.floor(spec.delayTime * sampleRate))),
       reverbFeedback: Math.max(0.15, Math.min(0.92, 1 - 0.12 / Math.max(0.1, spec.reverbDecay))),
       reverbMix, delayMix, dry: 1 - Math.max(reverbMix, delayMix) * 0.35,
@@ -2235,8 +2305,12 @@ function processExportAudio(cursor: ExportAudioCursor, left: number, right: numb
   dsp.highBandRight += (right - dsp.highBandRight) * dsp.highBandAlpha;
   left = dsp.lowLeft * dsp.lowGain + (dsp.highBandLeft - dsp.lowLeft) * dsp.midGain + (left - dsp.highBandLeft) * dsp.highGain;
   right = dsp.lowRight * dsp.lowGain + (dsp.highBandRight - dsp.lowRight) * dsp.midGain + (right - dsp.highBandRight) * dsp.highGain;
-  left = compressAudioSample(left, dsp.threshold, spec.compressorRatio);
-  right = compressAudioSample(right, dsp.threshold, spec.compressorRatio);
+  const compressedLeft = compressorTargetGain(left, dsp.threshold, spec.compressorRatio);
+  const compressedRight = compressorTargetGain(right, dsp.threshold, spec.compressorRatio);
+  dsp.compressorGainLeft = smoothCompressorGain(dsp.compressorGainLeft, compressedLeft, dsp);
+  dsp.compressorGainRight = smoothCompressorGain(dsp.compressorGainRight, compressedRight, dsp);
+  left *= dsp.compressorGainLeft;
+  right *= dsp.compressorGainRight;
   const delayRead = (dsp.delayIndex - dsp.delayFrames + dsp.delayLeft.length) % dsp.delayLeft.length;
   const delayedLeft = dsp.delayLeft[delayRead]; const delayedRight = dsp.delayRight[delayRead];
   dsp.delayLeft[dsp.delayIndex] = left + delayedLeft * Math.max(0, Math.min(0.92, spec.delayFeedback));
@@ -2254,10 +2328,15 @@ function processExportAudio(cursor: ExportAudioCursor, left: number, right: numb
   cursor.processedRight = (right * dsp.dry + delayedRight * dsp.delayMix + reverbRight * dsp.reverbMix) * envelope;
 }
 
-function compressAudioSample(sample: number, threshold: number, ratio: number) {
+function compressorTargetGain(sample: number, threshold: number, ratio: number) {
   const amplitude = Math.abs(sample);
-  if (ratio <= 1 || amplitude <= threshold) return sample;
-  return Math.sign(sample) * (threshold + (amplitude - threshold) / ratio);
+  if (ratio <= 1 || amplitude <= threshold || amplitude === 0) return 1;
+  return (threshold + (amplitude - threshold) / ratio) / amplitude;
+}
+
+function smoothCompressorGain(current: number, target: number, dsp: ExportAudioDspState) {
+  const coefficient = target < current ? dsp.compressorAttackCoefficient : dsp.compressorReleaseCoefficient;
+  return target + coefficient * (current - target);
 }
 
 async function advanceExportAudioCursor(cursor: ExportAudioCursor, sourceTime: number) {
@@ -2325,6 +2404,7 @@ async function encodeExportAudio(source: AudioSampleSource, message: Extract<Eng
   const cursors = await createExportAudioCursors(message, duration);
   try {
     for (let blockStartFrame = 0; blockStartFrame < Math.ceil(duration * sampleRate); blockStartFrame += blockSize) {
+      if (canceledExports.has(message.requestId)) throw new DOMException("Export canceled", "AbortError");
       const frames = Math.min(blockSize, Math.ceil(duration * sampleRate) - blockStartFrame);
       const mixed = new Float32Array(frames * channelCount);
       for (let frame = 0; frame < frames; frame++) {
@@ -2344,7 +2424,9 @@ async function encodeExportAudio(source: AudioSampleSource, message: Extract<Eng
           processExportAudio(cursor, monoOrLeft, right, timelineTime, sampleRate);
           const processedLeft = cursor.processedLeft;
           const processedRight = cursor.processedRight;
-          const volume = animatedClip.volume <= -60 ? 0 : Math.min(4, 10 ** (animatedClip.volume / 20));
+          const localTime = Math.max(0, timelineTime - animatedClip.start);
+          const transition = clipTransitionGain(animatedClip, localTime);
+          const volume = animatedClip.volume <= -60 ? 0 : Math.min(4, 10 ** (animatedClip.volume / 20)) * transition;
           if (channelCount === 1) {
             mixed[frame] += (processedLeft + processedRight) * 0.5 * volume;
           } else {
@@ -2393,13 +2475,13 @@ async function exportVideo(message: Extract<EngineRequest, { type: "export" }>) 
   exportRenderer.setSize(exportWidth, exportHeight, false);
   exportRenderer.outputColorSpace = THREE.SRGBColorSpace;
   await exportRenderer.init();
-  const exportCamera = graphics.createCameraForSize(exportWidth, exportHeight);
+  let exportCamera = graphics.createCameraForSize(exportWidth, exportHeight);
   applyExportFrameSettings(exportRenderer, exportCamera, initialSettings, exportWidth, exportHeight);
   await exportRenderer.compileAsync(graphics.scene, exportCamera);
   let exportPipeline = initialSettings.renderer.postProcessing
     ? createRenderPipeline(exportRenderer, graphics.scene, exportCamera, initialSettings)
     : null;
-  let pipelineSignature = JSON.stringify([initialSettings.renderer.postProcessing, initialSettings.renderer.fxaa, initialSettings.renderer.bloomStrength, initialSettings.renderer.bloomRadius, initialSettings.renderer.bloomThreshold]);
+  let pipelineSignature = JSON.stringify([initialSettings.camera.projection, initialSettings.renderer.postProcessing, initialSettings.renderer.fxaa, initialSettings.renderer.bloomStrength, initialSettings.renderer.bloomRadius, initialSettings.renderer.bloomThreshold]);
 
   const target = new BufferTarget();
   const format = message.settings.format === "mp4"
@@ -2420,18 +2502,23 @@ async function exportVideo(message: Extract<EngineRequest, { type: "export" }>) 
   });
   if (audioSource) output.addAudioTrack(audioSource);
 
+  let audioPromise: Promise<void> | null = null;
   try {
     await output.start();
-    const audioPromise = audioSource ? encodeExportAudio(audioSource, message, duration) : null;
+    audioPromise = audioSource ? encodeExportAudio(audioSource, message, duration) : null;
     const frameDuration = 1 / fps;
     for (let frame = 0; frame < totalFrames; frame++) {
+      if (canceledExports.has(message.requestId)) throw new DOMException("Export canceled", "AbortError");
       const time = frame * frameDuration;
       const timelineTime = message.settings.startTime + time;
       postProcessTime.value = timelineTime;
       const frameSettings = evaluateSceneSettingsAtTime(message.sceneSettings, timelineTime);
       graphics.applySettings(frameSettings);
+      const projectionChanged = exportCamera.userData.projection !== frameSettings.camera.projection
+        && ((exportCamera instanceof THREE.PerspectiveCamera) !== (frameSettings.camera.projection === "perspective"));
+      if (projectionChanged) exportCamera = graphics.createCameraForSize(exportWidth, exportHeight);
       applyExportFrameSettings(exportRenderer, exportCamera, frameSettings, exportWidth, exportHeight);
-      const nextPipelineSignature = JSON.stringify([frameSettings.renderer.postProcessing, frameSettings.renderer.fxaa, frameSettings.renderer.bloomStrength, frameSettings.renderer.bloomRadius, frameSettings.renderer.bloomThreshold]);
+      const nextPipelineSignature = JSON.stringify([frameSettings.camera.projection, frameSettings.renderer.postProcessing, frameSettings.renderer.fxaa, frameSettings.renderer.bloomStrength, frameSettings.renderer.bloomRadius, frameSettings.renderer.bloomThreshold]);
       if (nextPipelineSignature !== pipelineSignature) {
         exportPipeline?.dispose();
         exportPipeline = frameSettings.renderer.postProcessing ? createRenderPipeline(exportRenderer, graphics.scene, exportCamera, frameSettings) : null;
@@ -2445,6 +2532,7 @@ async function exportVideo(message: Extract<EngineRequest, { type: "export" }>) 
       updateParticleSurfaces(timelineTime, frameIndex, exportRenderer);
       const { retiredFrames, readyClipIds, samplesToClose } = await updateVideoSurfaces(timelineTime, frameIndex);
       applyTimelineHierarchy(frameIndex.activeClips);
+      await pluginRuntime.runFrame({ time: timelineTime, fps, mode: "export" }, { renderer: exportRenderer, scene: graphics.scene, camera: exportCamera });
       if (exportPipeline) exportPipeline.render();
       else exportRenderer.render(graphics.scene, exportCamera);
       retiredFrames.forEach((retired) => retired.close());
@@ -2466,9 +2554,15 @@ async function exportVideo(message: Extract<EngineRequest, { type: "export" }>) 
     const buffer = target.buffer;
     send({ type: "export-complete", requestId: message.requestId, buffer, mimeType }, [buffer]);
   } catch (error) {
+    await audioPromise?.catch(() => undefined);
     if (output.state === "started") await output.cancel();
+    if ((error as DOMException).name === "AbortError" || canceledExports.has(message.requestId)) {
+      send({ type: "export-canceled", requestId: message.requestId });
+      return;
+    }
     throw error;
   } finally {
+    canceledExports.delete(message.requestId);
     exportPipeline?.dispose();
     await exportRenderer.dispose();
     graphics.applySettings(sceneSettings);
@@ -2507,6 +2601,7 @@ async function exportStill(message: Extract<EngineRequest, { type: "export-still
     updateParticleSurfaces(message.time, frameIndex, renderer);
     const { retiredFrames, samplesToClose } = await updateVideoSurfaces(message.time, frameIndex);
     applyTimelineHierarchy(frameIndex.activeClips);
+    await pluginRuntime.runFrame({ time: message.time, fps: previewFps, mode: "still" }, { renderer, scene: graphics.scene, camera });
     await renderer.compileAsync(graphics.scene, camera);
     pipeline = stillSettings.renderer.postProcessing ? createRenderPipeline(renderer, graphics.scene, camera, stillSettings) : null;
     if (pipeline) pipeline.render();
@@ -2578,6 +2673,8 @@ function applySceneSettingsPatch(patch: NonNullable<Extract<EngineRequest, { typ
     ...sceneSettings,
     background: { ...sceneSettings.background, ...patch.background },
     camera: { ...sceneSettings.camera, ...patch.camera },
+    cameras: patch.cameras ?? sceneSettings.cameras,
+    cameraCuts: patch.cameraCuts === null ? undefined : patch.cameraCuts ?? sceneSettings.cameraCuts,
     renderer: { ...sceneSettings.renderer, ...patch.renderer },
     lights: patch.lights ?? sceneSettings.lights,
     keyframes: patch.keyframes === null ? undefined : patch.keyframes ?? sceneSettings.keyframes,
@@ -2590,6 +2687,7 @@ function applySceneSettingsPatch(patch: NonNullable<Extract<EngineRequest, { typ
 async function handleMessage(message: EngineRequest) {
   let renderCompletion: Omit<Extract<EngineResponse, { type: "render-complete" }>, "type" | "sequence"> | undefined;
   try {
+    if (message.type === "export-cancel") canceledExports.add(message.requestId);
     if (message.type === "init") await initialize(message);
     if (message.type === "attach-canvas") {
       await replaceCanvas(message.canvas, message.width, message.height, message.dpr);

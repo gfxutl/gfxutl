@@ -1,9 +1,9 @@
-import type { AudioProcessingSpec, CameraHandleKind, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ClipPropertyActionKind, ContextMenuState, EditorLayout, EditorSettings, EditorState, EngineResponse, ExportSettings, FontFaceInfo, GeometryKind, KeyframeProperty, MediaAsset, RenderClip, SceneKeyframe, SceneObjectSpec, SceneSettings, TimelineClip } from "./types";
+import type { AudioProcessingSpec, CameraHandleKind, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ClipPropertyActionKind, ContextMenuState, EditorLayout, EditorSettings, EditorState, EngineResponse, ExportSettings, FontFaceInfo, GeometryKind, KeyframeProperty, MediaAsset, RenderClip, SceneKeyframe, SceneObjectSpec, SceneSettings, ShaderGraphDocument, ShaderGraphEdge, ShaderGraphNode, TimelineClip } from "./types";
 import { applicableClipActionKinds, DEFAULT_POST_PROCESS_GLSL, resetPatchForClipAction, resolveClipPropertyActions, resolveColorGrading } from "./clip-actions";
 import { EngineClient } from "./engine-client";
 import { VirtualTimeline } from "./virtual-timeline";
 import { assignTimelineGroups, expandGroupToValidBoundary, hasGroupBoundaryCrossing, MIN_GROUP_HEIGHT, placeTimelineClip, timelineGroupDescendants } from "./timeline-groups";
-import { loadHandleProjects, saveHandleProject } from "../persistence/handle-project-store";
+import { loadAutosaveProject, loadHandleProjects, loadPluginDirectory, loadShaderHandle, removeHandleProject, removePluginDirectory, saveAutosaveProject, saveHandleProject, savePluginDirectory, saveShaderHandle } from "../persistence/handle-project-store";
 import { loadLocalFontCatalog, loadLocalFontData, saveLocalFontCatalog, saveLocalFontData } from "../persistence/local-font-store";
 import { createProjectDocument, parseProjectDocument, type ProjectDocument } from "../project/project-document";
 import { clampTimelineVerticalZoom, clampTimelineZoom } from "./timeline-zoom";
@@ -14,17 +14,21 @@ import { DEFAULT_SEQUENCE_DURATION, sequenceEnd } from "./sequence-duration";
 import { readRendererPluginPackage } from "../plugins/plugin-package";
 import { bundleRendererPlugin } from "../plugins/plugin-bundler";
 import { translateCurrent as t } from "../i18n";
+import { compileShaderGraphToGlsl, serializeShaderGraph } from "../shader-graph/shader-graph-document";
+import { clipTransitionGain } from "./sequencer-state";
 
 type Listener = () => void;
 
 const MiB = 1024 * 1024;
 
 const defaultLayout: EditorLayout = { leftPanelWidth: 286, rightPanelWidth: 294, timelineHeight: 309 };
-const defaultSettings: EditorSettings = { ramPreviewEnabled: true, ramPreviewMaxBytes: 128 * MiB, audioChannels: "stereo" };
+const defaultSettings: EditorSettings = { ramPreviewEnabled: true, ramPreviewMaxBytes: 128 * MiB, audioChannels: "stereo", autoKeyEnabled: false };
 
 const defaultSceneSettings: SceneSettings = {
   background: { color: 0xffffff, alpha: 1, fogEnabled: false, fogColor: 0xffffff, fogNear: 5, fogFar: 30, environmentIntensity: 1, environmentRotation: 0, backgroundBlurriness: 0 },
   camera: { id: "camera-1", name: "Camera 1", projection: "orthographic", position: [0, 0, 10], target: [0, 0, 0], near: 0.01, far: 1_000, fov: 50, zoom: 1, orthographicHeight: 9 },
+  cameras: [{ id: "camera-1", name: "Camera 1", projection: "orthographic", position: [0, 0, 10], target: [0, 0, 0], near: 0.01, far: 1_000, fov: 50, zoom: 1, orthographicHeight: 9 }],
+  cameraCuts: [],
   renderer: { previewScale: 0.75, toneMapping: "aces", exposure: 1, outputBuffer: "uint8", antialias: true, samples: 2, shadows: true, shadowType: "pcf", transparentBackground: false, postProcessing: false, fxaa: false, bloomStrength: 0, bloomRadius: 0.25, bloomThreshold: 0.8 },
   lights: [
     { id: "ambient", kind: "ambient", color: 0xffffff, intensity: 1.2, position: [0, 0, 0] },
@@ -50,6 +54,7 @@ function loadSettings(): EditorSettings {
       ramPreviewEnabled: stored.ramPreviewEnabled !== false,
       ramPreviewMaxBytes: maxBytes,
       audioChannels: stored.audioChannels === "mono" ? "mono" : "stereo",
+      autoKeyEnabled: stored.autoKeyEnabled === true,
     };
   } catch {
     return defaultSettings;
@@ -66,6 +71,7 @@ function upsertPlugin(plugins: EditorState["plugins"], plugin: EditorState["plug
 
 const initialState: EditorState = {
   projectName: "Untitled Project",
+  projectDirty: false,
   canUndo: false,
   canRedo: false,
   markers: [],
@@ -102,6 +108,9 @@ const initialState: EditorState = {
   layout: loadLayout(),
   settings: loadedSettings,
   leftPanelTab: "media",
+  activeBottomPane: "timeline",
+  shaderGraphs: [],
+  activeShaderGraphId: null,
   exportSettings: { format: "mp4", videoCodec: "avc", audioCodec: "aac", width: 1920, height: 1080, fps: 30, bitrate: 8_000_000, audioBitrate: 192_000, filename: "Untitled Project", startTime: 0, endTime: 32 },
   exportStatus: "idle",
   exportProgress: 0,
@@ -154,6 +163,7 @@ interface PreviewAudioVoice {
 type HistorySnapshot = Pick<EditorState, "projectName" | "fps" | "duration" | "snapEnabled" | "background" | "assets" | "clips" | "markers" | "loopPlayback" | "settings" | "exportSettings">;
 
 const HISTORY_KEYS = new Set<keyof EditorState>(["projectName", "fps", "duration", "snapEnabled", "background", "assets", "clips", "markers", "loopPlayback", "settings", "exportSettings"]);
+const PERSISTED_KEYS = new Set<keyof EditorState>([...HISTORY_KEYS, "shaderGraphs", "fonts", "plugins"]);
 
 export class EditorController {
   private state = initialState;
@@ -214,12 +224,13 @@ export class EditorController {
 
   private update(patch: Partial<EditorState>) {
     if (patch.clips) {
-      const duration = sequenceEnd(patch.clips, patch.fps ?? this.state.fps);
+      const duration = sequenceEnd(patch.clips, patch.fps ?? this.state.fps, patch.duration ?? this.state.duration);
       patch.duration = duration;
       const currentTime = patch.currentTime ?? this.state.currentTime;
       if (currentTime > duration) patch.currentTime = duration;
     }
     this.recordHistory(patch);
+    if (patch.projectDirty === undefined && Object.keys(patch).some((key) => PERSISTED_KEYS.has(key as keyof EditorState))) patch.projectDirty = true;
     const nextState = { ...this.state, ...patch };
     if (!nextState.selectedClipId && nextState.selectedClipIds.length === 0 && !nextState.selectedAssetId && nextState.selectedCameraKeyframeIds.length === 0) {
       nextState.backgroundSelected = true;
@@ -262,7 +273,7 @@ export class EditorController {
   }
 
   private restoreHistory(snapshot: HistorySnapshot, canUndo: boolean, canRedo: boolean) {
-    const duration = sequenceEnd(snapshot.clips, snapshot.fps);
+    const duration = sequenceEnd(snapshot.clips, snapshot.fps, snapshot.duration);
     const selectedClipIds = this.state.selectedClipIds.filter((id) => snapshot.clips.some((clip) => clip.id === id));
     const selectedClipId = snapshot.clips.some((clip) => clip.id === this.state.selectedClipId) ? this.state.selectedClipId : selectedClipIds.at(-1) ?? null;
     const selectionWasClip = this.state.selectedClipId !== null || this.state.selectedClipIds.length > 0;
@@ -322,6 +333,7 @@ export class EditorController {
     this.persistenceTimer = window.setTimeout(() => {
       const document = this.currentProjectDocument();
       const { assets: _assets, clips: _clips, ...project } = document;
+      void saveAutosaveProject(document).catch(() => { /* Autosave may be unavailable in private browsing. */ });
       for (const asset of this.state.assets) void saveHandleProject(asset, this.state.clips, project).catch(() => { /* Editing remains available if handle persistence is blocked. */ });
     }, 200);
   }
@@ -338,20 +350,32 @@ export class EditorController {
       loopPlayback: this.state.loopPlayback,
       settings: this.state.settings,
       exportSettings: this.state.exportSettings,
+      shaderGraphs: this.state.shaderGraphs,
+      fonts: this.state.fonts,
+      plugins: this.state.plugins,
     });
   }
 
   private async restoreHandleProjects() {
     try {
       const records = await loadHandleProjects();
-      if (!records.length) return;
-      const assets = records.map((record) => ({ ...record.asset, handle: record.handle, fileStatus: "loading" as const }));
-      const clips = [...new Map(records.flatMap((record) => record.clips).map((clip) => [clip.id, clip])).values()];
-      const project = [...records].sort((a, b) => b.savedAt - a.savedAt).find((record) => record.project)?.project;
+      const autosave = await loadAutosaveProject();
+      if (!records.length && !autosave) return;
+      const handles = new Map(records.map((record) => [record.asset.id, record]));
+      const assets = autosave
+        ? autosave.assets.map((asset) => {
+          const record = handles.get(asset.id);
+          return record ? { ...asset, handle: record.handle, fileStatus: "loading" as const } : { ...asset, fileStatus: "missing" as const };
+        })
+        : records.map((record) => ({ ...record.asset, handle: record.handle, fileStatus: "loading" as const }));
+      const clips = autosave?.clips ?? [...new Map(records.flatMap((record) => record.clips).map((clip) => [clip.id, clip])).values()];
+      const project = autosave ?? [...records].sort((a, b) => b.savedAt - a.savedAt).find((record) => record.project)?.project;
+      const shaderGraphs = await Promise.all((project?.shaderGraphs ?? []).map(async (graph) => ({ ...graph, handle: await loadShaderHandle(graph.id) })));
       this.historySuspended = true;
       this.update({
         assets,
         clips,
+        duration: project?.duration ?? this.state.duration,
         markers: project?.markers ?? [],
         loopPlayback: project?.loopPlayback ?? false,
         projectName: project?.name ?? this.state.projectName,
@@ -359,10 +383,22 @@ export class EditorController {
         background: project?.background ? normalizeBackgroundSize(project.background, project.exportSettings) : this.state.background,
         settings: project?.settings ?? this.state.settings,
         exportSettings: project?.exportSettings ?? this.state.exportSettings,
+        shaderGraphs,
+        activeShaderGraphId: shaderGraphs[0]?.id ?? null,
+        fonts: project?.fonts ?? this.state.fonts,
+        plugins: (project?.plugins ?? []).map((plugin) => ({ ...plugin, status: "error" as const, error: t("再利用するにはプラグインのディレクトリを選択してください") })),
+        projectDirty: false,
       });
       this.historySuspended = false;
       await this.registerTimelineFonts();
       await Promise.allSettled(assets.map((asset) => this.restoreAssetFile(asset.id, false)));
+      await Promise.allSettled((project?.plugins ?? []).map(async (plugin) => {
+        const directory = await loadPluginDirectory(plugin.id);
+        if (!directory || await queryDirectoryReadPermission(directory) !== "granted") return;
+        this.pluginDirectories.set(plugin.id, directory);
+        await this.reloadRendererPlugin(plugin.id);
+      }));
+      this.update({ projectDirty: false });
       this.renderPreview(true);
     } catch {
       // IndexedDB or a persisted handle may be unavailable in private browsing.
@@ -395,6 +431,7 @@ export class EditorController {
         window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
       }
       this.schedulePersistence();
+      this.update({ projectDirty: false });
       this.toast(t("{name} を保存しました", { name: filename }));
     } catch (error) {
       if ((error as DOMException).name !== "AbortError") this.toast(error instanceof Error ? t("保存失敗: {message}", { message: error.message }) : t("プロジェクトを保存できませんでした"));
@@ -415,6 +452,7 @@ export class EditorController {
         file = await handles[0].getFile();
       } else file = await this.openWithInput(".gfxutl,application/json");
       const project = parseProjectDocument(await file.text());
+      const shaderGraphs = await Promise.all(project.shaderGraphs.map(async (graph) => ({ ...graph, handle: await loadShaderHandle(graph.id) })));
       const assets = project.assets.map((asset) => {
         const connected = this.state.assets.find((item) => item.sourcePath && item.sourcePath === asset.sourcePath)
           ?? this.state.assets.find((item) => item.name === asset.name && item.size === asset.size);
@@ -423,6 +461,7 @@ export class EditorController {
       this.update({
         projectName: project.name,
         fps: project.fps,
+        duration: project.duration,
         background: normalizeBackgroundSize(project.background),
         assets,
         clips: project.clips,
@@ -430,6 +469,10 @@ export class EditorController {
         loopPlayback: project.loopPlayback,
         settings: project.settings,
         exportSettings: project.exportSettings,
+        shaderGraphs,
+        activeShaderGraphId: shaderGraphs[0]?.id ?? null,
+        fonts: project.fonts,
+        plugins: project.plugins.map((plugin) => ({ ...plugin, status: "error" as const, error: t("再利用するにはプラグインのディレクトリを選択してください") })),
         selectedClipId: null,
         selectedClipIds: [],
         selectedCameraKeyframeIds: [],
@@ -438,6 +481,7 @@ export class EditorController {
         activePreviewView: "camera",
         selectedAssetId: null,
         backgroundSelected: true,
+        projectDirty: false,
       });
       this.renderClipSource = null;
       this.engine.configurePreviewCache(project.settings.ramPreviewEnabled, project.settings.ramPreviewMaxBytes);
@@ -451,7 +495,7 @@ export class EditorController {
   };
 
   newProject = () => {
-    if (this.state.clips.length || this.state.assets.length) {
+    if (this.state.projectDirty) {
       this.update({ dialog: { kind: "new-project" } });
       return;
     }
@@ -480,11 +524,16 @@ export class EditorController {
       selectedAssetId: null,
       backgroundSelected: true,
       exportSettings: { ...initialState.exportSettings },
+      shaderGraphs: [],
+      activeShaderGraphId: null,
+      plugins: [],
+      projectDirty: false,
     });
     this.stopAudioPreview();
     this.engine.clearCache();
     this.renderClipSource = null;
     this.renderPreview(true);
+    this.schedulePersistence();
   }
 
   openMarkerRenameDialog = (markerId: string) => {
@@ -544,6 +593,35 @@ export class EditorController {
     this.renderPreview(true);
   };
 
+  relinkAsset = async (assetId: string) => {
+    const asset = this.state.assets.find((item) => item.id === assetId);
+    if (!asset) return;
+    try {
+      let file: File;
+      let handle: FileSystemFileHandle | undefined;
+      if (window.showOpenFilePicker) {
+        [handle] = await window.showOpenFilePicker({ multiple: false });
+        file = await handle.getFile();
+      } else file = await this.openWithInput("video/*,audio/*,image/*,.hdr,.exr,.glb");
+      if (mediaKindForFile(file) !== asset.kind) throw new Error(t("同じ種類の素材を選択してください"));
+      const pending: MediaAsset = { ...asset, handle, size: file.size, lastModified: file.lastModified, fileStatus: "loading" };
+      this.update({ assets: this.state.assets.map((item) => item.id === assetId ? pending : item) });
+      const info = await this.registerRuntimeFile(pending, file);
+      const waveformPeaks = asset.kind === "audio" ? await this.engine.getMediaThumbnail(assetId).then((thumbnail) => thumbnail.peaks).catch(() => undefined) : asset.waveformPeaks;
+      const ready: MediaAsset = { ...pending, ...info, waveformPeaks, fileStatus: "ready" };
+      this.update({ assets: this.state.assets.map((item) => item.id === assetId ? ready : item) });
+      if (handle) {
+        const { assets: _assets, clips: _clips, ...project } = this.currentProjectDocument();
+        await saveHandleProject(ready, this.state.clips, project).catch(() => undefined);
+      }
+      this.renderPreview(true);
+      this.schedulePersistence();
+      this.toast(t("{name} を再接続しました", { name: asset.name }));
+    } catch (error) {
+      if ((error as DOMException).name !== "AbortError") this.toast(error instanceof Error ? error.message : t("素材を再接続できませんでした"));
+    }
+  };
+
   private async registerRuntimeFile(asset: MediaAsset, file: File) {
     if (asset.kind === "image") return this.engine.inspectImage(file, asset.id, asset.handle);
     if (asset.kind === "model") return this.engine.inspectModel(file, asset.id, asset.handle);
@@ -568,7 +646,9 @@ export class EditorController {
       this.stopAudioPreview();
       return;
     }
+    const audioSolo = this.state.clips.some((clip) => clip.solo && clipHasAudio(clip, this.state.assets));
     const active = this.state.clips.filter((clip) => {
+      if (clip.muted || (audioSolo && !clip.solo)) return false;
       if (!clip.assetId || this.state.currentTime < clip.start || this.state.currentTime >= clip.start + clip.duration) return false;
       const asset = this.state.assets.find((item) => item.id === clip.assetId);
       return asset?.kind === "audio" || asset?.hasAudio === true;
@@ -596,7 +676,8 @@ export class EditorController {
     const remaining = Math.max(0, clip.duration - localTime);
     const fadeIn = enabled && processing.fadeIn > 0 ? Math.min(1, localTime / processing.fadeIn) : 1;
     const fadeOut = enabled && processing.fadeOut > 0 ? Math.min(1, remaining / processing.fadeOut) : 1;
-    voice.gain.gain.value = volume <= -60 ? 0 : Math.max(0, Math.min(4, 10 ** (volume / 20) * fadeIn * fadeOut));
+    const transition = clipTransitionGain(clip, localTime);
+    voice.gain.gain.value = clip.muted || volume <= -60 ? 0 : Math.max(0, Math.min(4, 10 ** (volume / 20) * fadeIn * fadeOut * transition));
     if (voice.panner) voice.panner.pan.value = Math.max(-1, Math.min(1, pan / 100));
     voice.highPass.frequency.value = enabled ? Math.max(10, processing.lowCutHz) : 10;
     voice.lowPass.frequency.value = enabled ? Math.max(20, processing.highCutHz) : 22_000;
@@ -652,6 +733,7 @@ export class EditorController {
     const midPeak = context.createBiquadFilter(); midPeak.type = "peaking"; midPeak.Q.value = 0.8;
     const highShelf = context.createBiquadFilter(); highShelf.type = "highshelf"; highShelf.frequency.value = 4_500;
     const compressor = context.createDynamicsCompressor();
+    compressor.knee.value = 0;
     const dry = context.createGain();
     const convolver = context.createConvolver(); convolver.buffer = this.createReverbImpulse(context, processing.reverbDecay);
     const reverbWet = context.createGain();
@@ -823,11 +905,14 @@ export class EditorController {
       this.state.background.height,
       this.state.background.scene.camera.orthographicHeight,
       this.state.background.scene.camera.zoom,
+      this.state.assets.map((asset) => `${asset.id}:${asset.kind}:${asset.hasAudio === true}`).join(","),
     ].join(":");
     if (this.renderClipSource === this.state.clips && this.renderClipContextSignature === renderClipContextSignature) return this.renderClipCache;
+    const visualSolo = this.state.clips.some((clip) => clip.solo && clip.kind !== "group" && clip.kind !== "audio");
+    const audioSolo = this.state.clips.some((clip) => clip.solo && clipHasAudio(clip, this.state.assets));
     const visualClips = this.state.clips.filter((clip) => clip.kind !== "group" && clip.kind !== "filter");
     const filters = this.state.clips
-      .filter((clip) => clip.kind === "filter")
+      .filter((clip) => clip.kind === "filter" && !clip.muted && (!visualSolo || clip.solo))
       .sort((a, b) => b.y - a.y);
     const depth = new Map(orderedVisualClips(visualClips)
       .map((clip, index) => [clip.id, 1_000 + index]));
@@ -848,11 +933,13 @@ export class EditorController {
       rotation: clip.rotation ?? 0,
       rotationX: clip.rotationX ?? 0,
       rotationY: clip.rotationY ?? 0,
-      visible: clip.visible ?? true,
+      visible: (clip.visible ?? true) && !clip.muted && (!visualSolo || clip.solo === true || clip.kind === "audio"),
       layer: clip.layer ?? 0,
       parentId: clip.parentId,
       opacity: clip.opacity ?? 100,
-      volume: clip.volume ?? 0,
+      transitionIn: Math.max(0, clip.transitionIn ?? 0),
+      transitionOut: Math.max(0, clip.transitionOut ?? 0),
+      volume: clip.muted || (audioSolo && !clip.solo) ? -60 : clip.volume ?? 0,
       pan: clip.pan ?? 0,
       speed: clip.speed ?? 100,
       audioProcessing: clip.audioProcessing,
@@ -863,6 +950,7 @@ export class EditorController {
       effects: clip.effects ?? [],
       colorGrading: resolveColorGrading(clip.colorGrading),
       postProcess: clip.postProcess,
+      propertyActionOrder: resolveClipPropertyActions(clip).map((action) => action.kind),
       filterStack: clip.kind === "audio" ? [] : filters
         .filter((filter) => filter.y < clip.y && filter.start < clip.start + clip.duration && filter.start + filter.duration > clip.start)
         .map((filter) => ({
@@ -885,6 +973,7 @@ export class EditorController {
       masks: clip.masks ?? [],
       keyframes: clip.keyframes ?? [],
       particleSystem: clip.particleSystem,
+      modelAnimation: clip.modelAnimation,
       instanceCount: clip.instanceCount ?? 1,
       instanceSpacing: clip.instanceSpacing ?? 2.5,
       renderOrder: depth.get(clip.id) ?? 1_000,
@@ -1109,6 +1198,20 @@ export class EditorController {
     if (activePreviewClipId !== this.state.activePreviewClipId) this.renderPreview(false);
   };
   selectAsset = (id: string | null) => this.update({ selectedAssetId: id, selectedClipId: null, selectedClipIds: [], selectedCameraKeyframeIds: [], backgroundSelected: false });
+  renameAsset = (id: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    this.update({ assets: this.state.assets.map((asset) => asset.id === id ? { ...asset, name: trimmed } : asset) });
+    this.schedulePersistence();
+  };
+  removeAsset = (id: string) => {
+    const referenced = new Set(this.state.clips.filter((clip) => clip.assetId === id).map((clip) => clip.id));
+    if (referenced.size) this.removeClipIds(referenced);
+    this.engine.releaseMedia(id);
+    void removeHandleProject(id).catch(() => undefined);
+    this.update({ assets: this.state.assets.filter((asset) => asset.id !== id), selectedAssetId: this.state.selectedAssetId === id ? null : this.state.selectedAssetId });
+    this.schedulePersistence();
+  };
   selectBackground = () => this.update({ backgroundSelected: true, selectedAssetId: null, selectedClipId: null, selectedClipIds: [], selectedCameraKeyframeIds: [] });
   selectCameraKeyframes = (ids: readonly string[]) => {
     const available = new Set((this.state.background.scene.keyframes ?? []).filter((keyframe) => keyframe.property.startsWith("camera.")).map((keyframe) => keyframe.id));
@@ -1132,11 +1235,20 @@ export class EditorController {
     height: normalizeCompositionDimension(height, this.state.background.height),
   });
   updateSceneSettings = (patch: Partial<SceneSettings>) => {
+    let cameras = patch.cameras ?? this.state.background.scene.cameras ?? [this.state.background.scene.camera];
+    if (patch.camera) {
+      const camera = { ...this.state.background.scene.camera, ...patch.camera };
+      cameras = cameras.some((item) => item.id === camera.id)
+        ? cameras.map((item) => item.id === camera.id ? camera : item)
+        : [...cameras, camera];
+    }
     const scene = {
       ...this.state.background.scene,
       ...patch,
       background: { ...this.state.background.scene.background, ...patch.background },
       camera: { ...this.state.background.scene.camera, ...patch.camera },
+      cameras,
+      cameraCuts: patch.cameraCuts ?? this.state.background.scene.cameraCuts ?? [],
       renderer: { ...this.state.background.scene.renderer, ...patch.renderer },
       lights: patch.lights ?? this.state.background.scene.lights,
     };
@@ -1144,6 +1256,39 @@ export class EditorController {
     const selectedCameraKeyframeIds = this.state.selectedCameraKeyframeIds.filter((id) => sceneKeyframeIds.has(id));
     this.update({ background: { ...this.state.background, color: scene.background.color, scene }, selectedCameraKeyframeIds, backgroundSelected: selectedCameraKeyframeIds.length === 0 });
     this.renderPreview(true);
+  };
+  addCamera = () => {
+    const current = this.state.background.scene.camera;
+    const cameras = this.state.background.scene.cameras ?? [current];
+    const camera: CameraSettings = { ...structuredClone(current), id: crypto.randomUUID(), name: t("Camera {number}", { number: cameras.length + 1 }) };
+    this.updateSceneSettings({ camera, cameras: [...cameras, camera] });
+    this.schedulePersistence();
+  };
+  selectCamera = (cameraId: string) => {
+    const camera = (this.state.background.scene.cameras ?? []).find((item) => item.id === cameraId);
+    if (!camera) return;
+    this.updateSceneSettings({ camera: structuredClone(camera) });
+  };
+  removeCurrentCamera = () => {
+    const scene = this.state.background.scene;
+    const cameras = scene.cameras ?? [scene.camera];
+    if (cameras.length <= 1) return;
+    const remaining = cameras.filter((camera) => camera.id !== scene.camera.id);
+    this.updateSceneSettings({ camera: remaining[0], cameras: remaining, cameraCuts: (scene.cameraCuts ?? []).filter((cut) => cut.cameraId !== scene.camera.id) });
+    this.schedulePersistence();
+  };
+  addCameraCut = () => {
+    const scene = this.state.background.scene;
+    const tolerance = 0.5 / this.state.fps;
+    const existing = (scene.cameraCuts ?? []).find((cut) => Math.abs(cut.time - this.state.currentTime) <= tolerance);
+    const cut = { id: existing?.id ?? crypto.randomUUID(), time: this.state.currentTime, cameraId: scene.camera.id };
+    const cameraCuts = [...(scene.cameraCuts ?? []).filter((item) => item.id !== cut.id), cut].sort((a, b) => a.time - b.time);
+    this.updateSceneSettings({ cameraCuts });
+    this.schedulePersistence();
+  };
+  removeCameraCut = (id: string) => {
+    this.updateSceneSettings({ cameraCuts: (this.state.background.scene.cameraCuts ?? []).filter((cut) => cut.id !== id) });
+    this.schedulePersistence();
   };
   updateCameraPositionAxis = (axis: 0 | 1 | 2, value: number) => {
     const camera = this.state.background.scene.camera;
@@ -1246,7 +1391,83 @@ export class EditorController {
   openContextMenu = (menu: ContextMenuState) => this.update({ contextMenu: menu });
   closeContextMenu = () => this.update({ contextMenu: null });
   setLeftPanelTab = (tab: EditorState["leftPanelTab"]) => this.update({ leftPanelTab: tab });
+  setBottomPane = (pane: EditorState["activeBottomPane"], shaderGraphId?: string) => this.update({
+    activeBottomPane: pane,
+    ...(shaderGraphId ? { activeShaderGraphId: shaderGraphId } : {}),
+  });
+  openShaderGraph = (graph: ShaderGraphDocument) => {
+    const match = this.state.shaderGraphs.find((item) => (graph.sourcePath && item.sourcePath === graph.sourcePath) || item.id === graph.id);
+    const next = match
+      ? this.state.shaderGraphs.map((item) => item.id === match.id ? { ...graph, id: match.id } : item)
+      : [...this.state.shaderGraphs, graph];
+    this.update({ shaderGraphs: next, activeShaderGraphId: match?.id ?? graph.id, activeBottomPane: "shader", contextMenu: null });
+    if (graph.handle) void saveShaderHandle(match?.id ?? graph.id, graph.handle).catch(() => undefined);
+    this.schedulePersistence();
+  };
+  updateShaderGraph = (id: string, nodes: ShaderGraphNode[], edges: ShaderGraphEdge[]) => {
+    this.update({ shaderGraphs: this.state.shaderGraphs.map((graph) => graph.id === id
+      ? { ...graph, nodes, edges, source: serializeShaderGraph({ ...graph, nodes, edges }), dirty: true }
+      : graph) });
+    this.schedulePersistence();
+  };
+  applyShaderGraphToSelection = async (graphId: string) => {
+    const graph = this.state.shaderGraphs.find((item) => item.id === graphId);
+    const targets = this.state.clips.filter((clip) => this.state.selectedClipIds.includes(clip.id) && clip.kind === "video");
+    if (!graph || !targets.length) {
+      this.toast(t("シェーダーを適用する映像または画像クリップを選択してください"));
+      return;
+    }
+    const glsl = compileShaderGraphToGlsl(graph);
+    const targetIds = new Set(targets.map((clip) => clip.id));
+    const clips = this.state.clips.map((clip) => {
+      if (!targetIds.has(clip.id)) return clip;
+      const actions = resolveClipPropertyActions(clip);
+      const propertyActions = actions.some((action) => action.kind === "postProcess")
+        ? actions
+        : [...actions, { id: crypto.randomUUID(), kind: "postProcess" as const }];
+      return {
+        ...clip,
+        propertyActions,
+        postProcess: { id: crypto.randomUUID(), name: graph.name, enabled: true, glsl, compileStatus: "compiling" as const },
+      };
+    });
+    this.update({ clips });
+    this.invalidatePreviewCache();
+    this.schedulePersistence();
+    await Promise.all(targets.map((clip) => this.compileClipPostProcess(clip.id, glsl)));
+    this.toast(t("{count} 個のクリップにシェーダーを適用しました", { count: targets.length }));
+  };
+  saveShaderGraph = async (id: string) => {
+    const graph = this.state.shaderGraphs.find((item) => item.id === id);
+    if (!graph) return;
+    try {
+      let handle = graph.handle;
+      if (!handle) {
+        if (!window.showSaveFilePicker) throw new Error(t("このブラウザーではファイル保存を利用できません"));
+        handle = await window.showSaveFilePicker({ suggestedName: graph.name, types: [{ description: "TypeScript", accept: { "text/typescript": [".ts"] } }] });
+      }
+      const writable = await handle.createWritable();
+      await writable.write(graph.source);
+      await writable.close();
+      await saveShaderHandle(id, handle).catch(() => undefined);
+      this.update({ shaderGraphs: this.state.shaderGraphs.map((item) => item.id === id ? { ...item, name: handle!.name, handle, dirty: false } : item), notice: t("シェーダーを保存しました") });
+    } catch (error) {
+      if ((error as DOMException).name !== "AbortError") this.update({ notice: error instanceof Error ? error.message : t("シェーダーを保存できませんでした") });
+    }
+  };
+  requestNewShaderGraph = () => {
+    window.dispatchEvent(new CustomEvent("gfxutl:create-shader-graph"));
+    this.closeContextMenu();
+  };
   renameProject = (projectName: string) => this.update({ projectName });
+  updateSequenceSettings = (patch: { fps?: number; duration?: number }) => {
+    const fps = Math.max(1, Math.min(240, Math.round(patch.fps ?? this.state.fps)));
+    const contentEnd = this.state.clips.length ? Math.max(...this.state.clips.map((clip) => clip.start + clip.duration)) : 1 / fps;
+    const duration = Math.max(contentEnd, 1 / fps, Number.isFinite(patch.duration) ? patch.duration! : this.state.duration);
+    this.update({ fps, duration });
+    this.schedulePersistence();
+    this.renderPreview(false);
+  };
   updateSettings = (patch: Partial<EditorSettings>) => {
     const previous = this.state.settings;
     const next: EditorSettings = {
@@ -1270,6 +1491,8 @@ export class EditorController {
   };
   updateExportSettings = (patch: Partial<ExportSettings>) => {
     const next = { ...this.state.exportSettings, ...patch };
+    next.width = Math.max(2, Math.min(7680, Math.floor(next.width / 2) * 2));
+    next.height = Math.max(2, Math.min(4320, Math.floor(next.height / 2) * 2));
     const minimumDuration = 1 / Math.max(1, next.fps);
     next.startTime = Number.isFinite(next.startTime) ? Math.max(0, next.startTime) : this.state.exportSettings.startTime;
     next.endTime = Number.isFinite(next.endTime) ? Math.max(next.startTime + minimumDuration, next.endTime) : this.state.exportSettings.endTime;
@@ -1378,9 +1601,11 @@ export class EditorController {
 
   moveClip = (id: string, start: number, y: number) => {
     const anchor = this.state.clips.find((clip) => clip.id === id);
-    if (!anchor) return;
+    if (!anchor || anchor.locked) return;
     const selectedIds = this.state.selectedClipIds.includes(id) ? this.state.selectedClipIds : [id];
     const movingIds = timelineGroupDescendants(this.state.clips, selectedIds);
+    for (const clip of this.state.clips) if (clip.locked) movingIds.delete(clip.id);
+    if (!movingIds.size) return;
     const deltaStart = Math.max(0, start) - anchor.start;
     const deltaY = Math.max(0, y) - anchor.y;
     const minimumStart = Math.min(...this.state.clips.filter((clip) => movingIds.has(clip.id)).map((clip) => clip.start));
@@ -1408,13 +1633,13 @@ export class EditorController {
       : this.state.selectedClipId ? [this.state.selectedClipId] : [];
     if (!selectedIds.length || !frames) return;
     const movingIds = timelineGroupDescendants(this.state.clips, selectedIds);
-    const selected = this.state.clips.filter((clip) => movingIds.has(clip.id));
+    const selected = this.state.clips.filter((clip) => movingIds.has(clip.id) && !clip.locked);
     if (!selected.length) return;
     const requestedDelta = frames / this.state.fps;
     const safeDelta = Math.max(requestedDelta, -Math.min(...selected.map((clip) => clip.start)));
     if (!safeDelta) return;
     const proposed = this.state.clips.map((clip) => {
-      if (!movingIds.has(clip.id)) return clip;
+      if (!movingIds.has(clip.id) || clip.locked) return clip;
       const start = Math.max(0, clip.start + safeDelta);
       return { ...clip, start };
     });
@@ -1429,13 +1654,27 @@ export class EditorController {
 
   resizeStaticClip = (id: string, start: number, duration: number) => {
     const clip = this.state.clips.find((item) => item.id === id);
-    if (!clip) return;
+    if (!clip || clip.locked) return;
     const asset = clip.assetId ? this.state.assets.find((item) => item.id === clip.assetId) : undefined;
-    if (clip.kind !== "title" && clip.kind !== "object" && clip.kind !== "filter" && clip.kind !== "group" && asset?.kind !== "image") return;
     const minimumDuration = 1 / this.state.fps;
-    const nextStart = Math.max(0, start);
-    const nextDuration = Math.max(minimumDuration, duration);
-    const proposed = this.state.clips.map((item) => item.id === id ? { ...item, start: nextStart, duration: nextDuration } : item);
+    const requestedStart = Math.max(0, start);
+    const oldEnd = clip.start + clip.duration;
+    const requestedEnd = requestedStart + Math.max(minimumDuration, duration);
+    const isLeftTrim = Math.abs(requestedEnd - oldEnd) < minimumDuration / 2 && Math.abs(requestedStart - clip.start) >= minimumDuration / 2;
+    const speed = Math.max(0.01, (clip.speed ?? 100) / 100);
+    let nextStart = requestedStart;
+    let nextOffset = clip.offset;
+    if (isLeftTrim && asset && asset.kind !== "image") {
+      const delta = requestedStart - clip.start;
+      nextOffset = Math.max(0, clip.offset + delta * speed);
+      // A left trim cannot expose media before source time zero.
+      if (nextOffset === 0 && clip.offset + delta * speed < 0) nextStart = clip.start - clip.offset / speed;
+    }
+    let nextDuration = Math.max(minimumDuration, isLeftTrim ? oldEnd - nextStart : duration);
+    if (asset && asset.kind !== "image" && asset.duration > 0) {
+      nextDuration = Math.min(nextDuration, Math.max(minimumDuration, (asset.duration - nextOffset) / speed));
+    }
+    const proposed = this.state.clips.map((item) => item.id === id ? { ...item, start: nextStart, duration: nextDuration, offset: nextOffset } : item);
     if (hasGroupBoundaryCrossing(proposed)) return;
     this.update({
       clips: assignTimelineGroups(proposed),
@@ -1443,11 +1682,12 @@ export class EditorController {
     this.invalidatePreviewCache();
     this.schedulePersistence();
     this.renderPreview(false);
+    if (this.state.playing) this.syncAudioPlayback(true, true);
   };
 
   resizeTimelineGroup = (id: string, start: number, y: number, duration: number, height: number) => {
     const group = this.state.clips.find((clip) => clip.id === id && clip.kind === "group");
-    if (!group) return;
+    if (!group || group.locked) return;
     const nextStart = Math.max(0, start);
     const nextY = Math.max(0, y);
     const nextDuration = Math.max(1 / this.state.fps, duration);
@@ -1465,7 +1705,7 @@ export class EditorController {
   translatePreviewClip = (id: string, deltaX: number, deltaY: number, transient = false) => {
     if (!deltaX && !deltaY) return;
     const clip = this.state.clips.find((item) => item.id === id);
-    if (!clip || clip.kind === "audio") return;
+    if (!clip || clip.kind === "audio" || clip.locked) return;
     const clips = this.state.clips.map((item) => item.id === id ? {
       ...item,
       positionX: (item.positionX ?? 0) + deltaX,
@@ -1551,6 +1791,23 @@ export class EditorController {
   updateClip = (id: string, patch: Partial<import("./types").TimelineClip>) => {
     const current = this.state.clips.find((clip) => clip.id === id);
     if (!current) return;
+    const stateOnly = Object.keys(patch).every((key) => key === "locked" || key === "muted" || key === "solo" || key === "visible");
+    if (current.locked && !stateOnly) return;
+    if (this.state.settings.autoKeyEnabled) {
+      const localTime = Math.max(0, Math.min(current.duration, this.state.currentTime - current.start));
+      const tolerance = 0.5 / this.state.fps;
+      const autoKeyProperties = new Set(["positionX", "positionY", "positionZ", "scale", "scaleX", "scaleY", "rotation", "rotationX", "rotationY", "opacity", "cropLeft", "cropRight", "cropTop", "cropBottom", "volume", "pan", "speed", "fontSize", "textDepth", "textOutlineWidth", "instanceCount", "instanceSpacing"]);
+      const numeric = Object.entries(patch).filter(([key, value]) => autoKeyProperties.has(key) && typeof value === "number") as Array<[KeyframeProperty, number]>;
+      if (numeric.length) {
+        const keyframes = [...(current.keyframes ?? [])];
+        for (const [property, value] of numeric) {
+          const index = keyframes.findIndex((keyframe) => keyframe.property === property && Math.abs(keyframe.time - localTime) <= tolerance);
+          if (index >= 0) keyframes[index] = { ...keyframes[index], time: localTime, value };
+          else keyframes.push({ id: crypto.randomUUID(), property, time: localTime, value, interpolation: "smooth" });
+        }
+        patch = { ...patch, keyframes: keyframes.sort((a, b) => a.time - b.time) };
+      }
+    }
     let proposed = this.state.clips.map((clip) => clip.id === id ? { ...clip, ...patch } : clip);
     if (patch.speed !== undefined && current.kind !== "title" && current.kind !== "object" && (patch.ripple ?? current.ripple ?? true)) {
       const oldSpeed = Math.max(1, current.speed ?? 100);
@@ -1646,22 +1903,77 @@ export class EditorController {
     }
   };
 
-  removeClip = (id: string) => {
-    const selectedClipIds = this.state.selectedClipIds.filter((item) => item !== id);
-    const clips = assignTimelineGroups(this.state.clips.filter((clip) => clip.id !== id));
-    const selectedClipId = this.state.selectedClipId === id ? selectedClipIds.at(-1) ?? null : this.state.selectedClipId;
+  private removeClipIds(ids: ReadonlySet<string>) {
+    ids = new Set([...ids].filter((id) => !this.state.clips.find((clip) => clip.id === id)?.locked));
+    if (!ids.size) return;
+    const selectedClipIds = this.state.selectedClipIds.filter((item) => !ids.has(item));
+    const clips = assignTimelineGroups(this.state.clips
+      .filter((clip) => !ids.has(clip.id))
+      .map((clip) => clip.parentId && ids.has(clip.parentId) ? { ...clip, parentId: undefined } : clip));
+    const selectedClipId = this.state.selectedClipId && ids.has(this.state.selectedClipId) ? selectedClipIds.at(-1) ?? null : this.state.selectedClipId;
     this.update({
       clips,
       selectedClipId,
       selectedClipIds,
-      ...(this.state.selectedClipId === id ? { selectedAssetId: clips.find((clip) => clip.id === selectedClipId)?.assetId ?? null } : {}),
-      previewClipTabs: this.state.previewClipTabs.filter((clipId) => clipId !== id),
-      activePreviewClipId: this.state.activePreviewClipId === id ? null : this.state.activePreviewClipId,
+      selectedAssetId: clips.find((clip) => clip.id === selectedClipId)?.assetId ?? null,
+      previewClipTabs: this.state.previewClipTabs.filter((clipId) => !ids.has(clipId)),
+      activePreviewClipId: this.state.activePreviewClipId && ids.has(this.state.activePreviewClipId) ? null : this.state.activePreviewClipId,
     });
     this.invalidatePreviewCache();
     this.schedulePersistence();
     this.renderPreview(false);
     if (this.state.playing) this.syncAudioPlayback(true, true);
+  }
+
+  removeClip = (id: string) => {
+    this.removeClipIds(timelineGroupDescendants(this.state.clips, [id]));
+  };
+
+  removeSelection = () => {
+    const selected = this.state.selectedClipIds.length ? this.state.selectedClipIds : this.state.selectedClipId ? [this.state.selectedClipId] : [];
+    this.removeClipIds(timelineGroupDescendants(this.state.clips, selected));
+  };
+
+  selectAllClips = () => {
+    const ids = this.state.clips.map((clip) => clip.id);
+    this.selectClips(ids);
+  };
+
+  duplicateSelection = () => {
+    const sourceIds = timelineGroupDescendants(this.state.clips, this.state.selectedClipIds.length ? this.state.selectedClipIds : this.state.selectedClipId ? [this.state.selectedClipId] : []);
+    const sources = this.state.clips.filter((clip) => sourceIds.has(clip.id));
+    if (!sources.length) return;
+    const idMap = new Map(sources.map((source) => [source.id, crypto.randomUUID()]));
+    const frame = 1 / this.state.fps;
+    const copies = sources.map((source) => {
+      const id = idMap.get(source.id)!;
+      const copy = structuredClone(source);
+      const effectIdMap = new Map((copy.effects ?? []).map((effect) => [effect.id, crypto.randomUUID()]));
+      return {
+        ...copy,
+        id,
+        name: `${source.name} ${t("のコピー")}`,
+        start: source.start + frame,
+        y: source.y + 12,
+        geometry: source.geometry ? { ...copy.geometry!, id: `${id}:geometry` } : undefined,
+        groupId: source.groupId ? idMap.get(source.groupId) : undefined,
+        parentId: source.parentId ? idMap.get(source.parentId) ?? source.parentId : undefined,
+        propertyActions: copy.propertyActions?.map((action) => ({ ...action, id: crypto.randomUUID() })),
+        effects: copy.effects?.map((effect) => ({ ...effect, id: effectIdMap.get(effect.id)! })),
+        masks: copy.masks?.map((mask) => ({ ...mask, id: crypto.randomUUID() })),
+        keyframes: copy.keyframes?.map((keyframe) => {
+          const match = keyframe.property.match(/^effect\.([^.]+)\.(.+)$/);
+          const mappedEffectId = match ? effectIdMap.get(match[1]) : undefined;
+          return { ...keyframe, id: crypto.randomUUID(), property: mappedEffectId ? `effect.${mappedEffectId}.${match![2]}` as KeyframeProperty : keyframe.property };
+        }),
+        postProcess: copy.postProcess ? { ...copy.postProcess, id: crypto.randomUUID() } : undefined,
+      } satisfies TimelineClip;
+    });
+    const clips = assignTimelineGroups([...this.state.clips, ...copies]);
+    this.update({ clips, selectedClipId: copies.at(-1)?.id ?? null, selectedClipIds: copies.map((clip) => clip.id) });
+    this.invalidatePreviewCache();
+    this.schedulePersistence();
+    this.renderPreview(false);
   };
 
   private addTextObjectWithMode = (textMode: "2d" | "3d", placement?: Partial<Pick<ContextMenuState, "time" | "timelineY" | "positionX" | "positionY">>) => {
@@ -1863,6 +2175,7 @@ export class EditorController {
       const directory = await pickDirectory({ mode: "read" });
       const plugin = pendingPlugin = await readRendererPluginPackage(directory);
       this.pluginDirectories.set(plugin.id, directory);
+      await savePluginDirectory(plugin.id, directory).catch(() => { /* The plugin remains active for this session. */ });
       this.update({ plugins: upsertPlugin(this.state.plugins, {
         id: plugin.id, name: plugin.name, version: plugin.version, entry: plugin.entry,
         status: "bundling", moduleCount: plugin.files.length,
@@ -1906,6 +2219,7 @@ export class EditorController {
   removeRendererPlugin = (pluginId: string) => {
     this.engine.unloadRendererPlugin(pluginId);
     this.pluginDirectories.delete(pluginId);
+    void removePluginDirectory(pluginId).catch(() => undefined);
     this.update({ plugins: this.state.plugins.filter((plugin) => plugin.id !== pluginId) });
   };
 
@@ -1989,7 +2303,7 @@ export class EditorController {
     const selected = new Set(this.state.selectedClipIds);
     const created: TimelineClip[] = [];
     const clips = this.state.clips.flatMap((clip) => {
-      if (clip.kind === "group" || !selected.has(clip.id) || time <= clip.start + frame / 2 || time >= clip.start + clip.duration - frame / 2) return [clip];
+      if (clip.kind === "group" || clip.locked || !selected.has(clip.id) || time <= clip.start + frame / 2 || time >= clip.start + clip.duration - frame / 2) return [clip];
       const leftDuration = time - clip.start;
       const id = crypto.randomUUID();
       const right: TimelineClip = {
@@ -2140,10 +2454,15 @@ export class EditorController {
       this.update({ exportStatus: "done", exportProgress: 1 });
       this.toast(t("{name} を書き出しました", { name: filename }));
     } catch (error) {
-      if ((error as DOMException).name === "AbortError") return;
+      if ((error as DOMException).name === "AbortError") { this.update({ exportStatus: "idle", exportProgress: 0 }); return; }
       this.update({ exportStatus: "error" });
       this.toast(error instanceof Error ? t("書き出し失敗: {message}", { message: error.message }) : t("書き出しに失敗しました"));
     }
+  };
+
+  cancelExport = () => {
+    if (this.state.exportStatus !== "exporting") return;
+    this.engine.cancelExport();
   };
 
   exportCurrentFrame = async () => {
@@ -2183,10 +2502,10 @@ export class EditorController {
       let file: File;
       let handle: FileSystemFileHandle | undefined;
       if (window.showOpenFilePicker) {
-        [handle] = await window.showOpenFilePicker({ multiple: false, types: [{ description: "glTF Binary", accept: { "model/gltf-binary": [".glb"] } }] });
+        [handle] = await window.showOpenFilePicker({ multiple: false, types: [{ description: "glTF", accept: { "model/gltf-binary": [".glb"], "model/gltf+json": [".gltf"] } }] });
         file = await handle.getFile();
       } else {
-        file = await this.openWithInput(".glb,model/gltf-binary");
+        file = await this.openWithInput(".glb,.gltf,model/gltf-binary,model/gltf+json");
       }
       await this.importMediaFile(file, handle);
     } catch (error) {
@@ -2334,7 +2653,7 @@ export class EditorController {
           return blob;
         },
       }));
-      this.update({ fonts });
+      this.update({ fonts, projectDirty: this.state.projectDirty });
       await this.registerTimelineFonts();
     } catch {
       // IndexedDB may be unavailable in private browsing. Opening the font
@@ -2366,12 +2685,12 @@ export class EditorController {
   removeGeometry = (id: string) => this.engine.removeGeometry(id);
 }
 
-const MEDIA_EXTENSIONS = new Set(["mp4", "mov", "webm", "mkv", "wav", "mp3", "aac", "flac", "png", "jpg", "jpeg", "webp", "hdr", "exr", "glb"]);
+const MEDIA_EXTENSIONS = new Set(["mp4", "mov", "webm", "mkv", "wav", "mp3", "aac", "flac", "png", "jpg", "jpeg", "webp", "hdr", "exr", "glb", "gltf"]);
 
 function mediaKindForFile(file: File): MediaAsset["kind"] | null {
   const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
   if (!MEDIA_EXTENSIONS.has(extension) && !file.type.startsWith("video/") && !file.type.startsWith("audio/") && !file.type.startsWith("image/")) return null;
-  if (extension === "glb" || file.type === "model/gltf-binary") return "model";
+  if (extension === "glb" || extension === "gltf" || file.type === "model/gltf-binary" || file.type === "model/gltf+json") return "model";
   if (file.type.startsWith("audio/") || ["wav", "mp3", "aac", "flac"].includes(extension)) return "audio";
   if (file.type.startsWith("image/") || ["png", "jpg", "jpeg", "webp", "hdr", "exr"].includes(extension)) return "image";
   return "video";
@@ -2503,6 +2822,12 @@ function normalizeVector(vector: Vector3): Vector3 {
   return length > 0.000001 ? scaleVector(vector, 1 / length) : [0, 0, 0];
 }
 
+function clipHasAudio(clip: TimelineClip, assets: readonly MediaAsset[]) {
+  if (!clip.assetId) return false;
+  const asset = assets.find((item) => item.id === clip.assetId);
+  return asset?.kind === "audio" || asset?.hasAudio === true;
+}
+
 function orderedVisualClips(clips: readonly TimelineClip[]) {
   const visualClips = clips.filter((clip) => clip.kind !== "group" && clip.kind !== "filter");
   const legacyOrder = new Map([...visualClips]
@@ -2588,4 +2913,9 @@ async function queryReadPermission(handle: FileSystemFileHandle) {
 async function requestReadPermission(handle: FileSystemFileHandle) {
   const permissionHandle = handle as FileSystemFileHandle & { requestPermission?: (options: { mode: "read" }) => Promise<PermissionState> };
   return permissionHandle.requestPermission ? permissionHandle.requestPermission({ mode: "read" }) : "prompt";
+}
+
+async function queryDirectoryReadPermission(handle: FileSystemDirectoryHandle) {
+  const permissionHandle = handle as FileSystemDirectoryHandle & { queryPermission?: (options: { mode: "read" }) => Promise<PermissionState> };
+  return permissionHandle.queryPermission ? permissionHandle.queryPermission({ mode: "read" }) : "prompt";
 }

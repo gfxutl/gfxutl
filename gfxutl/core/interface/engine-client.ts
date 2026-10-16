@@ -12,6 +12,7 @@ export class EngineClient {
   private outbox: Array<{ message: Exclude<EngineRequest, { type: "init" }>; transfer: Transferable[] }> = [];
   private pending = new Map<string, { resolve: (value: MediaInfo) => void; reject: (reason: Error) => void }>();
   private pendingExports = new Map<string, { resolve: (value: ExportResult) => void; reject: (reason: Error) => void }>();
+  private activeExportRequestId?: string;
   private pendingAudio = new Map<string, { resolve: (value: AudioPreviewChunk[]) => void; reject: (reason: Error) => void }>();
   private pendingThumbnails = new Map<string, { resolve: (value: MediaThumbnail) => void; reject: (reason: Error) => void }>();
   private pendingPicks = new Map<string, (result: PreviewPickResult) => void>();
@@ -45,6 +46,11 @@ export class EngineClient {
     } else if (message.type === "export-complete") {
       this.pendingExports.get(message.requestId)?.resolve(message);
       this.pendingExports.delete(message.requestId);
+      if (this.activeExportRequestId === message.requestId) this.activeExportRequestId = undefined;
+    } else if (message.type === "export-canceled") {
+      this.pendingExports.get(message.requestId)?.reject(new DOMException("Export canceled", "AbortError"));
+      this.pendingExports.delete(message.requestId);
+      if (this.activeExportRequestId === message.requestId) this.activeExportRequestId = undefined;
     } else if (message.type === "audio-preview-data") {
       this.pendingAudio.get(message.requestId)?.resolve(message.chunks);
       this.pendingAudio.delete(message.requestId);
@@ -86,6 +92,7 @@ export class EngineClient {
       this.pendingCameraHandleDrags.delete(message.requestId);
       this.pendingShaders.delete(message.requestId);
       this.pendingPlugins.delete(message.requestId);
+      if (this.activeExportRequestId === message.requestId) this.activeExportRequestId = undefined;
     }
     this.onMessage(message);
   };
@@ -320,10 +327,15 @@ export class EngineClient {
 
   exportVideo(settings: ExportSettings, duration: number, clips: RenderClip[], sceneSettings: SceneSettings, audioChannels: "stereo" | "mono") {
     const requestId = crypto.randomUUID();
+    this.activeExportRequestId = requestId;
     return new Promise<ExportResult>((resolve, reject) => {
       this.pendingExports.set(requestId, { resolve, reject });
       this.post({ type: "export", requestId, settings, duration, clips, sceneSettings, audioChannels });
     });
+  }
+
+  cancelExport() {
+    if (this.activeExportRequestId) this.post({ type: "export-cancel", requestId: this.activeExportRequestId });
   }
 
   exportStill(width: number, height: number, time: number, clips: RenderClip[], sceneSettings: SceneSettings) {
@@ -369,6 +381,8 @@ function diffSceneSettings(previous: SceneSettings | null, next: SceneSettings):
   if (!previous) return {
     background: next.background,
     camera: next.camera,
+    cameras: next.cameras,
+    cameraCuts: next.cameraCuts ?? null,
     renderer: next.renderer,
     lights: next.lights,
     keyframes: next.keyframes ?? null,
@@ -379,6 +393,8 @@ function diffSceneSettings(previous: SceneSettings | null, next: SceneSettings):
   const renderer = diffRecord(previous.renderer, next.renderer);
   if (background) patch.background = background;
   if (camera) patch.camera = camera;
+  if (!sameValue(previous.cameras, next.cameras)) patch.cameras = next.cameras;
+  if (!sameValue(previous.cameraCuts, next.cameraCuts)) patch.cameraCuts = next.cameraCuts ?? null;
   if (renderer) patch.renderer = renderer;
   if (!sameValue(previous.lights, next.lights)) patch.lights = next.lights;
   if (!sameValue(previous.keyframes, next.keyframes)) patch.keyframes = next.keyframes ?? null;

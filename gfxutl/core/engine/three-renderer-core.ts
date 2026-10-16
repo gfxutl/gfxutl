@@ -392,7 +392,7 @@ export function toneMappingFrom(kind: ToneMappingKind) {
 }
 
 export function shadowTypeFrom(kind: SceneSettings["renderer"]["shadowType"]) {
-  return ({ basic: THREE.BasicShadowMap, pcf: THREE.PCFShadowMap, pcfSoft: THREE.PCFShadowMap, vsm: THREE.VSMShadowMap })[kind];
+  return ({ basic: THREE.BasicShadowMap, pcf: THREE.PCFShadowMap, pcfSoft: THREE.PCFSoftShadowMap, vsm: THREE.VSMShadowMap })[kind];
 }
 
 function createLight(spec: LightSpec): THREE.Light {

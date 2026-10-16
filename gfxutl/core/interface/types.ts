@@ -21,6 +21,7 @@ export interface MediaAsset {
   width?: number;
   height?: number;
   codec?: string;
+  animationNames?: string[];
   hasAudio?: boolean;
   sourceProfile?: SourceIoProfile;
   waveformPeaks?: number[];
@@ -30,6 +31,34 @@ export interface MediaAsset {
   color: string;
   handle?: FileSystemFileHandle;
   fileStatus?: "ready" | "loading" | "permission-required" | "missing";
+}
+
+export type ShaderGraphNodeKind = "inputColor" | "uv" | "time" | "float" | "color" | "add" | "multiply" | "sine" | "mix" | "output";
+
+export interface ShaderGraphNode {
+  id: string;
+  kind: ShaderGraphNodeKind;
+  position: { x: number; y: number };
+  data: { label: string; value?: number; color?: string };
+}
+
+export interface ShaderGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
+}
+
+export interface ShaderGraphDocument {
+  id: string;
+  name: string;
+  sourcePath?: string;
+  source: string;
+  nodes: ShaderGraphNode[];
+  edges: ShaderGraphEdge[];
+  handle?: FileSystemFileHandle;
+  dirty: boolean;
 }
 
 export interface TimelineClip {
@@ -71,6 +100,15 @@ export interface TimelineClip {
   castShadow?: boolean;
   receiveShadow?: boolean;
   visible?: boolean;
+  /** Editing guard. Locked clips can still be selected and inspected. */
+  locked?: boolean;
+  /** Independent timeline mute. Unlike volume=-60 this preserves the mix value. */
+  muted?: boolean;
+  /** When any compatible clip is soloed, non-solo clips are excluded. */
+  solo?: boolean;
+  /** Timeline transition durations in seconds. They affect both picture and sound. */
+  transitionIn?: number;
+  transitionOut?: number;
   layer?: number;
   /** Explicit front-to-back order used by the composite preview. Higher values render in front. */
   stackOrder?: number;
@@ -79,6 +117,7 @@ export interface TimelineClip {
   instanceSpacing?: number;
   primitive?: "mesh" | "points" | "line" | "sprite";
   particleSystem?: import("../protocol/engine-protocol").ParticleSystemSpec;
+  modelAnimation?: string;
   text?: string;
   /** Legacy titles without this field are 3D text. */
   textMode?: "2d" | "3d";
@@ -157,6 +196,7 @@ export interface EditorSettings {
   ramPreviewEnabled: boolean;
   ramPreviewMaxBytes: number;
   audioChannels: "stereo" | "mono";
+  autoKeyEnabled: boolean;
 }
 
 export type EditorDialogState =
@@ -165,6 +205,7 @@ export type EditorDialogState =
 
 export interface EditorState {
   projectName: string;
+  projectDirty: boolean;
   canUndo: boolean;
   canRedo: boolean;
   markers: TimelineMarker[];
@@ -201,6 +242,9 @@ export interface EditorState {
   layout: EditorLayout;
   settings: EditorSettings;
   leftPanelTab: "media" | "export" | "settings" | "plugins";
+  activeBottomPane: "timeline" | "shader";
+  shaderGraphs: ShaderGraphDocument[];
+  activeShaderGraphId: string | null;
   exportSettings: ExportSettings;
   exportStatus: "idle" | "exporting" | "done" | "error";
   exportProgress: number;

@@ -11,6 +11,7 @@ import {
   ChevronRight16Regular as ChevronRight,
   Clipboard16Regular as Clipboard,
   ClipboardPaste16Regular as ClipboardPaste,
+  Code16Regular as Code,
   Copy16Regular as Copy,
   Cube16Regular as Box,
   Cut16Regular as Scissors,
@@ -82,6 +83,10 @@ export function EditorContextMenu() {
       <button role="menuitem" aria-keyshortcuts="Meta+C Control+C" title={`${t("コピー")} (⌘C)`} disabled={!state.selectedClipId} onClick={(event) => run(event, async () => { await controller.copySelection(); controller.closeContextMenu(); })}><Copy /><span>{t("コピー")}</span></button>
       <button role="menuitem" aria-keyshortcuts="Meta+V Control+V" title={`${t("貼り付け")} (⌘V)`} onClick={(event) => run(event, () => controller.pasteFromClipboard())}><ClipboardPaste /><span>{t("貼り付け")}</span></button>
     </div>
+    <div className="context-menu-action-row context-menu-action-row-two" role="group" aria-label={t("選択操作")}>
+      <button role="menuitem" aria-keyshortcuts="Meta+D Control+D" disabled={!state.selectedClipId} onClick={(event) => run(event, () => { controller.duplicateSelection(); controller.closeContextMenu(); })}><Copy /><span>{t("複製")}</span></button>
+      <button role="menuitem" aria-keyshortcuts="Delete Backspace" disabled={!state.selectedClipId} onClick={(event) => run(event, () => { controller.removeSelection(); controller.closeContextMenu(); })}><Trash2 /><span>{t("削除")}</span></button>
+    </div>
     {(menu.scope === "timeline" || menu.scope === "clip") && <>
       <div className="context-menu-separator" />
       <div className="context-menu-label">{t("タイムライン")}</div>
@@ -95,6 +100,8 @@ export function EditorContextMenu() {
     <div className="context-menu-submenu">
       <button role="menuitem" aria-haspopup="menu"><Sparkles /><span>{t("新規")}</span><ChevronRight className="context-menu-chevron" /></button>
       <div className="context-menu-submenu-panel" role="menu" aria-label={t("新規オブジェクト")}>
+        {menu.scope === "media" && <button role="menuitem" onClick={(event) => run(event, controller.requestNewShaderGraph)}><Code />{t("シェーダー")}</button>}
+        {menu.scope !== "media" && <>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addGroupObject(placement))}><FolderTree />{t("グループ")}</button>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addFilterObject(placement))}><Filter />{t("フィルター")}</button>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addText2DObject(placement))}><Type />2D Text</button>
@@ -103,6 +110,7 @@ export function EditorContextMenu() {
         <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("box", placement))}><Box />{t("立方体")}</button>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("sphere", placement))}><Circle />{t("球体")}</button>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addParticleObject(placement))}><Sparkles />{t("GPUパーティクル")}</button>
+        </>}
       </div>
     </div>
     {menu.scope === "preview" && <div className="context-menu-submenu">

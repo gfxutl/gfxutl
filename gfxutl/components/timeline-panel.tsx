@@ -73,7 +73,6 @@ export function TimelinePanel() {
   const [cursorGuideX, setCursorGuideX] = useState<number | null>(null);
   const [alignmentSuggestion, setAlignmentSuggestion] = useState<AlignmentSuggestion | null>(null);
   const [timelineViewport, setTimelineViewport] = useState({ scrollLeft: 0, scrollTop: 0, width: 0, height: 0 });
-  const resizableAssetIds = useMemo(() => new Set(state.assets.filter((asset) => asset.kind === "image").map((asset) => asset.id)), [state.assets]);
   const logicalWorkspaceHeight = useMemo(() => Math.max(...state.clips.map((clip) => clip.y + timelineClipHeight(clip) + 48), MIN_WORKSPACE_HEIGHT), [state.clips]);
   const workspaceHeight = Math.max(MIN_WORKSPACE_HEIGHT, logicalWorkspaceHeight * state.timelineVerticalZoom);
   const nestingDepths = useMemo(() => timelineNestingDepths(state.clips), [state.clips]);
@@ -318,7 +317,7 @@ export function TimelinePanel() {
             {selectionBox && <div className="timeline-selection-box" style={selectionBox} />}
             {orderedClips.map((clip) => {
               const asset = clip.assetId ? assetsById.get(clip.assetId) : undefined;
-              return <Clip key={clip.id} clip={clip} asset={asset} waveformPeaks={asset?.waveformPeaks} pxPerSecond={pxPerSecond} verticalZoom={state.timelineVerticalZoom} timelineViewport={timelineViewport} selected={state.selectedClipIds.includes(clip.id)} durationResizable={clip.kind === "group" || clip.kind === "filter" || clip.kind === "title" || clip.kind === "object" || Boolean(clip.assetId && resizableAssetIds.has(clip.assetId))} childCount={state.clips.filter((item) => item.groupId === clip.id).length} nestingDepth={nestingDepths.get(clip.id) ?? 0} fps={state.fps} snapEnabled={state.snapEnabled} onAlignmentSuggestion={setAlignmentSuggestion} controller={controller} />;
+              return <Clip key={clip.id} clip={clip} asset={asset} waveformPeaks={asset?.waveformPeaks} pxPerSecond={pxPerSecond} verticalZoom={state.timelineVerticalZoom} timelineViewport={timelineViewport} selected={state.selectedClipIds.includes(clip.id)} durationResizable childCount={state.clips.filter((item) => item.groupId === clip.id).length} nestingDepth={nestingDepths.get(clip.id) ?? 0} fps={state.fps} snapEnabled={state.snapEnabled} onAlignmentSuggestion={setAlignmentSuggestion} controller={controller} />;
             })}
           </div>
           <div className="playhead free-playhead" style={{ left: state.currentTime * pxPerSecond }}><div className="playhead-cap" /><i /></div>
@@ -494,14 +493,14 @@ const Clip = memo(function Clip({ clip, asset, waveformPeaks, pxPerSecond, verti
   const [resizing, setResizing] = useState(false);
   const drag = useRef<{ pointerId: number; startX: number; startY: number; originalStart: number; originalY: number; lastStart: number; lastY: number } | null>(null);
   const visual = isVisualClip(clip);
-  const muted = (clip.kind === "video" || clip.kind === "audio") && (clip.volume ?? 0) <= -60;
+  const muted = clip.muted === true || ((clip.kind === "video" || clip.kind === "audio") && (clip.volume ?? 0) <= -60);
   const clipWidth = Math.max(MIN_CLIP_WIDTH, clip.duration * pxPerSecond);
   const clipHeight = timelineClipHeight(clip) * verticalZoom;
   const viewportTop = Math.max(0, timelineViewport.scrollTop - TIME_RULER_HEIGHT);
   const verticallyVisible = clip.y * verticalZoom < viewportTop + timelineViewport.height && clip.y * verticalZoom + clipHeight > viewportTop;
 
   const beginDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || clip.locked) return;
     event.preventDefault();
     event.stopPropagation();
     drag.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originalStart: clip.start, originalY: clip.y, lastStart: clip.start, lastY: clip.y };
@@ -649,7 +648,7 @@ const Clip = memo(function Clip({ clip, asset, waveformPeaks, pxPerSecond, verti
 
   return (
     <button
-      className={`timeline-clip free-clip clip-${clip.kind} ${selected ? "selected" : ""} ${dragging ? "dragging" : ""} ${resizing ? "resizing" : ""} ${clip.groupId ? "nested" : ""} ${visual && clip.visible === false ? "visual-hidden" : ""} ${visual || muted ? "has-status" : ""} ${visual && muted ? "has-two-status" : ""}`}
+      className={`timeline-clip free-clip clip-${clip.kind} ${selected ? "selected" : ""} ${dragging ? "dragging" : ""} ${resizing ? "resizing" : ""} ${clip.groupId ? "nested" : ""} ${clip.locked ? "locked" : ""} ${clip.solo ? "solo" : ""} ${visual && clip.visible === false ? "visual-hidden" : ""} ${visual || muted || clip.locked || clip.solo ? "has-status" : ""}`}
       data-clip-id={clip.id}
       data-group-id={clip.groupId ?? ""}
       data-start={clip.start}
@@ -673,15 +672,17 @@ const Clip = memo(function Clip({ clip, asset, waveformPeaks, pxPerSecond, verti
     >
       {(dragging || resizing) && <output className="clip-drag-readout">{resizing ? `${clip.duration.toFixed(2)}s` : `${clip.start.toFixed(2)}s · y ${Math.round(clip.y)}`}</output>}
       <span className="timeline-clip-kind">{clip.kind === "group" ? <FolderList16Regular /> : clip.kind === "filter" ? <Filter16Regular /> : clip.kind === "title" ? <TextT12Regular /> : clip.kind === "audio" ? <MusicNote216Regular /> : clip.kind === "object" ? <Cube16Regular /> : <VideoClip16Regular />}</span><strong>{clip.name}{clip.kind === "group" ? ` · ${childCount}` : ""}</strong>
-      {(muted || visual) && <span className="timeline-clip-status" role="img" aria-label={[muted ? t("ミュート") : "", visual ? t(clip.visible === false ? "非表示" : "表示") : ""].filter(Boolean).join(", ")}>
+      {(muted || visual || clip.locked || clip.solo) && <span className="timeline-clip-status" role="img" aria-label={[muted ? t("ミュート") : "", clip.solo ? t("ソロ") : "", clip.locked ? t("ロック") : "", visual ? t(clip.visible === false ? "非表示" : "表示") : ""].filter(Boolean).join(", ")}>
         {muted && <span title={t("ミュート")}><SpeakerMute /></span>}
+        {clip.solo && <span title={t("ソロ")}>S</span>}
+        {clip.locked && <span title={t("ロック")}>L</span>}
         {visual && <span title={t(clip.visible === false ? "非表示" : "表示")}>{clip.visible === false ? <EyeOff /> : <Eye />}</span>}
       </span>}
       {(clip.keyframes ?? []).map((keyframe) => <i className="timeline-keyframe" key={keyframe.id} title={`${keyframe.property}: ${keyframe.value} · ${t("ドラッグで時刻変更")}`} style={{ left: `${Math.max(0, Math.min(100, keyframe.time / Math.max(0.001, clip.duration) * 100))}%` }} onPointerDown={(event) => beginKeyframeDrag(keyframe.id, keyframe.time, event)} onClick={(event) => { event.stopPropagation(); controller.setTime(clip.start + keyframe.time); controller.selectClip(clip.id); }} />)}
       {clip.kind === "audio" && <div className="waveform" data-waveform-source={waveformPeaks?.length ? "media" : "pending"}>{(waveformPeaks?.length ? waveformPeaks : Array.from({ length: 24 }, () => 0.08)).map((peak, i) => <i key={i} style={{ height: `${Math.max(4, Math.min(100, peak * 100))}%` }} />)}</div>}
       {verticallyVisible && clip.kind === "video" && asset && (asset.kind === "video" || asset.kind === "image") && <TimelineMediaStrip asset={asset} clip={clip} width={clipWidth} height={clipHeight} pxPerSecond={pxPerSecond} fps={fps} viewport={timelineViewport} controller={controller} />}
-      {selected && durationResizable && clip.kind !== "group" && <><i className="clip-trim-handle trim-start" title={t("左端をドラッグして長さを変更")} onPointerDown={(event) => beginResize("start", event)} /><i className="clip-trim-handle trim-end" title={t("右端をドラッグして長さを変更")} onPointerDown={(event) => beginResize("end", event)} /></>}
-      {selected && clip.kind === "group" && (["n", "s", "e", "w", "ne", "nw", "se", "sw"] as GroupResizeEdge[]).map((edge) => <i key={edge} className={`group-resize-handle group-resize-${edge}`} data-resize-edge={edge} title={t("グループ境界を伸縮")} onPointerDown={(event) => beginGroupResize(edge, event)} />)}
+      {selected && !clip.locked && durationResizable && clip.kind !== "group" && <><i className="clip-trim-handle trim-start" title={t("左端をドラッグして長さを変更")} onPointerDown={(event) => beginResize("start", event)} /><i className="clip-trim-handle trim-end" title={t("右端をドラッグして長さを変更")} onPointerDown={(event) => beginResize("end", event)} /></>}
+      {selected && !clip.locked && clip.kind === "group" && (["n", "s", "e", "w", "ne", "nw", "se", "sw"] as GroupResizeEdge[]).map((edge) => <i key={edge} className={`group-resize-handle group-resize-${edge}`} data-resize-edge={edge} title={t("グループ境界を伸縮")} onPointerDown={(event) => beginGroupResize(edge, event)} />)}
     </button>
   );
 }, (previous, next) => previous.clip === next.clip

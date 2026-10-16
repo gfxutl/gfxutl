@@ -317,7 +317,10 @@ export interface LightSpec {
 
 export interface SceneSettings {
   background: BackgroundSettings;
+  /** Currently edited camera; retained for backwards-compatible projects. */
   camera: CameraSettings;
+  cameras?: CameraSettings[];
+  cameraCuts?: Array<{ id: string; time: number; cameraId: string }>;
   renderer: RendererSettings;
   lights: LightSpec[];
   keyframes?: SceneKeyframe[];
@@ -327,6 +330,8 @@ export interface SceneSettings {
 export interface SceneSettingsPatch {
   background?: Partial<BackgroundSettings>;
   camera?: Partial<CameraSettings>;
+  cameras?: CameraSettings[];
+  cameraCuts?: Array<{ id: string; time: number; cameraId: string }> | null;
   renderer?: Partial<RendererSettings>;
   lights?: LightSpec[];
   /** null removes all scene keyframes; omission leaves them unchanged. */
@@ -362,6 +367,8 @@ export interface RenderClip {
   layer: number;
   parentId?: string;
   opacity: number;
+  transitionIn: number;
+  transitionOut: number;
   volume: number;
   pan: number;
   speed: number;
@@ -373,6 +380,8 @@ export interface RenderClip {
   effects: ClipEffect[];
   colorGrading: ColorGradingSpec;
   postProcess?: ClipPostProcess;
+  /** User-defined inspector stack order. Pixel operations are evaluated in this order. */
+  propertyActionOrder?: Array<"transform" | "sceneGraph" | "keyframes" | "crop" | "colorGrading" | "effects" | "postProcess" | "masks" | "audio" | "speed">;
   /** Timeline filters above this clip, ordered from nearest to topmost. */
   filterStack: RenderFilter[];
   /** Active filter shaders composed after this clip's own shader. Worker-only. */
@@ -380,6 +389,7 @@ export interface RenderClip {
   masks: ClipMask[];
   keyframes: ClipKeyframe[];
   particleSystem?: ParticleSystemSpec;
+  modelAnimation?: string;
   instanceCount: number;
   instanceSpacing: number;
   sceneObject?: SceneObjectSpec;
@@ -479,6 +489,7 @@ export type EngineRequest =
   | { type: "plugin-load"; requestId: string; plugin: RendererPluginBundle }
   | { type: "plugin-unload"; pluginId: string }
   | { type: "export"; requestId: string; settings: ExportSettings; duration: number; clips: RenderClip[]; sceneSettings: SceneSettings; audioChannels: "stereo" | "mono" }
+  | { type: "export-cancel"; requestId: string }
   | { type: "export-still"; requestId: string; width: number; height: number; time: number; clips: RenderClip[]; sceneSettings: SceneSettings }
   | { type: "preview-cache-settings"; enabled: boolean; maxBytes: number }
   | { type: "clear-cache" };
@@ -492,6 +503,7 @@ export type EngineResponse =
       width?: number;
       height?: number;
       codec?: string;
+      animationNames?: string[];
       hasAudio?: boolean;
       sourceProfile?: SourceIoProfile;
     }
@@ -499,6 +511,7 @@ export type EngineResponse =
   | { type: "media-thumbnail"; requestId: string; bitmap?: ImageBitmap; frame?: VideoFrame; peaks?: number[] }
   | { type: "export-progress"; requestId: string; progress: number }
   | { type: "export-complete"; requestId: string; buffer: ArrayBuffer; mimeType: string }
+  | { type: "export-canceled"; requestId: string }
   | { type: "geometry-ready"; id: string }
   | { type: "scene-object-count"; count: number }
   | { type: "image-object-count"; count: number }
