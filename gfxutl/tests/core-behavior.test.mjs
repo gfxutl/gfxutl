@@ -133,3 +133,24 @@ test("preview resize keeps its center while Ctrl is held", async () => {
   assert.equal(result.centerOffsetX, 0);
   assert.equal(result.centerOffsetY, 0);
 });
+
+test("Ctrl+Meta+number resolves preview tabs in their visible order", async () => {
+  const { resolvePreviewTabShortcut } = await importTypeScript("../core/interface/preview-tab-shortcut.ts");
+  const shortcut = (key, overrides = {}) => resolvePreviewTabShortcut({
+    key,
+    ctrlKey: true,
+    metaKey: true,
+    altKey: false,
+    shiftKey: false,
+    ...overrides,
+  }, ["clip-a", "clip-b"]);
+
+  assert.deepEqual(shortcut("1"), { kind: "view", view: "inspector" });
+  assert.deepEqual(shortcut("2"), { kind: "view", view: "camera" });
+  assert.deepEqual(shortcut("3"), { kind: "clip", clipId: "clip-a" });
+  assert.deepEqual(shortcut("4"), { kind: "clip", clipId: "clip-b" });
+  assert.equal(shortcut("5"), null);
+  assert.equal(shortcut("Control"), null);
+  assert.equal(shortcut("1", { metaKey: false }), null);
+  assert.equal(shortcut("1", { ctrlKey: false }), null);
+});

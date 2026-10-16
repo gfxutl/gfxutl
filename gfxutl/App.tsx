@@ -11,6 +11,7 @@ import { observeWindowControlsOverlay } from "./core/interface/window-controls-o
 import { useI18n } from "./core/i18n";
 import { Button } from "./components/ui/button";
 import { ShaderGraphPanel } from "./components/shader-graph-panel";
+import { resolvePreviewTabShortcut } from "./core/interface/preview-tab-shortcut";
 
 export function App() {
   const { state, controller } = useEditor((value) => ({
@@ -45,11 +46,21 @@ export function App() {
   }, [state.projectDirty, state.projectName]);
   useEffect(() => {
     const controlKeyboard = (event: KeyboardEvent) => {
-      if (event.ctrlKey && event.metaKey && (event.key === "Control" || event.key === "Meta")) {
-        event.preventDefault();
-        event.stopPropagation();
-        if (!event.repeat) controller.setPreviewTab(null);
-        return;
+      if (event.ctrlKey && event.metaKey && !event.altKey && !event.shiftKey && /^[1-9]$/.test(event.key)) {
+        const snapshot = controller.getSnapshot();
+        const previewTabShortcut = resolvePreviewTabShortcut(
+          event,
+          snapshot.previewClipTabs.filter((id) => snapshot.clips.some((clip) => clip.id === id)),
+        );
+        if (previewTabShortcut) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!event.repeat) {
+            if (previewTabShortcut.kind === "view") controller.setPreviewView(previewTabShortcut.view);
+            else controller.setPreviewTab(previewTabShortcut.clipId);
+          }
+          return;
+        }
       }
       const target = event.target as HTMLElement | null;
       const editingText = Boolean(target?.closest(
