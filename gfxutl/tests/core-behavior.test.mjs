@@ -11,10 +11,18 @@ async function importTypeScript(path) {
 }
 
 test("sequenceEnd preserves an explicit duration and expands for content", async () => {
-  const { sequenceEnd } = await importTypeScript("../core/interface/sequence-duration.ts");
+  const { alignExportRangeToSequence, sequenceEnd } = await importTypeScript("../core/interface/sequence-duration.ts");
   assert.equal(sequenceEnd([], 30, 12), 12);
   assert.equal(sequenceEnd([{ start: 2, duration: 3 }], 30, 12), 12);
   assert.equal(sequenceEnd([{ start: 10, duration: 5 }], 30, 12), 15);
+  assert.deepEqual(
+    alignExportRangeToSequence({ fps: 30, startTime: 4, endTime: 12, format: "mp4" }, 18),
+    { fps: 30, startTime: 4, endTime: 18, format: "mp4" },
+  );
+  assert.deepEqual(
+    alignExportRangeToSequence({ fps: 30, startTime: 20, endTime: 24 }, 10),
+    { fps: 30, startTime: 10 - 1 / 30, endTime: 10 },
+  );
 });
 
 test("clip action order is retained after applicability filtering", async () => {

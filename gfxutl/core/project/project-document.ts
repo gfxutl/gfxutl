@@ -2,7 +2,7 @@ import type { BackgroundObject, EditorSettings, FontFaceInfo, MediaAsset, Shader
 import type { RendererPluginInfo } from "../plugins/plugin-types";
 import type { ExportSettings } from "../protocol/engine-protocol";
 import { normalizeBackgroundSize } from "../interface/composition-size";
-import { sequenceEnd } from "../interface/sequence-duration";
+import { alignExportRangeToSequence, sequenceEnd } from "../interface/sequence-duration";
 
 export const PROJECT_DOCUMENT_VERSION = 3 as const;
 
@@ -45,13 +45,14 @@ export interface ProjectDocumentSource {
 
 export function createProjectDocument(source: ProjectDocumentSource): ProjectDocument {
   const fps = clampNumber(source.fps, 1, 240, 30);
+  const duration = sequenceEnd(source.clips, fps, finite(source.duration, 32));
   return {
     application: "GfxUtl",
     version: PROJECT_DOCUMENT_VERSION,
     name: source.name.trim() || "Untitled Project",
     savedAt: new Date().toISOString(),
     fps,
-    duration: sequenceEnd(source.clips, fps, finite(source.duration, 32)),
+    duration,
     background: structuredClone(normalizeBackgroundSize(source.background)),
     assets: source.assets.map(({ handle: _handle, ...asset }) => ({ ...asset })),
     clips: structuredClone(source.clips),
@@ -61,7 +62,7 @@ export function createProjectDocument(source: ProjectDocumentSource): ProjectDoc
     markers: structuredClone(source.markers ?? []),
     loopPlayback: source.loopPlayback === true,
     settings: structuredClone(source.settings),
-    exportSettings: structuredClone(source.exportSettings),
+    exportSettings: structuredClone(alignExportRangeToSequence(source.exportSettings, duration)),
   };
 }
 
@@ -75,13 +76,14 @@ export function parseProjectDocument(text: string): ProjectDocument {
     throw new Error("プロジェクトデータが破損しています");
   }
   const fps = clampNumber(value.fps, 1, 240, 30);
+  const duration = sequenceEnd(value.clips, fps, finite(value.duration, 32));
   return {
     application: "GfxUtl",
     version: PROJECT_DOCUMENT_VERSION,
     name: typeof value.name === "string" && value.name.trim() ? value.name.trim() : "Untitled Project",
     savedAt: typeof value.savedAt === "string" ? value.savedAt : new Date(0).toISOString(),
     fps,
-    duration: sequenceEnd(value.clips, fps, finite(value.duration, 32)),
+    duration,
     background: structuredClone(normalizeBackgroundSize(value.background, value.exportSettings)),
     assets: value.assets.map((asset) => ({ ...asset, handle: undefined, fileStatus: "missing" as const })),
     clips: structuredClone(value.clips),
@@ -91,7 +93,7 @@ export function parseProjectDocument(text: string): ProjectDocument {
     markers: Array.isArray(value.markers) ? structuredClone(value.markers) : [],
     loopPlayback: value.loopPlayback === true,
     settings: { ...structuredClone(value.settings), autoKeyEnabled: value.settings.autoKeyEnabled === true },
-    exportSettings: structuredClone(value.exportSettings),
+    exportSettings: structuredClone(alignExportRangeToSequence(value.exportSettings, duration)),
   };
 }
 

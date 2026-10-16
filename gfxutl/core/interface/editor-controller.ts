@@ -10,7 +10,7 @@ import { clampTimelineVerticalZoom, clampTimelineZoom } from "./timeline-zoom";
 import { MediaReadPlanner } from "./media-read-graph";
 import { resolveAudioProcessing } from "./audio-processing";
 import { DEFAULT_COMPOSITION_SIZE, normalizeBackgroundSize, normalizeCompositionDimension } from "./composition-size";
-import { DEFAULT_SEQUENCE_DURATION, sequenceEnd } from "./sequence-duration";
+import { alignExportRangeToSequence, DEFAULT_SEQUENCE_DURATION, sequenceEnd } from "./sequence-duration";
 import { readRendererPluginPackage } from "../plugins/plugin-package";
 import { bundleRendererPlugin } from "../plugins/plugin-bundler";
 import { translateCurrent as t } from "../i18n";
@@ -232,6 +232,9 @@ export class EditorController {
       const currentTime = patch.currentTime ?? this.state.currentTime;
       if (currentTime > duration) patch.currentTime = duration;
     }
+    if (patch.duration !== undefined) {
+      patch.exportSettings = alignExportRangeToSequence(patch.exportSettings ?? this.state.exportSettings, patch.duration);
+    }
     this.recordHistory(patch);
     if (patch.projectDirty === undefined && Object.keys(patch).some((key) => PERSISTED_KEYS.has(key as keyof EditorState))) patch.projectDirty = true;
     const nextState = { ...this.state, ...patch };
@@ -277,6 +280,7 @@ export class EditorController {
 
   private restoreHistory(snapshot: HistorySnapshot, canUndo: boolean, canRedo: boolean) {
     const duration = sequenceEnd(snapshot.clips, snapshot.fps, snapshot.duration);
+    const exportSettings = alignExportRangeToSequence(snapshot.exportSettings, duration);
     const selectedClipIds = this.state.selectedClipIds.filter((id) => snapshot.clips.some((clip) => clip.id === id));
     const selectedClipId = snapshot.clips.some((clip) => clip.id === this.state.selectedClipId) ? this.state.selectedClipId : selectedClipIds.at(-1) ?? null;
     const selectionWasClip = this.state.selectedClipId !== null || this.state.selectedClipIds.length > 0;
@@ -288,6 +292,7 @@ export class EditorController {
       ...this.state,
       ...snapshot,
       duration,
+      exportSettings,
       currentTime: Math.min(this.state.currentTime, duration),
       canUndo,
       canRedo,
@@ -1499,12 +1504,14 @@ export class EditorController {
     if (next.audioChannels !== previous.audioChannels && this.state.playing) this.syncAudioPlayback(true, true);
   };
   updateExportSettings = (patch: Partial<ExportSettings>) => {
-    const next = { ...this.state.exportSettings, ...patch };
+    let next = { ...this.state.exportSettings, ...patch };
     next.width = Math.max(2, Math.min(7680, Math.floor(next.width / 2) * 2));
     next.height = Math.max(2, Math.min(4320, Math.floor(next.height / 2) * 2));
-    const minimumDuration = 1 / Math.max(1, next.fps);
     next.startTime = Number.isFinite(next.startTime) ? Math.max(0, next.startTime) : this.state.exportSettings.startTime;
-    next.endTime = Number.isFinite(next.endTime) ? Math.max(next.startTime + minimumDuration, next.endTime) : this.state.exportSettings.endTime;
+    const requestedDuration = patch.endTime !== undefined && Number.isFinite(patch.endTime)
+      ? Math.max(1 / this.state.fps, patch.endTime, ...this.state.clips.map((clip) => clip.start + clip.duration))
+      : this.state.duration;
+    next = alignExportRangeToSequence(next, requestedDuration);
     if (patch.format === "mp4") {
       if (!["avc", "hevc", "av1"].includes(next.videoCodec)) next.videoCodec = "avc";
       if (!["aac", "opus", "none"].includes(next.audioCodec)) next.audioCodec = "aac";
@@ -1512,7 +1519,10 @@ export class EditorController {
       if (!["vp8", "vp9", "av1"].includes(next.videoCodec)) next.videoCodec = "vp9";
       if (!["opus", "vorbis", "none"].includes(next.audioCodec)) next.audioCodec = "opus";
     }
-    this.update({ exportSettings: next });
+    this.update({
+      exportSettings: next,
+      ...(requestedDuration === this.state.duration ? {} : { duration: requestedDuration, currentTime: Math.min(this.state.currentTime, requestedDuration) }),
+    });
   };
 
   getMediaThumbnail = (assetId: string, time = 0, timeline?: { width: number; height: number }) => this.engine.getMediaThumbnail(assetId, time, timeline);
