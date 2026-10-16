@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
+import * as THREE from "three";
 
 async function importTypeScript(path) {
   const source = await readFile(new URL(path, import.meta.url), "utf8");
@@ -67,4 +68,31 @@ test("camera cuts select the latest camera at or before the playhead", async () 
   assert.equal(cameraForTime(scene, 3).id, "a");
   assert.equal(cameraForTime(scene, 4).id, "b");
   assert.equal(cameraForTime(scene, 12).id, "a");
+});
+
+test("preview picking inherits the visible camera layer mask", async () => {
+  const { matchPreviewLayerMask } = await importTypeScript("../core/engine/editor-layers.ts");
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
+  camera.position.z = 5;
+  camera.lookAt(0, 0, 0);
+  camera.layers.enableAll();
+  camera.layers.disable(31);
+  camera.updateMatrixWorld(true);
+
+  const timelineObject = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+  timelineObject.name = "timeline-object";
+  const inspectorHelper = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+  inspectorHelper.name = "inspector-helper";
+  inspectorHelper.position.z = 2;
+  inspectorHelper.layers.set(31);
+  inspectorHelper.updateMatrixWorld(true);
+
+  const picker = new THREE.Raycaster();
+  picker.layers.enableAll();
+  matchPreviewLayerMask(picker, camera);
+  picker.setFromCamera(new THREE.Vector2(0, 0), camera);
+  assert.deepEqual(
+    picker.intersectObjects([inspectorHelper, timelineObject]).map((hit) => hit.object.name),
+    ["timeline-object", "timeline-object"],
+  );
 });

@@ -16,6 +16,7 @@ import { MediaBuffer } from "./media-buffer";
 import { RendererPluginRuntime } from "./renderer-plugin-runtime";
 import { ThreeCameraHandles } from "./three-camera-handles";
 import { ThreeTransformHandles } from "./three-transform-handles";
+import { matchPreviewLayerMask } from "./editor-layers";
 import { classifyFilterRegion, createFilterRegionNodeCache } from "./filter-region-nodes";
 import { isNeutralClipEffect, isNeutralColorGrading } from "./effect-optimization";
 import { cameraForTime, clipTransitionGain } from "../interface/sequencer-state";
@@ -1283,7 +1284,10 @@ function reportActiveSceneObjectCount() {
 
 function pickSceneObject(ndcX: number, ndcY: number) {
   if (!graphics) return {};
-  previewRaycaster.layers.enableAll();
+  // Camera-view picking must not see the inspector-only camera helper: its
+  // near-plane geometry covers the viewport and would swallow every object
+  // hover before a timeline root can be reached.
+  matchPreviewLayerMask(previewRaycaster, graphics.previewCamera);
   previewPointer.set(THREE.MathUtils.clamp(ndcX, -1, 1), THREE.MathUtils.clamp(ndcY, -1, 1));
   previewRaycaster.setFromCamera(previewPointer, graphics.previewCamera);
   const intersections = previewRaycaster.intersectObjects(graphics.scene.children, true)
@@ -1293,11 +1297,11 @@ function pickSceneObject(ndcX: number, ndcY: number) {
   if (handleHit && transformHandleClipId) {
     return { clipId: transformHandleClipId, handle: handleHit.object.userData.gfxTransformHandleKind as TransformHandleKind } satisfies PreviewPickResult;
   }
-  const cameraHandle = intersections
+  const cameraHandle = previewView === "inspector" ? intersections
     .map((hit) => cameraHandleKind(hit.object))
-    .find((handle): handle is CameraHandleKind => Boolean(handle));
+    .find((handle): handle is CameraHandleKind => Boolean(handle)) : undefined;
   if (cameraHandle) return { camera: true, cameraHandle } satisfies PreviewPickResult;
-  const cameraHit = intersections.some((hit) => {
+  const cameraHit = previewView === "inspector" && intersections.some((hit) => {
     for (let object: THREE.Object3D | null = hit.object; object; object = object.parent) {
       if (object.userData.gfxCameraHandle || object.name === `editor:${sceneSettings.camera.id}`) return true;
     }
