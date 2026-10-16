@@ -15,6 +15,8 @@ export class EngineClient {
   private activeExportRequestId?: string;
   private pendingAudio = new Map<string, { resolve: (value: AudioPreviewChunk[]) => void; reject: (reason: Error) => void }>();
   private pendingThumbnails = new Map<string, { resolve: (value: MediaThumbnail) => void; reject: (reason: Error) => void }>();
+  private pendingThumbnailKeys = new Map<string, string>();
+  private thumbnailPromises = new Map<string, Promise<MediaThumbnail>>();
   private pendingPicks = new Map<string, (result: PreviewPickResult) => void>();
   private pendingCameraHandleDrags = new Map<string, (transform?: CameraHandleTransform) => void>();
   private pendingShaders = new Map<string, { resolve: (wgsl: string) => void; reject: (reason: Error) => void }>();
@@ -57,6 +59,9 @@ export class EngineClient {
     } else if (message.type === "media-thumbnail") {
       this.pendingThumbnails.get(message.requestId)?.resolve(message);
       this.pendingThumbnails.delete(message.requestId);
+      const key = this.pendingThumbnailKeys.get(message.requestId);
+      if (key) this.thumbnailPromises.delete(key);
+      this.pendingThumbnailKeys.delete(message.requestId);
     } else if (message.type === "pick-result") {
       this.pendingPicks.get(message.requestId)?.({ clipId: message.clipId, handle: message.handle, camera: message.camera, cameraHandle: message.cameraHandle });
       this.pendingPicks.delete(message.requestId);
@@ -88,6 +93,9 @@ export class EngineClient {
       this.pendingExports.delete(message.requestId);
       this.pendingAudio.delete(message.requestId);
       this.pendingThumbnails.delete(message.requestId);
+      const thumbnailKey = this.pendingThumbnailKeys.get(message.requestId);
+      if (thumbnailKey) this.thumbnailPromises.delete(thumbnailKey);
+      this.pendingThumbnailKeys.delete(message.requestId);
       this.pendingPicks.delete(message.requestId);
       this.pendingCameraHandleDrags.delete(message.requestId);
       this.pendingShaders.delete(message.requestId);
@@ -246,11 +254,17 @@ export class EngineClient {
   }
 
   getMediaThumbnail(assetId: string, time = 0, timeline?: { width: number; height: number }) {
+    const key = `${assetId}:${time.toFixed(6)}:${timeline ? `${timeline.width}x${timeline.height}` : "media"}`;
+    const pending = this.thumbnailPromises.get(key);
+    if (pending) return pending;
     const requestId = crypto.randomUUID();
-    return new Promise<MediaThumbnail>((resolve, reject) => {
+    const request = new Promise<MediaThumbnail>((resolve, reject) => {
       this.pendingThumbnails.set(requestId, { resolve, reject });
+      this.pendingThumbnailKeys.set(requestId, key);
       this.post({ type: "media-thumbnail", requestId, assetId, time, ...(timeline ? { timeline } : {}) });
     });
+    this.thumbnailPromises.set(key, request);
+    return request;
   }
 
   pick(ndcX: number, ndcY: number, coalesce = false) {

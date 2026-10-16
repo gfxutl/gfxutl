@@ -26,11 +26,11 @@ import {
   TextFont16Regular as Type,
 } from "@fluentui/react-icons";
 import { useEffect, type MouseEvent } from "react";
-import { useEditor } from "../core/interface";
+import { shallowEqual, useEditor } from "../core/interface";
 import { useI18n } from "../core/i18n";
 
 export function EditorContextMenu() {
-  const { state, controller } = useEditor();
+  const { state, controller } = useEditor((value) => ({ canRedo: value.canRedo, canUndo: value.canUndo, clips: value.clips, contextMenu: value.contextMenu, markers: value.markers, selectedClipId: value.selectedClipId, selectedClipIds: value.selectedClipIds, snapEnabled: value.snapEnabled }), shallowEqual);
   const { t } = useI18n();
   const menu = state.contextMenu;
 

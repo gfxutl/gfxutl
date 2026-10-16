@@ -1,5 +1,5 @@
 import { ArrowSync16Regular, Delete16Regular, FolderOpen16Regular } from "@fluentui/react-icons";
-import { useEditor } from "../core/interface";
+import { shallowEqual, useEditor } from "../core/interface";
 import { Button } from "./ui/button";
 import { useI18n } from "../core/i18n";
 
@@ -10,7 +10,7 @@ function formatBytes(bytes?: number) {
 }
 
 export function PluginPanel() {
-  const { state, controller } = useEditor();
+  const { state, controller } = useEditor((value) => ({ fileSystemAccess: value.fileSystemAccess, plugins: value.plugins }), shallowEqual);
   const { t } = useI18n();
   return <div className="plugin-panel">
     <div className="plugin-panel-intro">

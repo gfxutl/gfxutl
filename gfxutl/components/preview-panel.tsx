@@ -1,13 +1,34 @@
 import { Camera16Regular as Camera, Dismiss16Regular as X, Eye16Regular as Inspector, Open16Regular as ExternalLink } from "@fluentui/react-icons";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
-import { useEditor } from "../core/interface";
+import { shallowEqual, useEditor } from "../core/interface";
 import type { CameraHandleKind, TimelineClip, TransformHandleKind } from "../core/interface";
 import type { MediaAsset } from "../core/interface";
+import { resolvePreviewResize } from "../core/interface/preview-resize";
 import { AudioWaveformEditor } from "./audio-waveform-editor";
 import { useI18n } from "../core/i18n";
 
 export function PreviewPanel() {
-  const { state, controller } = useEditor();
+  const { state, controller } = useEditor((value) => ({
+    activeImageObjects: value.activeImageObjects,
+    activePreviewClipId: value.activePreviewClipId,
+    activePreviewView: value.activePreviewView,
+    activeSceneObjects: value.activeSceneObjects,
+    assets: value.assets,
+    background: value.background,
+    cachedFramesDisplayed: value.cachedFramesDisplayed,
+    cameraProjection: value.cameraProjection,
+    clips: value.clips,
+    currentTime: value.playing ? -1 : value.currentTime,
+    fps: value.fps,
+    geometryObjectsReady: value.geometryObjectsReady,
+    playing: value.playing,
+    playingAudioObjects: value.playingAudioObjects,
+    previewClipTabs: value.previewClipTabs,
+    previewFramesRendered: value.previewFramesRendered,
+    previewSource: value.previewSource,
+    selectedClipIds: value.selectedClipIds,
+    videoFramesRendered: value.videoFramesRendered,
+  }), shallowEqual);
   const { t } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -215,8 +236,6 @@ export function PreviewPanel() {
     const startHeight = Math.max(0.04, object.height);
     const startPositionX = object.clip.positionX ?? 0;
     const startPositionY = object.clip.positionY ?? 0;
-    const resizeX = handle.includes("e") || handle.includes("w");
-    const resizeY = handle.includes("n") || handle.includes("s");
     const directionX = handle.includes("e") ? 1 : handle.includes("w") ? -1 : 0;
     const directionY = handle.includes("n") ? 1 : handle.includes("s") ? -1 : 0;
     const radians = THREE_DEGREES * object.rotation;
@@ -234,14 +253,18 @@ export function PreviewPanel() {
       const dy = point.y - object.y;
       const localX = cosine * dx - sine * dy - grabOffsetX;
       const localY = sine * dx + cosine * dy - grabOffsetY;
-      const requestedWidth = resizeX ? Math.max(0.04, directionX * localX + startWidth / 2) : startWidth;
-      const requestedHeight = resizeY ? Math.max(0.04, directionY * localY + startHeight / 2) : startHeight;
-      const scaleX = resizeX ? Math.max(1, Math.min(5_000, startScaleX * requestedWidth / startWidth)) : startScaleX;
-      const scaleY = resizeY ? Math.max(1, Math.min(5_000, startScaleY * requestedHeight / startHeight)) : startScaleY;
-      const width = startWidth * scaleX / startScaleX;
-      const height = startHeight * scaleY / startScaleY;
-      const centerOffsetX = resizeX ? directionX * (width - startWidth) / 2 : 0;
-      const centerOffsetY = resizeY ? directionY * (height - startHeight) / 2 : 0;
+      const { scaleX, scaleY, centerOffsetX, centerOffsetY } = resolvePreviewResize({
+        startWidth,
+        startHeight,
+        startScaleX,
+        startScaleY,
+        localX,
+        localY,
+        directionX,
+        directionY,
+        preserveAspect: pointer.shiftKey,
+        fromCenter: pointer.ctrlKey || pointer.metaKey,
+      });
       const worldOffsetX = cosine * centerOffsetX + sine * centerOffsetY;
       const worldOffsetY = -sine * centerOffsetX + cosine * centerOffsetY;
       controller.updateClip(object.clip.id, {
@@ -477,7 +500,7 @@ export function PreviewPanel() {
         event.preventDefault();
         const rect = event.currentTarget.getBoundingClientRect();
         controller.openContextMenu({
-          x: event.clientX, y: event.clientY, scope: "preview", time: state.currentTime, timelineY: 32,
+          x: event.clientX, y: event.clientY, scope: "preview", time: controller.getSnapshot().currentTime, timelineY: 32,
           positionX: ((event.clientX - rect.left) / rect.width - 0.5) * previewWorldWidth * 100,
           positionY: ((event.clientY - rect.top) / rect.height - 0.5) * previewWorldHeight * 100,
         });

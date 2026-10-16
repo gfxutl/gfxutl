@@ -1,5 +1,5 @@
 export { editorController } from "../runtime";
-export { useEditor } from "./use-editor";
+export { shallowEqual, useEditor } from "./use-editor";
 export type * from "./types";
 export type * from "../plugins/plugin-types";
 export { timelineClipHeight, timelineGroupDescendants, MIN_GROUP_HEIGHT } from "./timeline-groups";

@@ -5,13 +5,13 @@ import {
   VideoClip16Regular as FileVideo2,
   Image16Regular as Image,
 } from "@fluentui/react-icons";
-import { useEditor } from "../core/interface";
+import { shallowEqual, useEditor } from "../core/interface";
 import { COMPOSITION_SIZE_PRESETS } from "../core/interface/composition-size";
 import { Button } from "./ui/button";
 import { useI18n } from "../core/i18n";
 
 export function ExportPanel() {
-  const { state, controller } = useEditor();
+  const { state, controller } = useEditor((value) => ({ exportProgress: value.exportProgress, exportSettings: value.exportSettings, exportStatus: value.exportStatus }), shallowEqual);
   const { t } = useI18n();
   const settings = state.exportSettings;
   const estimatedMb = (settings.bitrate + (settings.audioCodec === "none" ? 0 : settings.audioBitrate)) * Math.max(0, settings.endTime - settings.startTime) / 8 / 1024 / 1024;

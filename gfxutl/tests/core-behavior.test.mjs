@@ -96,3 +96,40 @@ test("preview picking inherits the visible camera layer mask", async () => {
     ["timeline-object", "timeline-object"],
   );
 });
+
+test("preview resize preserves aspect ratio while Shift is held", async () => {
+  const { resolvePreviewResize } = await importTypeScript("../core/interface/preview-resize.ts");
+  const result = resolvePreviewResize({
+    startWidth: 4,
+    startHeight: 2,
+    startScaleX: 100,
+    startScaleY: 100,
+    localX: 4,
+    localY: 1.5,
+    directionX: 1,
+    directionY: 1,
+    preserveAspect: true,
+    fromCenter: false,
+  });
+  assert.equal(result.width / result.height, 2);
+  assert.equal(result.scaleX, result.scaleY);
+});
+
+test("preview resize keeps its center while Ctrl is held", async () => {
+  const { resolvePreviewResize } = await importTypeScript("../core/interface/preview-resize.ts");
+  const result = resolvePreviewResize({
+    startWidth: 4,
+    startHeight: 2,
+    startScaleX: 100,
+    startScaleY: 100,
+    localX: 3,
+    localY: 0,
+    directionX: 1,
+    directionY: 0,
+    preserveAspect: false,
+    fromCenter: true,
+  });
+  assert.equal(result.width, 6);
+  assert.equal(result.centerOffsetX, 0);
+  assert.equal(result.centerOffsetY, 0);
+});

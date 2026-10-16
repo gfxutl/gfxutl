@@ -8,7 +8,7 @@ import {
   Settings16Regular as Settings2,
   SoundWaveCircle16Regular as AudioLines,
 } from "@fluentui/react-icons";
-import { useEditor } from "../core/interface";
+import { shallowEqual, useEditor } from "../core/interface";
 import { Button } from "./ui/button";
 import { Slider } from "./ui/slider";
 import { useI18n } from "../core/i18n";
@@ -16,7 +16,7 @@ import { useI18n } from "../core/i18n";
 const MiB = 1024 * 1024;
 
 export function SettingsPanel() {
-  const { state, controller } = useEditor();
+  const { state, controller } = useEditor((value) => ({ cache: value.cache, duration: value.duration, fps: value.fps, projectName: value.projectName, settings: value.settings }), shallowEqual);
   const { locale, setLocale, t } = useI18n();
   const settings = state.settings;
   const maxMb = Math.round(settings.ramPreviewMaxBytes / MiB);

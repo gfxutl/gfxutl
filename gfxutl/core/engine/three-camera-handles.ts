@@ -161,6 +161,8 @@ export class ThreeCameraHandles {
     this.drag = null;
   }
 
+  get pickRoots(): readonly THREE.Object3D[] { return [this.group, this.hoverTarget]; }
+
   dispose() {
     this.drag = null;
     this.hoverTarget.removeFromParent();

@@ -19,7 +19,7 @@ import {
   VideoClip16Regular,
 } from "@fluentui/react-icons";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { clampTimelineVerticalZoom, clampTimelineZoom, MIN_GROUP_HEIGHT, timelineClipHeight, timelineGroupDescendants, useEditor } from "../core/interface";
+import { clampTimelineVerticalZoom, clampTimelineZoom, MIN_GROUP_HEIGHT, shallowEqual, timelineClipHeight, timelineGroupDescendants, useEditor } from "../core/interface";
 import type { MediaAsset, SceneKeyframe, TimelineClip } from "../core/interface";
 import { useI18n } from "../core/i18n";
 
@@ -61,7 +61,21 @@ function zoomAnchorScrollLeft(time: number, pointerX: number, zoom: number, dura
 }
 
 export function TimelinePanel() {
-  const { state, controller } = useEditor();
+  const { state, controller } = useEditor((value) => ({
+    assets: value.assets,
+    background: value.background,
+    clips: value.clips,
+    duration: value.duration,
+    fps: value.fps,
+    loopPlayback: value.loopPlayback,
+    markers: value.markers,
+    playing: value.playing,
+    selectedCameraKeyframeIds: value.selectedCameraKeyframeIds,
+    selectedClipIds: value.selectedClipIds,
+    snapEnabled: value.snapEnabled,
+    timelineVerticalZoom: value.timelineVerticalZoom,
+    zoom: value.zoom,
+  }), shallowEqual);
   const { t } = useI18n();
   const pxPerSecond = BASE_PX_PER_SECOND * state.zoom;
   const panelRef = useRef<HTMLElement>(null);
@@ -80,6 +94,26 @@ export function TimelinePanel() {
     if (a.kind !== b.kind && (a.kind === "group" || b.kind === "group")) return a.kind === "group" ? -1 : 1;
     return (nestingDepths.get(a.id) ?? 0) - (nestingDepths.get(b.id) ?? 0);
   }), [nestingDepths, state.clips]);
+  const childCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const clip of state.clips) if (clip.groupId) counts.set(clip.groupId, (counts.get(clip.groupId) ?? 0) + 1);
+    return counts;
+  }, [state.clips]);
+  const visibleOrderedClips = useMemo(() => {
+    if (timelineViewport.width <= 0 || timelineViewport.height <= 0) return orderedClips;
+    const overscanX = 240;
+    const overscanY = 96;
+    const leftTime = Math.max(0, (timelineViewport.scrollLeft - overscanX) / Math.max(0.001, pxPerSecond));
+    const rightTime = (timelineViewport.scrollLeft + timelineViewport.width + overscanX) / Math.max(0.001, pxPerSecond);
+    const top = Math.max(0, timelineViewport.scrollTop - TIME_RULER_HEIGHT - overscanY);
+    const bottom = timelineViewport.scrollTop + timelineViewport.height + overscanY;
+    return orderedClips.filter((clip) => {
+      if (state.selectedClipIds.includes(clip.id)) return true;
+      const clipTop = clip.y * state.timelineVerticalZoom;
+      const clipBottom = clipTop + timelineClipHeight(clip) * state.timelineVerticalZoom;
+      return clip.start < rightTime && clip.start + clip.duration > leftTime && clipTop < bottom && clipBottom > top;
+    });
+  }, [orderedClips, pxPerSecond, state.selectedClipIds, state.timelineVerticalZoom, timelineViewport]);
   const cameraKeyframeGroups = useMemo(() => groupCameraKeyframes(state.background.scene.keyframes ?? [], state.fps), [state.background.scene.keyframes, state.fps]);
   const assetsById = useMemo(() => new Map(state.assets.map((asset) => [asset.id, asset])), [state.assets]);
   const workspaceWidth = state.duration * pxPerSecond + 160;
@@ -270,8 +304,7 @@ export function TimelinePanel() {
   return (
     <section className="timeline-panel panel" ref={panelRef}>
       <div className="timeline-transport-pill" role="toolbar" aria-label={t("タイムライン再生コントロール")}>
-        <time className="timeline-pill-clock timeline-pill-clock-compact" dateTime={`PT${Math.max(0, state.currentTime)}S`}>{formatClock(state.currentTime)}</time>
-        <time className="timeline-pill-clock timeline-pill-clock-precise" dateTime={`PT${Math.max(0, state.currentTime)}S`}>{formatPreciseClock(state.currentTime)}</time>
+        <TimelineClock />
         <div className="timeline-pill-expanded" onPointerUpCapture={(event) => (event.target as HTMLElement).closest<HTMLButtonElement>("button")?.blur()}>
           <span className="timeline-pill-duration">/ {formatClock(state.duration)}</span>
           <i className="timeline-pill-divider" />
@@ -315,16 +348,26 @@ export function TimelinePanel() {
               style={{ left: alignmentSuggestion.x, top: alignmentSuggestion.top * state.timelineVerticalZoom, height: alignmentSuggestion.height * state.timelineVerticalZoom }}
             ><span>{t("端を揃える")}</span></div>}
             {selectionBox && <div className="timeline-selection-box" style={selectionBox} />}
-            {orderedClips.map((clip) => {
+            {visibleOrderedClips.map((clip) => {
               const asset = clip.assetId ? assetsById.get(clip.assetId) : undefined;
-              return <Clip key={clip.id} clip={clip} asset={asset} waveformPeaks={asset?.waveformPeaks} pxPerSecond={pxPerSecond} verticalZoom={state.timelineVerticalZoom} timelineViewport={timelineViewport} selected={state.selectedClipIds.includes(clip.id)} durationResizable childCount={state.clips.filter((item) => item.groupId === clip.id).length} nestingDepth={nestingDepths.get(clip.id) ?? 0} fps={state.fps} snapEnabled={state.snapEnabled} onAlignmentSuggestion={setAlignmentSuggestion} controller={controller} />;
+              return <Clip key={clip.id} clip={clip} asset={asset} waveformPeaks={asset?.waveformPeaks} pxPerSecond={pxPerSecond} verticalZoom={state.timelineVerticalZoom} timelineViewport={timelineViewport} selected={state.selectedClipIds.includes(clip.id)} durationResizable childCount={childCounts.get(clip.id) ?? 0} nestingDepth={nestingDepths.get(clip.id) ?? 0} fps={state.fps} snapEnabled={state.snapEnabled} onAlignmentSuggestion={setAlignmentSuggestion} controller={controller} />;
             })}
           </div>
-          <div className="playhead free-playhead" style={{ left: state.currentTime * pxPerSecond }}><div className="playhead-cap" /><i /></div>
+          <TimelinePlayhead pxPerSecond={pxPerSecond} />
         </div>
       </div>
     </section>
   );
+}
+
+function TimelineClock() {
+  const { state: currentTime } = useEditor((state) => state.currentTime);
+  return <><time className="timeline-pill-clock timeline-pill-clock-compact" dateTime={`PT${Math.max(0, currentTime)}S`}>{formatClock(currentTime)}</time><time className="timeline-pill-clock timeline-pill-clock-precise" dateTime={`PT${Math.max(0, currentTime)}S`}>{formatPreciseClock(currentTime)}</time></>;
+}
+
+function TimelinePlayhead({ pxPerSecond }: { pxPerSecond: number }) {
+  const { state: currentTime } = useEditor((state) => state.currentTime);
+  return <div className="playhead free-playhead" style={{ left: currentTime * pxPerSecond }}><div className="playhead-cap" /><i /></div>;
 }
 
 function TimelineRuler({ duration, fps, pxPerSecond, scrollLeft, viewportWidth, cameraKeyframes, selectedCameraKeyframeIds, controller, onPointerDown, onDoubleClick }: {

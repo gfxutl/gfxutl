@@ -66,18 +66,19 @@ export class MediaBuffer {
       selected.push(node.assetId);
       available -= node.size;
     }
+    const selectedSet = new Set(selected);
 
     // Files outside the current timeline graph remain a best-effort LRU tail.
     const tail = [...this.entries.entries()]
-      .filter(([assetId]) => !selected.includes(assetId))
+      .filter(([assetId]) => !selectedSet.has(assetId))
       .sort((left, right) => right[1].touched - left[1].touched);
     for (const [assetId, entry] of tail) {
       if (entry.bytes.byteLength > available) continue;
       selected.push(assetId);
+      selectedSet.add(assetId);
       available -= entry.bytes.byteLength;
     }
 
-    const selectedSet = new Set(selected);
     for (const assetId of [...this.entries.keys()]) if (!selectedSet.has(assetId)) this.evict(assetId);
     this.requestedAssetIds = selected.filter((assetId) => !this.entries.has(assetId));
     this.skippedAssetIds = skipped;
@@ -190,13 +191,19 @@ export class MediaBuffer {
 
   private prioritizedNodes() {
     const byId = new Map(this.graph.nodes.map((node) => [node.assetId, node]));
+    const outgoing = new Map<string, string[]>();
+    for (const edge of this.graph.edges) {
+      const targets = outgoing.get(edge.fromAssetId) ?? [];
+      targets.push(edge.toAssetId);
+      outgoing.set(edge.fromAssetId, targets);
+    }
     const distance = new Map<string, number>();
     const queue = this.graph.roots.map((assetId) => ({ assetId, value: 0 }));
-    while (queue.length) {
-      const current = queue.shift()!;
+    for (let head = 0; head < queue.length; head++) {
+      const current = queue[head];
       if ((distance.get(current.assetId) ?? Infinity) <= current.value) continue;
       distance.set(current.assetId, current.value);
-      for (const edge of this.graph.edges) if (edge.fromAssetId === current.assetId) queue.push({ assetId: edge.toAssetId, value: current.value + 1 });
+      for (const assetId of outgoing.get(current.assetId) ?? []) queue.push({ assetId, value: current.value + 1 });
     }
     return [...byId.values()].sort((left, right) => Number(right.active) - Number(left.active)
       || (distance.get(left.assetId) ?? Infinity) - (distance.get(right.assetId) ?? Infinity)

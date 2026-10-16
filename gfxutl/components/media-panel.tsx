@@ -21,7 +21,7 @@ import {
   VideoClip16Regular as FileVideo,
 } from "@fluentui/react-icons";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useEditor } from "../core/interface";
+import { shallowEqual, useEditor } from "../core/interface";
 import type { MediaAsset } from "../core/interface";
 import { clearMediaDirectory, loadMediaDirectory, saveMediaDirectory } from "../core/persistence/handle-project-store";
 import { Button } from "./ui/button";
@@ -50,7 +50,7 @@ const SUPPORTED_EXTENSIONS = new Set(["mp4", "mov", "webm", "mkv", "wav", "mp3",
 const KindIcon = ({ kind }: { kind: MediaAsset["kind"] }) => kind === "audio" ? <AudioLines /> : kind === "image" ? <Image /> : kind === "model" ? <Box /> : <FileVideo />;
 
 function MediaThumbnail({ asset, playing }: { asset: MediaAsset; playing: boolean }) {
-  const { controller } = useEditor();
+  const { controller } = useEditor(() => null);
   const { t } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hovered, setHovered] = useState(false);
@@ -138,7 +138,7 @@ function ExplorerImageThumbnail({ node }: { node: ExplorerNode }) {
 }
 
 function ExplorerVideoThumbnail({ node, playing }: { node: ExplorerNode; playing: boolean }) {
-  const { controller } = useEditor();
+  const { controller } = useEditor(() => null);
   const hostRef = useRef<HTMLSpanElement>(null);
   const [visible, setVisible] = useState(false);
   const [previewAsset, setPreviewAsset] = useState<MediaAsset | null>(null);
@@ -190,7 +190,12 @@ function ExplorerVideoThumbnail({ node, playing }: { node: ExplorerNode; playing
 }
 
 export function MediaPanel() {
-  const { state, controller } = useEditor();
+  const { state, controller } = useEditor((value) => ({
+    assets: value.assets,
+    leftPanelTab: value.leftPanelTab,
+    playing: value.playing,
+    selectedAssetId: value.selectedAssetId,
+  }), shallowEqual);
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"tree" | "grid">(() => {
@@ -395,7 +400,7 @@ export function MediaPanel() {
     const explorerTarget = (event.target as HTMLElement).closest<HTMLElement>("[data-explorer-path]");
     const targetNode = explorerTarget && root ? findNodeByPath(root, explorerTarget.dataset.explorerPath ?? "") : undefined;
     contextDirectoryRef.current = (targetNode?.kind === "directory" ? targetNode : targetNode && root ? findParentNode(root, targetNode.id) : currentDirectory) ?? null;
-    controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "media", time: state.currentTime, timelineY: 32, positionX: 0, positionY: 0 });
+    controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "media", time: controller.getSnapshot().currentTime, timelineY: 32, positionX: 0, positionY: 0 });
   }}>
     <div className="panel-tabs">
       <button className={state.leftPanelTab === "media" ? "active" : ""} onClick={() => controller.setLeftPanelTab("media")}>{t("メディア")}</button>

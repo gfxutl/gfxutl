@@ -4,7 +4,7 @@ import { PreviewPanel } from "./components/preview-panel";
 import { StatusBar } from "./components/status-bar";
 import { TimelinePanel } from "./components/timeline-panel";
 import { PanelResizers } from "./components/panel-resizers";
-import { useEditor } from "./core/interface";
+import { shallowEqual, useEditor } from "./core/interface";
 import { useEffect } from "react";
 import { EditorContextMenu } from "./components/editor-context-menu";
 import { observeWindowControlsOverlay } from "./core/interface/window-controls-overlay";
@@ -13,7 +13,14 @@ import { Button } from "./components/ui/button";
 import { ShaderGraphPanel } from "./components/shader-graph-panel";
 
 export function App() {
-  const { state, controller } = useEditor();
+  const { state, controller } = useEditor((value) => ({
+    activeBottomPane: value.activeBottomPane,
+    dialog: value.dialog,
+    layout: value.layout,
+    notice: value.notice,
+    projectDirty: value.projectDirty,
+    projectName: value.projectName,
+  }), shallowEqual);
   const { t } = useI18n();
   useEffect(() => {
     const root = document.getElementById("main");

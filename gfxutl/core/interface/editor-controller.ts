@@ -181,6 +181,9 @@ export class EditorController {
   private renderClipSource: readonly TimelineClip[] | null = null;
   private renderClipCache: RenderClip[] = [];
   private renderClipContextSignature = "";
+  private mediaPlanClipSource: readonly TimelineClip[] | null = null;
+  private mediaPlanAssetSource: readonly MediaAsset[] | null = null;
+  private mediaPlanTimeBucket = -1;
   private previewMetricTimer = 0;
   private pendingPreviewFrames = 0;
   private pendingCachedFrames = 0;
@@ -881,7 +884,13 @@ export class EditorController {
     const renderClips = this.getRenderClips();
     const patch = this.virtualTimeline.reconcile(renderClips);
     if (patch) this.engine.patchTimeline(patch);
-    this.engine.setMediaReadGraph(this.mediaReadPlanner.build(this.state.clips, this.state.assets, this.state.currentTime));
+    const mediaPlanTimeBucket = Math.floor(this.state.currentTime * 2);
+    if (this.mediaPlanClipSource !== this.state.clips || this.mediaPlanAssetSource !== this.state.assets || this.mediaPlanTimeBucket !== mediaPlanTimeBucket) {
+      this.mediaPlanClipSource = this.state.clips;
+      this.mediaPlanAssetSource = this.state.assets;
+      this.mediaPlanTimeBucket = mediaPlanTimeBucket;
+      this.engine.setMediaReadGraph(this.mediaReadPlanner.build(this.state.clips, this.state.assets, this.state.currentTime));
+    }
     const activePreviewClip = this.state.activePreviewClipId
       ? this.state.clips.find((clip) => clip.id === this.state.activePreviewClipId)
       : undefined;

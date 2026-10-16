@@ -19,7 +19,7 @@ import { EditorState } from "@codemirror/state";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { drawSelection, dropCursor, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
 import { useEffect, useRef, useState } from "react";
-import { useEditor } from "../core/interface";
+import { shallowEqual, useEditor } from "../core/interface";
 import type { ClipEffect, ClipEffectKind, ClipMask, ClipPropertyAction, ClipPropertyActionKind, ColorGradingSpec, GeometryKind, GeometrySpec, KeyframeProperty, MaterialKind, MediaAsset, SceneKeyframe, SceneSettings, TimelineClip } from "../core/interface";
 import { applicableClipActionKinds, CLIP_ACTION_LABELS, DEFAULT_POST_PROCESS_GLSL, resolveClipPropertyActions, resolveColorGrading } from "../core/interface/clip-actions";
 import { COMPOSITION_SIZE_PRESETS } from "../core/interface/composition-size";
@@ -172,7 +172,7 @@ function sceneKeyframeProperties(scene: SceneSettings) {
 }
 
 function SceneKeyframeEditor({ scene, currentTime, fps }: { scene: SceneSettings; currentTime: number; fps: number }) {
-  const { controller } = useEditor();
+  const { controller } = useEditor(() => null);
   const { t } = useI18n();
   const properties = sceneKeyframeProperties(scene);
   const [property, setProperty] = useState("camera.position.0");
@@ -198,7 +198,7 @@ function SceneKeyframeEditor({ scene, currentTime, fps }: { scene: SceneSettings
 }
 
 function CameraKeyframeInspector({ keyframes, duration, cameraName }: { keyframes: SceneKeyframe[]; duration: number; cameraName: string }) {
-  const { controller } = useEditor();
+  const { controller } = useEditor(() => null);
   const { t } = useI18n();
   const ids = keyframes.map((keyframe) => keyframe.id);
   const byProperty = new Map(keyframes.map((keyframe) => [keyframe.property, keyframe]));
@@ -253,7 +253,19 @@ function CameraKeyframeInspector({ keyframes, duration, cameraName }: { keyframe
 }
 
 export function InspectorPanel() {
-  const { state, controller } = useEditor();
+  const { state, controller } = useEditor((value) => ({
+    assets: value.assets,
+    background: value.background,
+    backgroundSelected: value.backgroundSelected,
+    clips: value.clips,
+    currentTime: value.playing ? Math.floor(value.currentTime * 2) / 2 : value.currentTime,
+    duration: value.duration,
+    fonts: value.fonts,
+    fps: value.fps,
+    selectedAssetId: value.selectedAssetId,
+    selectedCameraKeyframeIds: value.selectedCameraKeyframeIds,
+    selectedClipId: value.selectedClipId,
+  }), shallowEqual);
   const { t } = useI18n();
   const [tab, setTab] = useState<"properties" | "inspector" | "metadata">("properties");
   const selected = state.clips.find((clip) => clip.id === state.selectedClipId);
@@ -267,7 +279,7 @@ export function InspectorPanel() {
     <section className="inspector-panel panel" onContextMenu={(event) => {
       event.preventDefault();
       event.stopPropagation();
-      controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "inspector", time: state.currentTime, timelineY: selected?.y ?? 32, positionX: selected?.positionX ?? 0, positionY: selected?.positionY ?? 0 });
+      controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "inspector", time: controller.getSnapshot().currentTime, timelineY: selected?.y ?? 32, positionX: selected?.positionX ?? 0, positionY: selected?.positionY ?? 0 });
     }}>
       <div className="inspector-tabs">
         <button className={tab === "properties" ? "active" : ""} onClick={() => setTab("properties")}>{t("プロパティ")}</button>
@@ -314,7 +326,7 @@ export function InspectorPanel() {
           <label className="select-field"><span>{t("プレビュー解像度")}</span><select aria-label={t("プレビュー解像度")} value={background.scene.renderer.previewScale ?? 1} onChange={(event) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, previewScale: Number(event.target.value) } })}><option value={0.5}>{t("50%（高速）")}</option><option value={0.75}>{t("75%（推奨）")}</option><option value={1}>100%</option></select></label>
           <label className="select-field"><span>{t("出力バッファ")}</span><select value={background.scene.renderer.outputBuffer} onChange={(event) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, outputBuffer: event.target.value as "uint8" | "float16" } })}><option value="uint8">8-bit</option><option value="float16">16-bit float (HDR)</option></select></label>
           <label className="checkbox-field"><input type="checkbox" checked={background.scene.renderer.antialias} onChange={(event) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, antialias: event.target.checked } })} /> MSAA</label>
-          <NumberField label="MSAAサンプル" value={background.scene.renderer.samples} onChange={(samples) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, samples: Math.max(0, Math.floor(samples)) } })} />
+          <NumberField label="MSAAサンプル" value={background.scene.renderer.samples} onChange={(samples) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, samples: Math.max(0, Math.min(4, Math.floor(samples))) } })} />
           <label className="checkbox-field"><input type="checkbox" checked={background.scene.renderer.shadows} onChange={(event) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, shadows: event.target.checked } })} /> {t("シャドウ")}</label>
           <label className="select-field"><span>{t("影フィルタ")}</span><select value={background.scene.renderer.shadowType} onChange={(event) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, shadowType: event.target.value as typeof background.scene.renderer.shadowType } })}><option value="basic">Basic</option><option value="pcf">PCF</option><option value="pcfSoft">PCF Soft</option><option value="vsm">VSM</option></select></label>
           <label className="checkbox-field"><input type="checkbox" checked={background.scene.renderer.transparentBackground} onChange={(event) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, transparentBackground: event.target.checked } })} /> {t("透明背景")}</label>
@@ -435,7 +447,7 @@ export function InspectorPanel() {
 }
 
 function ClipPropertyActionStack({ clip, allClips }: { clip: TimelineClip; allClips: TimelineClip[] }) {
-  const { controller } = useEditor();
+  const { controller } = useEditor(() => null);
   const { t } = useI18n();
   const actions = resolveClipPropertyActions(clip);
   const activeKinds = new Set(actions.map((action) => action.kind));
@@ -479,7 +491,7 @@ function PropertyActionCard({ action, index, count, onMove, onRemove, children }
 }
 
 function ClipPropertyActionBody({ action, clip, allClips }: { action: ClipPropertyAction; clip: TimelineClip; allClips: TimelineClip[] }) {
-  const { state, controller } = useEditor();
+  const { state: assets, controller } = useEditor((state) => state.assets);
   const { t } = useI18n();
   const [keyframeProperty, setKeyframeProperty] = useState<KeyframeProperty>("positionX");
   const animatedProperties = keyframeProperties(clip);
@@ -496,7 +508,7 @@ function ClipPropertyActionBody({ action, clip, allClips }: { action: ClipProper
     case "sceneGraph": return <>
       <label className="select-field"><span>{t("親オブジェクト")}</span><select value={clip.parentId ?? ""} onChange={(event) => controller.updateClip(clip.id, { parentId: event.target.value || undefined })}><option value="">Scene root</option>{allClips.filter((item) => item.id !== clip.id && (item.kind === "title" || item.kind === "object")).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
       <NumberField label="レイヤー" value={clip.layer ?? 0} onChange={(layer) => controller.updateClip(clip.id, { layer: Math.max(0, Math.min(31, Math.floor(layer))) })} />
-      {state.assets.find((asset) => asset.id === clip.assetId)?.animationNames?.length ? <label className="select-field"><span>{t("glTFアニメーション")}</span><select value={clip.modelAnimation ?? state.assets.find((asset) => asset.id === clip.assetId)?.animationNames?.[0]} onChange={(event) => controller.updateClip(clip.id, { modelAnimation: event.target.value })}>{state.assets.find((asset) => asset.id === clip.assetId)?.animationNames?.map((name) => <option value={name} key={name}>{name}</option>)}</select></label> : null}
+      {assets.find((asset) => asset.id === clip.assetId)?.animationNames?.length ? <label className="select-field"><span>{t("glTFアニメーション")}</span><select value={clip.modelAnimation ?? assets.find((asset) => asset.id === clip.assetId)?.animationNames?.[0]} onChange={(event) => controller.updateClip(clip.id, { modelAnimation: event.target.value })}>{assets.find((asset) => asset.id === clip.assetId)?.animationNames?.map((name) => <option value={name} key={name}>{name}</option>)}</select></label> : null}
     </>;
     case "keyframes": return <>
       <label className="select-field"><span>{t("プロパティ")}</span><select disabled={!activeKeyframeProperty} value={activeKeyframeProperty ?? ""} onChange={(event) => setKeyframeProperty(event.target.value as KeyframeProperty)}>{animatedProperties.length ? animatedProperties.map(([property, label]) => <option value={property} key={property}>{translateCompositeLabel(label, t)}</option>) : <option value="">{t("先に効果を追加してください")}</option>}</select></label>
@@ -529,7 +541,7 @@ const COLOR_GRADING_PRESETS: Record<string, Partial<ColorGradingSpec>> = {
 };
 
 function ColorGradingEditor({ clip }: { clip: TimelineClip }) {
-  const { controller } = useEditor();
+  const { controller } = useEditor(() => null);
   const { t } = useI18n();
   const grading = resolveColorGrading(clip.colorGrading);
   const update = (patch: Partial<ColorGradingSpec>) => controller.updateClip(clip.id, { colorGrading: { ...grading, ...patch } });
@@ -590,7 +602,7 @@ const POST_PROCESS_PRESETS = {
 } as const;
 
 function PostProcessEditor({ clip }: { clip: TimelineClip }) {
-  const { controller } = useEditor();
+  const { controller } = useEditor(() => null);
   const { t } = useI18n();
   const shader = clip.postProcess;
   const [draft, setDraft] = useState(shader?.glsl ?? DEFAULT_POST_PROCESS_GLSL);
@@ -760,7 +772,7 @@ function BezierEditor({ easing = { x1: 0.33, y1: 0, x2: 0.67, y2: 1 }, onChange 
 }
 
 function MaskStack({ clipId, masks, embedded = false }: { clipId: string; masks: ClipMask[]; embedded?: boolean }) {
-  const { controller } = useEditor();
+  const { controller } = useEditor(() => null);
   const { t } = useI18n();
   return <div className={`${embedded ? "embedded-property-stack" : "inspector-section"} mask-stack`}>
     <div className={embedded ? "embedded-stack-heading" : "section-title"}><span>{t("マスク要素")}</span><small>{masks.length}</small><Button size="sm" variant="ghost" onClick={() => controller.addMask(clipId, "rectangle")}><Plus />{t("追加")}</Button></div>
@@ -781,7 +793,7 @@ function MaskStack({ clipId, masks, embedded = false }: { clipId: string; masks:
 }
 
 function EffectStack({ clipId, effects, embedded = false }: { clipId: string; effects: ClipEffect[]; embedded?: boolean }) {
-  const { controller } = useEditor();
+  const { controller } = useEditor(() => null);
   const { t } = useI18n();
   const [kind, setKind] = useState<ClipEffectKind>("brightness");
   const updateParam = (effect: ClipEffect, key: string, value: number) => controller.updateEffect(clipId, effect.id, { params: { ...effect.params, [key]: value } });

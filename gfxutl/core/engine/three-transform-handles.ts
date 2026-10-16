@@ -24,6 +24,8 @@ export class ThreeTransformHandles {
   private readonly worldPosition = new THREE.Vector3();
   private readonly worldQuaternion = new THREE.Quaternion();
   private geometrySignature = "";
+  private boundsRoot: THREE.Object3D | null = null;
+  private boundsVersion = "";
 
   constructor(scene: THREE.Scene) {
     const lineMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false, toneMapped: false });
@@ -58,10 +60,18 @@ export class ThreeTransformHandles {
     scene.add(this.group);
   }
 
-  sync(root?: THREE.Object3D, camera?: THREE.Camera, viewportHeight = 1) {
-    if (!root || !camera || !root.visible || !this.computeLocalBounds(root)) {
+  sync(root?: THREE.Object3D, camera?: THREE.Camera, viewportHeight = 1, boundsVersion = "") {
+    if (!root || !camera || !root.visible) {
       this.group.visible = false;
       return;
+    }
+    if (this.boundsRoot !== root || this.boundsVersion !== boundsVersion) {
+      if (!this.computeLocalBounds(root)) {
+        this.group.visible = false;
+        return;
+      }
+      this.boundsRoot = root;
+      this.boundsVersion = boundsVersion;
     }
     root.updateWorldMatrix(true, true);
     this.group.matrix.copy(root.matrixWorld);
@@ -106,6 +116,8 @@ export class ThreeTransformHandles {
     }
     this.group.visible = true;
   }
+
+  get pickRoot() { return this.group; }
 
   private computeLocalBounds(root: THREE.Object3D) {
     root.updateWorldMatrix(true, true);

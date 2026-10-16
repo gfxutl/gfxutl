@@ -7,7 +7,7 @@ import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { clone as cloneSkinned } from "three/addons/utils/SkeletonUtils.js";
 import { ALL_FORMATS, AudioSample, AudioSampleSink, AudioSampleSource, BufferTarget, CanvasSource, Input, Mp4OutputFormat, Output, VideoSampleSink, WebMOutputFormat } from "mediabunny";
-import type { AudioProcessingSpec, CameraHandleKind, ClipEffect, ClipKeyframe, ClipPostProcess, EngineRequest, EngineResponse, FilterRegion, MediaFileSource, PreviewPickResult, PreviewView, RenderClip, RenderFilter, SceneObjectSpec, SceneSettings, TimelinePatch, TimelineSnapshot, TransformHandleKind } from "../protocol/engine-protocol";
+import type { AudioProcessingSpec, CameraHandleKind, ClipEffect, ClipKeyframe, ClipPostProcess, EngineRequest, EngineResponse, FilterRegion, MediaFileSource, PreviewPickResult, PreviewView, RenderClip, RenderFilter, SceneKeyframe, SceneObjectSpec, SceneSettings, TimelinePatch, TimelineSnapshot, TransformHandleKind } from "../protocol/engine-protocol";
 import { RamPreviewCache } from "./ram-preview-cache";
 import { createRenderPipeline, shadowTypeFrom, ThreeRendererCore, toneMappingFrom } from "./three-renderer-core";
 import { ThreeSceneCore } from "./three-scene-core";
@@ -134,6 +134,7 @@ interface ModelSurface {
   materials: Array<THREE.Material & { color?: THREE.Color }>;
   deformGeometries: ModelDeformGeometry[];
   deformSignature: string;
+  appearanceClip?: RenderClip;
 }
 
 interface ModelDeformGeometry {
@@ -169,6 +170,7 @@ interface CachedPreviewSurface {
 
 interface RenderFrameIndex {
   clips: RenderClip[];
+  residentClips: RenderClip[];
   activeClips: RenderClip[];
   videoIds: Set<string>;
   imageIds: Set<string>;
@@ -195,14 +197,22 @@ const timelineRoots = new Map<string, THREE.Object3D>();
 /** THREE-OPT: picking is high-frequency; retain Three.js math objects instead of allocating per pointer event. */
 const previewRaycaster = new THREE.Raycaster();
 const previewPointer = new THREE.Vector2();
+const activePickRoots: THREE.Object3D[] = [];
+const previewPickRoots: THREE.Object3D[] = [];
+const activeHierarchyIds = new Set<string>();
 /** THREE-OPT: worker rendering is serialized, so effect colors can share scratch storage. */
 const modelTintScratch = new THREE.Color();
 const modelEffectColorScratch = new THREE.Color();
 /** THREE-OPT: keyframe grouping/sorting is immutable for the lifetime of a RenderClip snapshot. */
 const clipKeyframeTrackCache = new WeakMap<object, Map<string, ClipKeyframe[]>>();
+const sceneKeyframeTrackCache = new WeakMap<object, Map<string, SceneKeyframe[]>>();
 const reportedVideoClips = new Set<string>();
 const sceneClipSignatures = new Map<string, SceneObjectSpec>();
+const sceneClipStructuralSignatures = new Map<string, string>();
+const sceneObjectSignatureCache = new WeakMap<object, string>();
 const renderTimeline = new Map<string, RenderClip>();
+let renderTimelineArray: RenderClip[] = [];
+let renderTimelineArrayDirty = true;
 let timelineRevision = 0;
 const standaloneObjects = new Map<string, SceneObjectSpec>();
 const bufferedAssets = new Map<string, { kind: "media" | "image" | "model"; source: MediaFileSource }>();
@@ -216,6 +226,7 @@ let cachedPreviewSurface: CachedPreviewSurface | null = null;
 let previewDecoder: VideoDecoder | null = null;
 let previewDecoderSize = "";
 let pendingPreviewDecode: ((frame: VideoFrame | null) => void) | null = null;
+let previewDecodeFlushTimer = 0;
 
 function resolveImageTexture(assetId: string, usage: "color" | "data" | "normal" | "background" | "environment") {
   const runtime = imageRuntimes.get(assetId);
@@ -321,6 +332,7 @@ async function replaceCanvas(nextCanvas: OffscreenCanvas, nextWidth: number, nex
   timelineParkingRoot.visible = false;
   graphics.scene.add(timelineParkingRoot);
   sceneClipSignatures.clear();
+  sceneClipStructuralSignatures.clear();
   timelineRoots.clear();
   reportedSceneObjectCount = -1;
   reportedImageObjectCount = -1;
@@ -367,15 +379,17 @@ function setupEncoder() {
       },
       error() { encoder = null; },
     });
-    encoder.configure({
+    const configuration: VideoEncoderConfig = {
       codec: "avc1.42001f",
       width: codedWidth,
       height: codedHeight,
       bitrate: 3_000_000,
       framerate: previewFps,
       avc: { format: "annexb" },
-      hardwareAcceleration: "no-preference",
-    });
+      hardwareAcceleration: "prefer-hardware",
+    };
+    try { encoder.configure(configuration); }
+    catch { encoder.configure({ ...configuration, hardwareAcceleration: "no-preference" }); }
   } catch {
     encoder = null;
   }
@@ -418,38 +432,48 @@ async function decodeCachedFrame(unit: PreviewAccessUnit) {
     previewDecoderSize = size;
     previewDecoder = new VideoDecoder({
       output(frame) {
+        if (previewDecodeFlushTimer) worker.clearTimeout(previewDecodeFlushTimer);
+        previewDecodeFlushTimer = 0;
         const resolve = pendingPreviewDecode;
         pendingPreviewDecode = null;
         if (resolve) resolve(frame);
         else frame.close();
       },
       error() {
+        if (previewDecodeFlushTimer) worker.clearTimeout(previewDecodeFlushTimer);
+        previewDecodeFlushTimer = 0;
         const resolve = pendingPreviewDecode;
         pendingPreviewDecode = null;
         previewDecoder = null;
         resolve?.(null);
       },
     });
-    previewDecoder.configure({ codec: "avc1.42001f", codedWidth: unit.codedWidth, codedHeight: unit.codedHeight, hardwareAcceleration: "no-preference" });
+    const configuration: VideoDecoderConfig = { codec: "avc1.42001f", codedWidth: unit.codedWidth, codedHeight: unit.codedHeight, hardwareAcceleration: "prefer-hardware" };
+    try { previewDecoder.configure(configuration); }
+    catch { previewDecoder.configure({ ...configuration, hardwareAcceleration: "no-preference" }); }
   }
   return new Promise<VideoFrame | null>((resolve) => {
     try {
       pendingPreviewDecode = resolve;
       previewDecoder!.decode(new EncodedVideoChunk({ type: "key", timestamp: unit.timestamp, duration: unit.duration, data: unit.data }));
-      // Some hardware decoders retain an isolated keyframe until flush. The
-      // decoder itself remains configured and is reused for the next frame.
-      void previewDecoder!.flush().then(() => {
-        if (pendingPreviewDecode === resolve) {
-          pendingPreviewDecode = null;
-          resolve(null);
-        }
-      }).catch(() => {
-        if (pendingPreviewDecode === resolve) {
-          pendingPreviewDecode = null;
-          resetPreviewDecoder();
-          resolve(null);
-        }
-      });
+      // Most decoders emit without flush. Give them that fast path and only
+      // flush isolated keyframes as a compatibility fallback.
+      previewDecodeFlushTimer = worker.setTimeout(() => {
+        previewDecodeFlushTimer = 0;
+        if (pendingPreviewDecode !== resolve || !previewDecoder) return;
+        void previewDecoder.flush().then(() => {
+          if (pendingPreviewDecode === resolve) {
+            pendingPreviewDecode = null;
+            resolve(null);
+          }
+        }).catch(() => {
+          if (pendingPreviewDecode === resolve) {
+            pendingPreviewDecode = null;
+            resetPreviewDecoder();
+            resolve(null);
+          }
+        });
+      }, 4);
     } catch {
       pendingPreviewDecode = null;
       resetPreviewDecoder();
@@ -459,6 +483,8 @@ async function decodeCachedFrame(unit: PreviewAccessUnit) {
 }
 
 function resetPreviewDecoder() {
+  if (previewDecodeFlushTimer) worker.clearTimeout(previewDecodeFlushTimer);
+  previewDecodeFlushTimer = 0;
   const resolve = pendingPreviewDecode;
   pendingPreviewDecode = null;
   resolve?.(null);
@@ -682,11 +708,25 @@ function meshDeformedPosition(effects: readonly ClipEffect[], filterMasks = crea
   return active ? displaced : null;
 }
 
-function createVisualPlaneGeometry(width: number, height: number) {
-  return new THREE.PlaneGeometry(width, height, 48, 27);
+function needsDenseVisualGeometry(clip: RenderClip) {
+  return clip.effects.some((effect) => effect.enabled && effect.kind === "meshDeform" && !isNeutralClipEffect(effect));
+}
+
+function createVisualPlaneGeometry(width: number, height: number, clip: RenderClip) {
+  const dense = needsDenseVisualGeometry(clip);
+  const geometry = new THREE.PlaneGeometry(width, height, dense ? 48 : 1, dense ? 27 : 1);
+  geometry.userData.gfxDenseVisualGeometry = dense;
+  return geometry;
 }
 
 function refreshVisualMaterial(surface: VideoSurface | ImageSurface, clip: RenderClip) {
+  const dense = needsDenseVisualGeometry(clip);
+  if (surface.mesh.geometry.userData.gfxDenseVisualGeometry !== dense) {
+    const previousGeometry = surface.mesh.geometry;
+    const fitted = fittedPlaneSize(surface.aspect);
+    surface.mesh.geometry = createVisualPlaneGeometry(fitted.width, fitted.height, clip);
+    previousGeometry.dispose();
+  }
   const signature = visualEffectSignature(clip);
   if (surface.effectSignature === signature) return;
   const previous = surface.mesh.material;
@@ -709,7 +749,7 @@ function ensureVideoSurface(clip: RenderClip, aspect: number) {
       texture.generateMipmaps = false;
       const material = createVisualMaterial(texture, clip);
       const fitted = fittedPlaneSize(aspect);
-      const mesh = new THREE.Mesh(createVisualPlaneGeometry(fitted.width, fitted.height), material);
+      const mesh = new THREE.Mesh(createVisualPlaneGeometry(fitted.width, fitted.height, clip), material);
       mesh.name = `media:${clip.id}`;
       mesh.position.z = 2;
       mesh.renderOrder = 1_000;
@@ -721,7 +761,7 @@ function ensureVideoSurface(clip: RenderClip, aspect: number) {
   } else if (Math.abs(surface.aspect - aspect) > 0.001) {
     surface.mesh.geometry.dispose();
     const fitted = fittedPlaneSize(aspect);
-    surface.mesh.geometry = createVisualPlaneGeometry(fitted.width, fitted.height);
+    surface.mesh.geometry = createVisualPlaneGeometry(fitted.width, fitted.height, clip);
     surface.aspect = aspect;
   }
   refreshVisualMaterial(surface, clip);
@@ -788,55 +828,54 @@ async function updateVideoSurfaces(time: number, frame: RenderFrameIndex) {
   const readyClipIds: Array<{ clipId: string; timestamp: number }> = [];
   for (const id of videoSurfaces.keys()) if (!frame.videoIds.has(id)) removeVideoSurface(id);
 
-  // Allocate every timeline video plane and retain its first frame before the
-  // playhead reaches it. Inactive planes live under the off-camera parking root.
-  for (const clip of frame.clips) {
+  // Keep a short look-ahead window resident instead of retaining a decoded
+  // frame and GPU texture for every video in the project. Active requests are
+  // grouped by asset: independent decoders run concurrently while requests
+  // against the same MediaBunny sink remain ordered.
+  const activeIds = new Set(frame.activeClips.map((clip) => clip.id));
+  const requestsByAsset = new Map<string, Array<{ clip: RenderClip; runtime: MediaRuntime; requestedTime: number }>>();
+  for (const clip of frame.residentClips) {
     if (!clip.assetId) continue;
     const runtime = mediaRuntimes.get(clip.assetId);
     if (!runtime?.videoSink || !runtime.width || !runtime.height) continue;
-    let surface = ensureVideoSurface(clip, runtime.width / runtime.height);
-    if (!surface.frame && surface.requestedTime === -Infinity) {
-      const preloadTime = Math.max(0, clip.offset);
-      surface.requestedTime = preloadTime;
-      const sample = await runtime.videoSink.getSample(preloadTime);
-      if (sample) {
-        samplesToClose.push(sample);
-        surface = ensureVideoSurface(clip, sample.displayWidth / sample.displayHeight);
-        const videoFrame = sample.toVideoFrame();
-        surface.frame = videoFrame;
-        surface.timestamp = sample.timestamp;
-        surface.texture.setFrame(videoFrame);
-        if (!reportedVideoClips.has(clip.id)) readyClipIds.push({ clipId: clip.id, timestamp: sample.timestamp });
-      }
+    const surface = ensureVideoSurface(clip, runtime.width / runtime.height);
+    const requestedTime = activeIds.has(clip.id)
+      ? clip.offset + (time - clip.start) * THREE.MathUtils.clamp(clip.speed / 100, 0.01, 10)
+      : Math.max(0, clip.offset);
+    if (surface.frame && Math.abs(surface.requestedTime - requestedTime) <= 0.000001) continue;
+    const requests = requestsByAsset.get(clip.assetId) ?? [];
+    requests.push({ clip, runtime, requestedTime });
+    requestsByAsset.set(clip.assetId, requests);
+  }
+  const decoded = (await Promise.all([...requestsByAsset.values()].map(async (requests) => {
+    requests.sort((left, right) => Number(activeIds.has(right.clip.id)) - Number(activeIds.has(left.clip.id)));
+    const results: Array<{ clip: RenderClip; requestedTime: number; sample: Awaited<ReturnType<VideoSampleSink["getSample"]>> }> = [];
+    for (const request of requests) {
+      const sample = await request.runtime.videoSink!.getSample(request.requestedTime).catch(() => null);
+      results.push({ clip: request.clip, requestedTime: request.requestedTime, sample });
     }
+    return results;
+  }))).flat();
+  for (const { clip, requestedTime, sample } of decoded) {
+    if (!sample) continue;
+    samplesToClose.push(sample);
+    const surface = ensureVideoSurface(clip, sample.displayWidth / sample.displayHeight);
+    surface.requestedTime = requestedTime;
+    if (Math.abs(surface.timestamp - sample.timestamp) <= 0.000001) continue;
+    const decodedFrame = sample.toVideoFrame();
+    if (surface.frame) retiredFrames.push(surface.frame);
+    surface.frame = decodedFrame;
+    surface.timestamp = sample.timestamp;
+    surface.texture.setFrame(decodedFrame);
+    if (!reportedVideoClips.has(clip.id)) readyClipIds.push({ clipId: clip.id, timestamp: sample.timestamp });
   }
   for (const surface of videoSurfaces.values()) parkTimelineRoot(surface.mesh);
 
   for (const clip of frame.activeClips) {
-    if (!clip.assetId) continue;
-    const runtime = mediaRuntimes.get(clip.assetId);
-    if (!runtime?.videoSink) continue;
-    const requestedTime = clip.offset + (time - clip.start) * THREE.MathUtils.clamp(clip.speed / 100, 0.01, 10);
-    let surface = videoSurfaces.get(clip.id);
-    if (!surface?.frame || Math.abs(surface.requestedTime - requestedTime) > 0.000001) {
-      const sample = await runtime.videoSink.getSample(requestedTime);
-      if (!sample) continue;
-      samplesToClose.push(sample);
-      const aspect = sample.displayWidth / sample.displayHeight;
-      surface = ensureVideoSurface(clip, aspect);
-      surface.requestedTime = requestedTime;
-      if (Math.abs(surface.timestamp - sample.timestamp) > 0.000001) {
-        const frame = sample.toVideoFrame();
-        if (surface.frame) retiredFrames.push(surface.frame);
-        surface.frame = frame;
-        surface.timestamp = sample.timestamp;
-        surface.texture.setFrame(frame);
-        if (!reportedVideoClips.has(clip.id)) {
-          readyClipIds.push({ clipId: clip.id, timestamp: sample.timestamp });
-        }
-      }
-    }
+    const surface = videoSurfaces.get(clip.id);
     if (!surface) continue;
+    const requestedTime = clip.offset + (time - clip.start) * THREE.MathUtils.clamp(clip.speed / 100, 0.01, 10);
+    if (!surface.frame || Math.abs(surface.requestedTime - requestedTime) > 0.000001) continue;
     surface.mesh.visible = clip.visible;
     applyVisualTransform(surface.mesh, surface.mesh.material, clip);
     const frameWidth = Math.max(1, surface.frame?.displayWidth ?? 1);
@@ -879,7 +918,7 @@ function ensureImageSurface(clip: RenderClip, runtime: ImageRuntime) {
       texture.needsUpdate = true;
       const material = createVisualMaterial(texture, clip);
       const fitted = fittedPlaneSize(aspect);
-      const mesh = new THREE.Mesh(createVisualPlaneGeometry(fitted.width, fitted.height), material);
+      const mesh = new THREE.Mesh(createVisualPlaneGeometry(fitted.width, fitted.height, clip), material);
       mesh.name = `media:${clip.id}`;
       graphics?.scene.add(mesh);
       timelineRoots.set(clip.id, mesh);
@@ -894,7 +933,7 @@ function ensureImageSurface(clip: RenderClip, runtime: ImageRuntime) {
 function updateImageSurfaces(frame: RenderFrameIndex) {
   let changed = false;
   for (const id of imageSurfaces.keys()) if (!frame.imageIds.has(id)) { removeImageSurface(id); changed = true; }
-  for (const clip of frame.clips) {
+  for (const clip of frame.residentClips) {
     if (!clip.assetId) continue;
     const runtime = imageRuntimes.get(clip.assetId);
     if (!runtime) continue;
@@ -1019,6 +1058,8 @@ function applyModelTransform(surface: ModelSurface, clip: RenderClip) {
   surface.root.scale.set(Math.max(0.001, scaleX), Math.max(0.001, scaleY), Math.max(0.001, clip.scale / 100));
   surface.root.renderOrder = clip.renderOrder;
   surface.root.layers.set(THREE.MathUtils.clamp(clip.layer, 0, 31));
+  if (surface.appearanceClip === clip) return;
+  surface.appearanceClip = clip;
   // THREE-OPT: operate on the flat Object3D/material arrays captured at instantiation.
   for (const object of surface.objects) object.renderOrder = clip.renderOrder;
   for (const material of surface.materials) {
@@ -1114,7 +1155,7 @@ function applyModelMeshDeformation(surface: ModelSurface, effects: readonly Clip
 
 function updateModelSurfaces(time: number, frame: RenderFrameIndex) {
   for (const id of modelSurfaces.keys()) if (!frame.modelIds.has(id)) removeModelSurface(id);
-  for (const clip of frame.clips) {
+  for (const clip of frame.residentClips) {
     if (!clip.assetId) continue;
     const runtime = modelRuntimes.get(clip.assetId);
     if (runtime) ensureModelSurface(clip, runtime);
@@ -1146,7 +1187,6 @@ function updateModelSurfaces(time: number, frame: RenderFrameIndex) {
 
 function parkTimelineRoot(root: THREE.Object3D) {
   root.visible = false;
-  if (timelineParkingRoot && root.parent !== timelineParkingRoot) timelineParkingRoot.add(root);
 }
 
 function canParentObject(object: THREE.Object3D, parent: THREE.Object3D) {
@@ -1194,6 +1234,7 @@ function ensureParticleSurface(clip: RenderClip, renderer: THREE.WebGPURenderer)
     positions = new THREE.BufferAttribute(new Float32Array(count * 3), 3);
     geometry.setAttribute("position", positions);
   }
+  geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Math.max(0.001, spec.spread) * Math.sqrt(3));
   const root = new THREE.Points(geometry, material);
   root.name = `timeline:${clip.id}`;
   graphics?.scene.add(root);
@@ -1206,7 +1247,7 @@ function ensureParticleSurface(clip: RenderClip, renderer: THREE.WebGPURenderer)
 function updateParticleSurfaces(time: number, frame: RenderFrameIndex, renderer = graphics?.renderer) {
   if (!renderer) return;
   for (const id of particleSurfaces.keys()) if (!frame.particleIds.has(id)) removeParticleSurface(id);
-  for (const clip of frame.clips) if (clip.particleSystem) ensureParticleSurface(clip, renderer);
+  for (const clip of frame.residentClips) if (clip.particleSystem) ensureParticleSurface(clip, renderer);
   for (const surface of particleSurfaces.values()) parkTimelineRoot(surface.root);
   let active = 0;
   for (const clip of frame.activeClips) {
@@ -1226,7 +1267,6 @@ function updateParticleSurfaces(time: number, frame: RenderFrameIndex, renderer 
         positions.setXYZ(index, Math.cos(phase + motion) * radius, Math.sin(index * 0.37 + motion * 1.7) * spec.spread, Math.sin(phase + motion) * radius);
       }
       positions.needsUpdate = true;
-      surface.root.geometry.computeBoundingSphere();
     }
     surface.root.visible = clip.visible;
     surface.root.layers.set(THREE.MathUtils.clamp(clip.layer, 0, 31));
@@ -1245,16 +1285,19 @@ async function updateTimelineSceneObjects(frame: RenderFrameIndex) {
       sceneCore.remove(id);
       if (root) unregisterTimelineRoot(root);
       sceneClipSignatures.delete(id);
+      sceneClipStructuralSignatures.delete(id);
       changed = true;
     }
   }
-  for (const clip of frame.clips) {
+  for (const clip of frame.residentClips) {
     const object = clip.sceneObject;
     if (!object) continue;
-    if (sceneClipSignatures.get(object.id) !== object) {
+    const signature = sceneObjectStructuralSignature(object);
+    if (sceneClipStructuralSignatures.get(object.id) !== signature) {
       const root = await sceneCore.upsert(object);
       timelineRoots.set(clip.id, root);
       sceneClipSignatures.set(object.id, object);
+      sceneClipStructuralSignatures.set(object.id, signature);
       send({ type: "geometry-ready", id: object.id });
       changed = true;
     }
@@ -1274,6 +1317,20 @@ async function updateTimelineSceneObjects(frame: RenderFrameIndex) {
   return changed;
 }
 
+/**
+ * Evaluated clips are fresh objects on every frame. A reference comparison
+ * therefore rebuilt geometry and materials even when the evaluated values had
+ * not changed. The structural signature lets ThreeSceneCore run only for a
+ * genuinely observable object change.
+ */
+function sceneObjectStructuralSignature(object: SceneObjectSpec) {
+  const cached = sceneObjectSignatureCache.get(object);
+  if (cached) return cached;
+  const signature = JSON.stringify(object);
+  sceneObjectSignatureCache.set(object, signature);
+  return signature;
+}
+
 function reportActiveSceneObjectCount() {
   const total = activeSceneObjectCount + activeModelObjectCount + activeParticleObjectCount;
   if (reportedSceneObjectCount !== total) {
@@ -1290,7 +1347,13 @@ function pickSceneObject(ndcX: number, ndcY: number) {
   matchPreviewLayerMask(previewRaycaster, graphics.previewCamera);
   previewPointer.set(THREE.MathUtils.clamp(ndcX, -1, 1), THREE.MathUtils.clamp(ndcY, -1, 1));
   previewRaycaster.setFromCamera(previewPointer, graphics.previewCamera);
-  const intersections = previewRaycaster.intersectObjects(graphics.scene.children, true)
+  previewPickRoots.length = 0;
+  if (transformHandles?.pickRoot.visible) previewPickRoots.push(transformHandles.pickRoot);
+  if (previewView === "inspector") {
+    for (const root of cameraHandles?.pickRoots ?? []) if (root.visible) previewPickRoots.push(root);
+  }
+  previewPickRoots.push(...activePickRoots);
+  const intersections = previewRaycaster.intersectObjects(previewPickRoots, true)
     .filter((hit) => hit.object.visible && worldVisible(hit.object) && hit.object !== cachedPreviewSurface?.mesh)
     .sort(comparePickIntersections);
   const handleHit = intersections.find((hit) => typeof hit.object.userData.gfxTransformHandleKind === "string");
@@ -1343,11 +1406,15 @@ function unregisterTimelineRoot(root: THREE.Object3D) {
 /** THREE-OPT: parent through indexed Object3D roots; never recursively scan the scene per frame. */
 function applyTimelineHierarchy(clips: RenderClip[]) {
   if (!graphics) return;
+  activePickRoots.length = 0;
+  activeHierarchyIds.clear();
+  for (const clip of clips) activeHierarchyIds.add(clip.id);
   for (const clip of clips) {
     const root = timelineRoots.get(clip.id);
     if (!root) continue;
     const parent = clip.parentId ? timelineRoots.get(clip.parentId) : graphics.scene;
     if (parent && root.parent !== parent && canParentObject(root, parent)) parent.add(root);
+    if (root.visible && (!clip.parentId || !activeHierarchyIds.has(clip.parentId))) activePickRoots.push(root);
   }
 }
 
@@ -1394,6 +1461,17 @@ function keyframeTracksFor(source: object, keyframes: readonly ClipKeyframe[]) {
   return tracks;
 }
 
+function keyframeRightIndex(keys: readonly { time: number }[], time: number) {
+  let low = 0;
+  let high = keys.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (keys[middle].time < time) low = middle + 1;
+    else high = middle;
+  }
+  return Math.min(low, keys.length - 1);
+}
+
 function evaluateClipAtTime(clip: RenderClip, timelineTime: number) {
   const evaluated = {
     ...clip,
@@ -1410,8 +1488,7 @@ function evaluateClipAtTime(clip: RenderClip, timelineTime: number) {
   const properties = keyframeTracksFor(clip, clip.keyframes);
   for (const [property, keys] of properties) {
     // THREE-OPT: tracks are sorted once and searched without reverse-array allocations.
-    let rightIndex = keys.findIndex((keyframe) => keyframe.time >= localTime);
-    if (rightIndex < 0) rightIndex = keys.length - 1;
+    const rightIndex = keyframeRightIndex(keys, localTime);
     const right = keys[rightIndex];
     const left = keys[Math.max(0, right.time > localTime ? rightIndex - 1 : rightIndex)];
     let value = left.value;
@@ -1624,14 +1701,25 @@ function cubicBezierAt(easing: ClipKeyframe["easing"], x: number) {
 }
 
 function evaluateSceneSettingsAtTime(settings: SceneSettings, time: number) {
+  const activeCamera = cameraForTime(settings, time);
+  if (!settings.keyframes?.length) return activeCamera === settings.camera ? settings : { ...settings, camera: activeCamera };
   const evaluated = structuredClone(settings);
-  evaluated.camera = structuredClone(cameraForTime(settings, time));
-  if (!settings.keyframes?.length) return evaluated;
-  const properties = new Set(settings.keyframes.map((keyframe) => keyframe.property));
-  for (const property of properties) {
-    const keys = settings.keyframes.filter((keyframe) => keyframe.property === property).sort((a, b) => a.time - b.time);
-    const left = [...keys].reverse().find((keyframe) => keyframe.time <= time) ?? keys[0];
-    const right = keys.find((keyframe) => keyframe.time >= time) ?? keys.at(-1)!;
+  evaluated.camera = structuredClone(activeCamera);
+  let tracks = sceneKeyframeTrackCache.get(settings);
+  if (!tracks) {
+    tracks = new Map();
+    for (const keyframe of settings.keyframes) {
+      const keys = tracks.get(keyframe.property) ?? [];
+      keys.push(keyframe);
+      tracks.set(keyframe.property, keys);
+    }
+    for (const keys of tracks.values()) keys.sort((a, b) => a.time - b.time);
+    sceneKeyframeTrackCache.set(settings, tracks);
+  }
+  for (const [property, keys] of tracks) {
+    const rightIndex = keyframeRightIndex(keys, time);
+    const right = keys[rightIndex];
+    const left = keys[Math.max(0, right.time > time ? rightIndex - 1 : rightIndex)];
     let value = left.value;
     if (right !== left && left.interpolation !== "step") {
       let alpha = THREE.MathUtils.clamp((time - left.time) / Math.max(0.000001, right.time - left.time), 0, 1);
@@ -1688,25 +1776,45 @@ function applyExportFrameSettings(renderer: THREE.WebGPURenderer, camera: THREE.
   camera.updateProjectionMatrix();
 }
 
-/** THREE-OPT: one frame-local index replaces five independent clip scans and Set allocations. */
+const reusableRenderFrameIndex: RenderFrameIndex = {
+  clips: [], residentClips: [], activeClips: [],
+  videoIds: new Set(), imageIds: new Set(), modelIds: new Set(), particleIds: new Set(), sceneObjectIds: new Set(),
+};
+
+/** THREE-OPT: one reusable frame-local index replaces independent scans and per-frame Set allocation. */
 function createRenderFrameIndex(clips: RenderClip[], time: number, focusClipId?: string): RenderFrameIndex {
-  const activeClips: RenderClip[] = [];
-  const videoIds = new Set<string>();
-  const imageIds = new Set<string>();
-  const modelIds = new Set<string>();
-  const particleIds = new Set<string>();
-  const sceneObjectIds = new Set<string>();
+  const frame = reusableRenderFrameIndex;
+  frame.clips = clips;
+  frame.residentClips.length = 0;
+  frame.activeClips.length = 0;
+  frame.videoIds.clear();
+  frame.imageIds.clear();
+  frame.modelIds.clear();
+  frame.particleIds.clear();
+  frame.sceneObjectIds.clear();
   for (const clip of clips) {
-    if (clip.assetId && mediaRuntimes.get(clip.assetId)?.videoSink) videoIds.add(clip.id);
-    if (clip.assetId && imageRuntimes.has(clip.assetId)) imageIds.add(clip.id);
-    if (clip.assetId && modelRuntimes.has(clip.assetId)) modelIds.add(clip.id);
-    if (clip.particleSystem) particleIds.add(clip.id);
-    if (clip.sceneObject) sceneObjectIds.add(clip.sceneObject.id);
-    if (focusClipId ? clip.id === focusClipId : time >= clip.start && time < clip.start + clip.duration) {
-      activeClips.push(clip);
-    }
+    const active = focusClipId ? clip.id === focusClipId : time >= clip.start && time < clip.start + clip.duration;
+    // A small hysteresis window hides decoder/model startup and avoids churn
+    // during short reverse scrubs without pinning every future clip.
+    const resident = active || (!focusClipId && clip.start >= time - 1 && clip.start <= time + 5);
+    if (!resident) continue;
+    frame.residentClips.push(clip);
+    if (clip.assetId && mediaRuntimes.get(clip.assetId)?.videoSink) frame.videoIds.add(clip.id);
+    if (clip.assetId && imageRuntimes.has(clip.assetId)) frame.imageIds.add(clip.id);
+    if (clip.assetId && modelRuntimes.has(clip.assetId)) frame.modelIds.add(clip.id);
+    if (clip.particleSystem) frame.particleIds.add(clip.id);
+    if (clip.sceneObject) frame.sceneObjectIds.add(clip.sceneObject.id);
+    if (active) frame.activeClips.push(clip);
   }
-  return { clips, activeClips, videoIds, imageIds, modelIds, particleIds, sceneObjectIds };
+  return frame;
+}
+
+function currentRenderTimeline() {
+  if (renderTimelineArrayDirty) {
+    renderTimelineArray = [...renderTimeline.values()];
+    renderTimelineArrayDirty = false;
+  }
+  return renderTimelineArray;
 }
 
 async function preloadTimelineObjects() {
@@ -1715,7 +1823,7 @@ async function preloadTimelineObjects() {
   const preloadTime = focusedClip
     ? THREE.MathUtils.clamp(lastTimelineTime, focusedClip.start, Math.max(focusedClip.start, focusedClip.start + focusedClip.duration - 1 / previewFps))
     : lastTimelineTime;
-  const clips = evaluateClipsAtTime([...renderTimeline.values()], preloadTime);
+  const clips = evaluateClipsAtTime(currentRenderTimeline(), preloadTime);
   const frame = createRenderFrameIndex(clips, preloadTime, previewFocusClipId);
   await updateTimelineSceneObjects(frame);
   updateImageSurfaces(frame);
@@ -1748,6 +1856,7 @@ async function renderRealtime(time: number, _shouldCache: boolean, clips: Render
     previewView === "camera" && !playbackActive && transformHandleClipId ? timelineRoots.get(transformHandleClipId) : undefined,
     graphics.previewCamera,
     height,
+    `${timelineRevision}:${time}`,
   );
   cameraHandles?.sync(graphics.camera, graphics.previewCamera, height, previewView === "inspector" && !playbackActive, cameraHandlesVisible);
   await pluginRuntime.runFrame({ time, fps: previewFps, mode: playbackActive ? "playback" : "realtime" });
@@ -1764,13 +1873,14 @@ async function renderRealtime(time: number, _shouldCache: boolean, clips: Render
 
 async function render(time: number, shouldCache: boolean, mode: "realtime" | "playback", fps: number, focusClipId = previewFocusClipId) {
   const focusedClip = focusClipId ? renderTimeline.get(focusClipId) : undefined;
-  const clips = [...renderTimeline.values()];
+  const clips = currentRenderTimeline();
   const renderTime = focusedClip
     ? THREE.MathUtils.clamp(time, focusedClip.start, Math.max(focusedClip.start, focusedClip.start + focusedClip.duration - 1 / Math.max(1, fps)))
     : time;
   lastTimelineTime = time;
   previewFps = Math.max(1, Math.min(120, fps));
   playbackActive = mode === "playback";
+  graphics?.setPlaybackMode(playbackActive);
   if (playbackActive) {
     transformHandles?.sync();
     cameraHandles?.sync();
@@ -2642,6 +2752,7 @@ function applyTimelineSnapshot(snapshot: TimelineSnapshot) {
   }
   renderTimeline.clear();
   for (const clip of snapshot.clips) renderTimeline.set(clip.id, clip);
+  renderTimelineArrayDirty = true;
   invalidateTimelineRanges(invalidatedRanges);
 }
 
@@ -2660,6 +2771,7 @@ function applyTimelinePatch(patch: TimelinePatch) {
     invalidatedRanges.push({ start: clip.start, end: clip.start + clip.duration });
     renderTimeline.set(clip.id, clip);
   }
+  renderTimelineArrayDirty = true;
   invalidateTimelineRanges(invalidatedRanges);
 }
 
@@ -2719,11 +2831,11 @@ async function handleMessage(message: EngineRequest) {
     }
     if (message.type === "timeline-sync") {
       applyTimelineSnapshot(message.snapshot);
-      await preloadTimelineObjects();
+      if (!messageQueue.some((queued) => queued.type === "render")) await preloadTimelineObjects();
     }
     if (message.type === "timeline-patch") {
       applyTimelinePatch(message.patch);
-      await preloadTimelineObjects();
+      if (!messageQueue.some((queued) => queued.type === "render")) await preloadTimelineObjects();
     }
     if (message.type === "media-buffer-plan") sendMediaBufferState(mediaBuffer.setGraph(message.graph));
     if (message.type === "media-buffer-load") await loadRequestedMediaBufferAsset(message);
@@ -2774,13 +2886,14 @@ async function handleMessage(message: EngineRequest) {
         message.clipId && previewView === "camera" && !playbackActive ? timelineRoots.get(message.clipId) : undefined,
         graphics.previewCamera,
         height,
+        `${timelineRevision}:${lastTimelineTime}`,
       );
-      graphics.render(previewView);
+      if (!messageQueue.some((queued) => queued.type === "render")) graphics.render(previewView);
     }
     if (message.type === "camera-handles" && graphics) {
       cameraHandlesVisible = message.visible;
       cameraHandles?.sync(graphics.camera, graphics.previewCamera, height, previewView === "inspector" && !playbackActive, cameraHandlesVisible);
-      if (previewView === "inspector") graphics.render("inspector");
+      if (previewView === "inspector" && !messageQueue.some((queued) => queued.type === "render")) graphics.render("inspector");
     }
     if (message.type === "camera-handle-drag" && graphics) {
       let transform;
@@ -2836,9 +2949,7 @@ function enqueueMessage(message: EngineRequest) {
       if (messageQueue[index].type === "render") messageQueue.splice(index, 1);
     }
     if (message.mode === "playback") {
-      const index = messageQueue.findIndex((queued) => queued.type !== "media-buffer-plan"
-        && queued.type !== "media-buffer-load"
-        && queued.type !== "timeline-sync"
+      const index = messageQueue.findIndex((queued) => queued.type !== "timeline-sync"
         && queued.type !== "timeline-patch");
       messageQueue.splice(index < 0 ? messageQueue.length : index, 0, message);
     } else messageQueue.push(message);
@@ -2846,9 +2957,11 @@ function enqueueMessage(message: EngineRequest) {
     for (let index = messageQueue.length - 1; index >= 0; index--) {
       if (messageQueue[index].type === "media-buffer-plan") messageQueue.splice(index, 1);
     }
-    messageQueue.unshift(message);
+    const firstBackgroundTask = messageQueue.findIndex((queued) => queued.type === "media-thumbnail" || queued.type === "inspect-media" || queued.type === "inspect-image" || queued.type === "inspect-model");
+    messageQueue.splice(firstBackgroundTask < 0 ? messageQueue.length : firstBackgroundTask, 0, message);
   } else if (message.type === "media-buffer-load") {
-    messageQueue.unshift(message);
+    const firstBackgroundTask = messageQueue.findIndex((queued) => queued.type === "media-thumbnail");
+    messageQueue.splice(firstBackgroundTask < 0 ? messageQueue.length : firstBackgroundTask, 0, message);
   } else if (message.type === "resize" || message.type === "preview-cache-settings") {
     // Drag-resizing and number inputs can outpace GPU reconfiguration. Only the
     // newest pending value is observable, so stale queued values have no value.
@@ -2856,6 +2969,9 @@ function enqueueMessage(message: EngineRequest) {
       if (messageQueue[index].type === message.type) messageQueue.splice(index, 1);
     }
     messageQueue.push(message);
+  } else if (message.type === "pick" || message.type === "transform-handles" || message.type === "camera-handles" || message.type === "camera-handle-drag" || message.type === "inspector-camera") {
+    const firstBackgroundTask = messageQueue.findIndex((queued) => queued.type === "media-thumbnail" || queued.type === "inspect-media" || queued.type === "inspect-image" || queued.type === "inspect-model");
+    messageQueue.splice(firstBackgroundTask < 0 ? messageQueue.length : firstBackgroundTask, 0, message);
   } else {
     messageQueue.push(message);
   }

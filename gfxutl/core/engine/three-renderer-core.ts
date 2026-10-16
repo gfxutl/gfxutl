@@ -6,6 +6,9 @@ import type { LightSpec, PreviewView, SceneSettings, ToneMappingKind } from "../
 import { INSPECTOR_HELPERS_LAYER, TRANSFORM_HANDLES_LAYER } from "./editor-layers";
 
 const INSPECTOR_LAYER = INSPECTOR_HELPERS_LAYER;
+const MAX_PREVIEW_PIXEL_RATIO = 1.5;
+const MAX_PLAYBACK_PIXEL_RATIO = 1;
+const MAX_PREVIEW_MSAA_SAMPLES = 4;
 
 type RendererCallbacks = {
   onError?: (message: string) => void;
@@ -37,6 +40,12 @@ export class ThreeRendererCore {
   private height = 9;
   private dpr = 1;
   private appliedPixelRatio = 0;
+  private playbackMode = false;
+  private rendererSettingsSignature = "";
+  private sceneSettingsSignature = "";
+  private cameraSettingsSignature = "";
+  private lightsSignature = "";
+  private appliedSettingsSource: SceneSettings | null = null;
 
   private constructor(renderer: THREE.WebGPURenderer, scene: THREE.Scene, settings: SceneSettings, callbacks: RendererCallbacks) {
     this.renderer = renderer;
@@ -117,13 +126,18 @@ export class ThreeRendererCore {
 
   private applyPreviewResolution(view: PreviewView, force = false) {
     const previewScale = THREE.MathUtils.clamp(this.settings.renderer.previewScale ?? 1, 0.5, 1);
-    const pixelRatio = view === "inspector"
-      ? this.dpr
-      : Math.min(Math.max(0.5, this.dpr * previewScale), 1.5);
+    const maximum = this.playbackMode ? MAX_PLAYBACK_PIXEL_RATIO : MAX_PREVIEW_PIXEL_RATIO;
+    const pixelRatio = Math.min(Math.max(0.5, this.dpr * previewScale), maximum);
     if (!force && Math.abs(pixelRatio - this.appliedPixelRatio) < 0.001) return;
     this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setSize(this.width, this.height, false);
     this.appliedPixelRatio = pixelRatio;
+  }
+
+  setPlaybackMode(active: boolean) {
+    if (this.playbackMode === active) return;
+    this.playbackMode = active;
+    this.applyPreviewResolution(this.previewView, true);
   }
 
   createCameraForSize(width: number, height: number) {
@@ -134,12 +148,35 @@ export class ThreeRendererCore {
   }
 
   applySettings(settings: SceneSettings) {
+    if (settings === this.appliedSettingsSource) return;
     const previousScale = this.settings.renderer.previewScale;
+    const rendererSignature = JSON.stringify(settings.renderer);
+    const sceneSignature = JSON.stringify(settings.background);
+    const cameraSignature = JSON.stringify(settings.camera);
+    const lightsSignature = JSON.stringify(settings.lights);
+    const rendererChanged = rendererSignature !== this.rendererSettingsSignature;
+    const sceneChanged = sceneSignature !== this.sceneSettingsSignature;
+    const cameraChanged = cameraSignature !== this.cameraSettingsSignature;
+    const lightsChanged = lightsSignature !== this.lightsSignature;
+    this.appliedSettingsSource = settings;
+    if (!rendererChanged && !sceneChanged && !cameraChanged && !lightsChanged) return;
     this.settings = structuredClone(settings);
-    this.applyRendererSettings(settings);
-    this.applySceneSettings(settings);
-    this.applyCameraSettings(settings);
-    this.applyLights(settings.lights);
+    if (rendererChanged) {
+      this.rendererSettingsSignature = rendererSignature;
+      this.applyRendererSettings(settings);
+    }
+    if (sceneChanged) {
+      this.sceneSettingsSignature = sceneSignature;
+      this.applySceneSettings(settings);
+    }
+    if (cameraChanged) {
+      this.cameraSettingsSignature = cameraSignature;
+      this.applyCameraSettings(settings);
+    }
+    if (lightsChanged) {
+      this.lightsSignature = lightsSignature;
+      this.applyLights(settings.lights);
+    }
     if (previousScale !== settings.renderer.previewScale) this.resize(this.width, this.height, this.dpr);
   }
 
@@ -154,7 +191,7 @@ export class ThreeRendererCore {
       _outputBufferType: number;
       _frameBufferTargets: Map<{ dispose(): void }, unknown>;
     };
-    const samples = settings.renderer.antialias ? Math.max(0, Math.floor(settings.renderer.samples)) : 0;
+    const samples = settings.renderer.antialias ? THREE.MathUtils.clamp(Math.floor(settings.renderer.samples), 0, MAX_PREVIEW_MSAA_SAMPLES) : 0;
     const outputBufferType = settings.renderer.outputBuffer === "float16" ? THREE.HalfFloatType : THREE.UnsignedByteType;
     if (internal._samples !== samples || internal._outputBufferType !== outputBufferType) {
       for (const target of internal._frameBufferTargets.keys()) target.dispose();
@@ -380,7 +417,7 @@ function rendererOptions(canvas: OffscreenCanvas, settings: SceneSettings) {
   return {
     canvas,
     antialias: settings.renderer.antialias,
-    samples: Math.max(0, Math.floor(settings.renderer.samples)),
+    samples: THREE.MathUtils.clamp(Math.floor(settings.renderer.samples), 0, MAX_PREVIEW_MSAA_SAMPLES),
     // Keep an alpha-capable swap chain so transparency can be toggled live.
     alpha: true,
     outputBufferType: settings.renderer.outputBuffer === "float16" ? THREE.HalfFloatType : THREE.UnsignedByteType,
@@ -435,7 +472,7 @@ function updateLight(light: THREE.Light, spec: LightSpec, scene: THREE.Scene) {
   if (light instanceof THREE.DirectionalLight || light instanceof THREE.SpotLight) {
     light.target.position.set(...(spec.target ?? [0, 0, 0]));
     if (!light.target.parent) scene.add(light.target);
-    light.shadow.mapSize.set(2048, 2048);
+    light.shadow.mapSize.set(1024, 1024);
     light.shadow.camera.near = 0.1;
     light.shadow.camera.far = 100;
   }

@@ -19,7 +19,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { Add16Regular as Plus, Code16Regular as Code, Save16Regular as Save } from "@fluentui/react-icons";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useEditor } from "../core/interface";
+import { shallowEqual, useEditor } from "../core/interface";
 import type { ShaderGraphEdge, ShaderGraphNode, ShaderGraphNodeKind } from "../core/interface";
 import { useI18n } from "../core/i18n";
 import { Button } from "./ui/button";
@@ -55,7 +55,7 @@ function ShaderNode({ data, selected }: NodeProps<FlowNode>) {
 const nodeTypes = { shader: ShaderNode };
 
 export function ShaderGraphPanel() {
-  const { state, controller } = useEditor();
+  const { state, controller } = useEditor((value) => ({ activeShaderGraphId: value.activeShaderGraphId, clips: value.clips, selectedClipIds: value.selectedClipIds, shaderGraphs: value.shaderGraphs }), shallowEqual);
   const { t } = useI18n();
   const graph = state.shaderGraphs.find((item) => item.id === state.activeShaderGraphId) ?? null;
   const [paletteOpen, setPaletteOpen] = useState(false);

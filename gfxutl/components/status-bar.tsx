@@ -1,11 +1,20 @@
 import { Code16Regular as Code, Database16Regular as Database, Delete16Regular as Trash2, Gauge16Regular as Gauge, Timeline20Regular as Timeline } from "@fluentui/react-icons";
-import { useEditor } from "../core/interface";
+import { shallowEqual, useEditor } from "../core/interface";
 import { Button } from "./ui/button";
 import { Tooltip } from "./ui/tooltip";
 import { useI18n } from "../core/i18n";
 
 export function StatusBar() {
-  const { state, controller } = useEditor();
+  const { state, controller } = useEditor((value) => ({
+    activeBottomPane: value.activeBottomPane,
+    activeShaderGraphId: value.activeShaderGraphId,
+    cache: value.cache,
+    engine: value.engine,
+    mediaBuffer: value.mediaBuffer,
+    rendererStats: value.rendererStats,
+    settings: value.settings,
+    shaderGraphs: value.shaderGraphs,
+  }), shallowEqual);
   const { locale, t } = useI18n();
   const used = state.cache.usedBytes / 1024 / 1024;
   const max = state.cache.maxBytes / 1024 / 1024;
