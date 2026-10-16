@@ -392,6 +392,19 @@ svg { width: 16px; height: 16px; }
 .preview-stage.preview-cursor-rotation { cursor: grab; }
 .preview-stage.preview-cursor-rotation:active { cursor: grabbing; }
 .preview-stage.object-dragging { cursor: grabbing; }
+.filter-transform-overlay { position: absolute; z-index: 8; box-sizing: border-box; border: 1px dashed #c89ce8; background: #9f62c20a; box-shadow: 0 0 0 1px #1b0f2299, inset 0 0 18px #9f62c20d; cursor: move; touch-action: none; }
+.filter-transform-overlay > span { position: absolute; left: 5px; top: 4px; max-width: calc(100% - 10px); overflow: hidden; color: #f0d9ff; font-size: 9px; line-height: 1; text-overflow: ellipsis; text-shadow: 0 1px 2px #000; white-space: nowrap; pointer-events: none; }
+.filter-resize-handle, .filter-rotation-handle { position: absolute; z-index: 2; display: block; width: 9px; height: 9px; border: 1px solid #1b0f22; border-radius: 50%; background: #e6c4fb; box-shadow: 0 0 3px #000; }
+.filter-resize-nw { left: 0; top: 0; transform: translate(-50%, -50%); cursor: nwse-resize; }
+.filter-resize-n { left: 50%; top: 0; transform: translate(-50%, -50%); cursor: ns-resize; }
+.filter-resize-ne { right: 0; top: 0; transform: translate(50%, -50%); cursor: nesw-resize; }
+.filter-resize-e { right: 0; top: 50%; transform: translate(50%, -50%); cursor: ew-resize; }
+.filter-resize-se { right: 0; bottom: 0; transform: translate(50%, 50%); cursor: nwse-resize; }
+.filter-resize-s { left: 50%; bottom: 0; transform: translate(-50%, 50%); cursor: ns-resize; }
+.filter-resize-sw { left: 0; bottom: 0; transform: translate(-50%, 50%); cursor: nesw-resize; }
+.filter-resize-w { left: 0; top: 50%; transform: translate(-50%, -50%); cursor: ew-resize; }
+.filter-rotation-handle { left: 50%; top: 12px; transform: translateX(-50%); background: #b981da; cursor: grab; }
+.filter-rotation-handle:active { cursor: grabbing; }
 /* Inspector */
 .inspector-panel { z-index: 5; top: var(--title-h); bottom: calc(var(--status-h) + var(--timeline-h)); right: 0; width: var(--right-w); border-width: 0 0 1px; overflow-y: auto; background: #121416; }
 .inspector-tabs { position: sticky; z-index: 4; top: 0; height: var(--pane-tab-h); display: flex; border-bottom: 1px solid var(--line); padding: 0 10px; gap: 17px; background: #121416; }

@@ -1720,9 +1720,19 @@ export class EditorController {
       duration: 5,
       offset: 0,
       visible: true,
+      positionX: 0,
+      positionY: 0,
+      positionZ: 0,
+      scale: 100,
+      scaleX: 100,
+      scaleY: 100,
+      rotation: 0,
+      rotationX: 0,
+      rotationY: 0,
+      opacity: 100,
       effects: [],
       keyframes: [],
-      propertyActions: [{ id: crypto.randomUUID(), kind: "effects" }],
+      propertyActions: [{ id: crypto.randomUUID(), kind: "transform" }, { id: crypto.randomUUID(), kind: "effects" }],
     };
     clip = placeTimelineClip(this.state.clips, clip);
     this.update({

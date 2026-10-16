@@ -138,10 +138,11 @@ export function PreviewPanel() {
 
   const previewObjects = useMemo(() => inspectorView ? [] : state.clips
     .filter((clip) => !state.activePreviewClipId || clip.id === state.activePreviewClipId)
-    .filter((clip) => clip.kind !== "audio" && clip.kind !== "filter" && clip.kind !== "group" && (state.activePreviewClipId === clip.id || state.currentTime >= clip.start && state.currentTime < clip.start + clip.duration))
-    .map((clip) => previewBounds(animatedClip(clip, state.activePreviewClipId === clip.id ? Math.max(clip.start, Math.min(state.currentTime, clip.start + clip.duration - 1 / state.fps)) : state.currentTime), state.assets.find((asset) => asset.id === clip.assetId)))
-    .sort((a, b) => (b.clip.positionZ ?? 0) - (a.clip.positionZ ?? 0) || a.clip.y - b.clip.y), [inspectorView, state.clips, state.assets, state.currentTime, state.activePreviewClipId, state.fps]);
+    .filter((clip) => clip.kind !== "audio" && clip.kind !== "group" && (state.activePreviewClipId === clip.id || state.currentTime >= clip.start && state.currentTime < clip.start + clip.duration))
+    .map((clip) => previewBounds(animatedClip(clip, state.activePreviewClipId === clip.id ? Math.max(clip.start, Math.min(state.currentTime, clip.start + clip.duration - 1 / state.fps)) : state.currentTime), state.assets.find((asset) => asset.id === clip.assetId), { width: previewWorldWidth, height: previewWorldHeight }))
+    .sort((a, b) => (b.clip.positionZ ?? 0) - (a.clip.positionZ ?? 0) || a.clip.y - b.clip.y), [inspectorView, previewWorldHeight, previewWorldWidth, state.clips, state.assets, state.currentTime, state.activePreviewClipId, state.fps]);
   const hoveredObject = previewObjects.find((object) => object.clip.id === hoveredClipId);
+  const selectedFilterObject = previewObjects.find((object) => object.clip.kind === "filter" && state.selectedClipIds.includes(object.clip.id));
 
   useEffect(() => {
     controller.setPreviewTransformHandles(!inspectorView && !state.playing && !poppedOut ? hoveredObject?.clip.id : undefined);
@@ -482,6 +483,33 @@ export function PreviewPanel() {
         });
       }}>
         {!poppedOut ? <canvas key={surfaceKey} ref={canvasRef} data-preview-tab={state.activePreviewClipId ?? state.activePreviewView} data-camera-projection={state.cameraProjection} data-video-frames={state.videoFramesRendered} data-geometry-objects={state.geometryObjectsReady} data-active-scene-objects={state.activeSceneObjects} data-active-image-objects={state.activeImageObjects} data-playing-audio-objects={state.playingAudioObjects} data-preview-source={state.previewSource} data-cache-frames={state.cachedFramesDisplayed} data-preview-frames={state.previewFramesRendered} /> : <div className="preview-popout-placeholder"><ExternalLink /><span>{t("プレビューは別ウィンドウで表示中です")}</span><button type="button" onClick={(event) => { event.stopPropagation(); popoutRef.current?.close(); }}>{t("この画面に戻す")}</button></div>}
+        {selectedFilterObject && !state.playing && !poppedOut && <div
+          className="filter-transform-overlay"
+          style={filterOverlayStyle(selectedFilterObject, previewWorldWidth, previewWorldHeight)}
+          title={t("フィルター作用領域")}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            beginMove(event, selectedFilterObject);
+          }}
+        >
+          {(["nw", "n", "ne", "e", "se", "s", "sw", "w"] as TransformHandleKind[]).map((handle) => <i
+            className={`filter-resize-handle filter-resize-${handle}`}
+            data-handle={handle}
+            key={handle}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              beginResize(event, selectedFilterObject, handle);
+            }}
+          />)}
+          <i className="filter-rotation-handle" data-handle="rotation" onPointerDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            beginRotate(event, selectedFilterObject);
+          }} />
+          <span>{selectedFilterObject.clip.name}</span>
+        </div>}
         {!inspectorView && <div className="safe-area" />}
       </div>
     </section>
@@ -537,11 +565,14 @@ function previewBezierAt(easing: import("../core/interface").ClipKeyframe["easin
   return 3 * inverse * inverse * t * y1 + 3 * inverse * t * t * y2 + t * t * t;
 }
 
-function previewBounds(clip: TimelineClip, asset?: MediaAsset): PreviewObjectBounds {
+function previewBounds(clip: TimelineClip, asset?: MediaAsset, filterSize = { width: 16, height: 9 }): PreviewObjectBounds {
   const scale = Math.max(0.001, (clip.scale ?? 100) / 100);
   let width = 2.5;
   let height = 2.5;
-  if (clip.kind === "title") {
+  if (clip.kind === "filter") {
+    width = filterSize.width;
+    height = filterSize.height;
+  } else if (clip.kind === "title") {
     const size = clip.fontSize ?? 1.2;
     const lines = (clip.text ?? clip.name).split("\n");
     width = Math.max(0.35, Math.max(...lines.map((line) => [...line].length), 1) * size * 0.62);
@@ -561,6 +592,16 @@ function previewBounds(clip: TimelineClip, asset?: MediaAsset): PreviewObjectBou
     clip, x: (clip.positionX ?? 0) / 100, y: -(clip.positionY ?? 0) / 100,
     width: width * scale * ((clip.scaleX ?? 100) / 100),
     height: height * scale * ((clip.scaleY ?? 100) / 100), rotation: clip.rotation ?? 0,
+  };
+}
+
+function filterOverlayStyle(object: PreviewObjectBounds, worldWidth: number, worldHeight: number): CSSProperties {
+  return {
+    left: `${(0.5 + object.x / worldWidth) * 100}%`,
+    top: `${(0.5 - object.y / worldHeight) * 100}%`,
+    width: `${object.width / worldWidth * 100}%`,
+    height: `${object.height / worldHeight * 100}%`,
+    transform: `translate(-50%, -50%) rotate(${object.rotation}deg)`,
   };
 }
 

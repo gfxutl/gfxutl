@@ -42,7 +42,7 @@ function translateCompositeLabel(label: string, t: (key: string) => string) {
 }
 
 function keyframeProperties(clip: TimelineClip): Array<[KeyframeProperty, string]> {
-  const properties = clip.kind === "filter" ? [] : [...BASE_KEYFRAME_PROPERTIES];
+  const properties = [...BASE_KEYFRAME_PROPERTIES];
   if (clip.kind === "video") properties.push(["cropLeft", "クロップ 左"], ["cropRight", "クロップ 右"], ["cropTop", "クロップ 上"], ["cropBottom", "クロップ 下"]);
   if (clip.kind === "video" || clip.kind === "audio") properties.push(["volume", "音量"], ["pan", "パン"], ["speed", "速度"]);
   if (clip.kind === "video" && resolveClipPropertyActions(clip).some((action) => action.kind === "colorGrading")) {

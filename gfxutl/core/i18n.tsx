@@ -221,6 +221,7 @@ const EN: Record<string, string> = {
   "グループ": "Group",
   "フィルター": "Filter",
   "フィルター名": "Filter name",
+  "フィルター作用領域": "Filter bounds",
   "先に効果を追加してください": "Add an effect first",
   "時間が重なる下段のビジュアルオブジェクトへ、効果とシェーダーを上から順に適用します。": "Applies effects and shaders in stack order to overlapping visual objects below it.",
   "シェイプ": "Shape",
