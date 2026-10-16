@@ -117,12 +117,24 @@ export interface SceneObjectSpec {
 
 export type ClipEffectKind = "transform" | "meshDeform" | "brightness" | "tint" | "opacity" | "contrast" | "saturation" | "gamma" | "hue" | "chromaKey" | "vignette" | "pixelate";
 
+export interface FilterRegion {
+  centerX: number;
+  centerY: number;
+  width: number;
+  height: number;
+  rotation: number;
+  opacity: number;
+  aspect: number;
+}
+
 export interface ClipEffect {
   id: string;
   kind: ClipEffectKind;
   name: string;
   enabled: boolean;
   params: Record<string, number>;
+  /** Worker-evaluated screen-space bounds when this effect comes from a filter object. */
+  filterRegion?: FilterRegion;
 }
 
 /** Non-destructive, per-video color correction evaluated before the effect stack. */
@@ -364,7 +376,7 @@ export interface RenderClip {
   /** Timeline filters above this clip, ordered from nearest to topmost. */
   filterStack: RenderFilter[];
   /** Active filter shaders composed after this clip's own shader. Worker-only. */
-  filterPostProcesses?: ClipPostProcess[];
+  filterPostProcesses?: Array<{ shader: ClipPostProcess; region: FilterRegion }>;
   masks: ClipMask[];
   keyframes: ClipKeyframe[];
   particleSystem?: ParticleSystemSpec;
@@ -379,6 +391,14 @@ export interface RenderFilter {
   start: number;
   duration: number;
   enabled: boolean;
+  positionX: number;
+  positionY: number;
+  scale: number;
+  scaleX: number;
+  scaleY: number;
+  rotation: number;
+  opacity: number;
+  compositionAspect: number;
   effects: ClipEffect[];
   postProcess?: ClipPostProcess;
   keyframes: ClipKeyframe[];

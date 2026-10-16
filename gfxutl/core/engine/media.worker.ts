@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 
 import * as THREE from "three/webgpu";
-import { abs, cos, distance, float, Fn, glslFn, hue, instanceIndex, length, luminance, max, min, positionLocal, pow, saturation, sin, smoothstep, storage, texture as textureNode, uniform, uv, vec2, vec3, vec4, vertexIndex, wgslFn } from "three/tsl";
+import { abs, cos, distance, float, Fn, glslFn, hue, instanceIndex, length, luminance, max, min, mix, positionLocal, pow, saturation, sin, smoothstep, storage, texture as textureNode, uniform, uv, vec2, vec3, vec4, vertexIndex, wgslFn } from "three/tsl";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
@@ -16,6 +16,7 @@ import { MediaBuffer } from "./media-buffer";
 import { RendererPluginRuntime } from "./renderer-plugin-runtime";
 import { ThreeCameraHandles } from "./three-camera-handles";
 import { ThreeTransformHandles } from "./three-transform-handles";
+import { filterRegionMask, filterRegionVertexMask } from "./filter-region-nodes";
 
 const worker = self as unknown as DedicatedWorkerGlobalScope;
 
@@ -503,7 +504,7 @@ function fittedPlaneSize(aspect: number) {
 }
 
 function visualEffectSignature(clip: RenderClip) {
-  return JSON.stringify([clip.colorGrading, clip.effects.filter((effect) => effect.enabled && effect.kind !== "transform" && effect.kind !== "opacity"), clip.masks, clip.postProcess, clip.filterPostProcesses]);
+  return JSON.stringify([clip.colorGrading, clip.effects.filter((effect) => effect.enabled && effect.kind !== "transform" && (effect.kind !== "opacity" || effect.filterRegion)), clip.masks, clip.postProcess, clip.filterPostProcesses]);
 }
 
 function applyColorGrading(input: any, grading: RenderClip["colorGrading"]) {
@@ -551,17 +552,21 @@ function applyColorGrading(input: any, grading: RenderClip["colorGrading"]) {
 }
 
 function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
-  let texUv: any = uv();
+  const sampleTexture = (coordinates: any) => {
+    const node: any = textureNode(texture, coordinates);
+    // An explicit UV node disables TextureNode's transform matrix by default.
+    // Re-enable it so offset/repeat changes made by crop reach every sample.
+    node.setUpdateMatrix(true);
+    return node;
+  };
+  let sampled: any = sampleTexture(uv());
   for (const effect of clip.effects) {
     if (!effect.enabled || effect.kind !== "pixelate") continue;
     const cells = Math.max(1, effect.params.size ?? 8);
-    texUv = texUv.mul(cells).floor().add(0.5).div(cells);
+    const texUv = uv().mul(cells).floor().add(0.5).div(cells);
+    const pixelated = sampleTexture(texUv);
+    sampled = effect.filterRegion ? mix(sampled, pixelated, filterRegionMask(effect.filterRegion)) : pixelated;
   }
-  // An explicit UV node disables TextureNode's transform matrix by default.
-  // Re-enable it so offset/repeat changes made by the crop action reach both
-  // WebGPU and the WebGL2 fallback without rebuilding the material.
-  const sampled: any = textureNode(texture, texUv);
-  sampled.setUpdateMatrix(true);
   let rgb = applyColorGrading(sampled.rgb, clip.colorGrading);
   let alpha: any = sampled.a;
   let combinedMask: any = null;
@@ -583,39 +588,57 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
   }
   if (combinedMask !== null) alpha = alpha.mul(combinedMask);
   for (const effect of clip.effects) {
-    if (!effect.enabled) continue;
+    if (!effect.enabled || effect.kind === "pixelate" || effect.kind === "meshDeform" || effect.kind === "transform") continue;
+    const previousRgb = rgb;
+    const previousAlpha = alpha;
+    let nextRgb = rgb;
+    let nextAlpha = alpha;
     if (effect.kind === "brightness") {
-      rgb = rgb.mul(Math.max(0, 1 + (effect.params.amount ?? 0) / 100));
+      nextRgb = rgb.mul(Math.max(0, 1 + (effect.params.amount ?? 0) / 100));
     } else if (effect.kind === "tint") {
-      rgb = rgb.mul(vec3((effect.params.red ?? 100) / 100, (effect.params.green ?? 100) / 100, (effect.params.blue ?? 100) / 100));
+      nextRgb = rgb.mul(vec3((effect.params.red ?? 100) / 100, (effect.params.green ?? 100) / 100, (effect.params.blue ?? 100) / 100));
+    } else if (effect.kind === "opacity" && effect.filterRegion) {
+      nextAlpha = alpha.mul(THREE.MathUtils.clamp((effect.params.amount ?? 100) / 100, 0, 1));
     } else if (effect.kind === "contrast") {
-      rgb = rgb.sub(0.5).mul(Math.max(0, 1 + (effect.params.amount ?? 0) / 100)).add(0.5);
+      nextRgb = rgb.sub(0.5).mul(Math.max(0, 1 + (effect.params.amount ?? 0) / 100)).add(0.5);
     } else if (effect.kind === "saturation") {
-      rgb = saturation(rgb, Math.max(0, (effect.params.amount ?? 100) / 100));
+      nextRgb = saturation(rgb, Math.max(0, (effect.params.amount ?? 100) / 100));
     } else if (effect.kind === "gamma") {
-      rgb = pow(max(rgb, vec3(0)), vec3(1 / Math.max(0.01, (effect.params.amount ?? 100) / 100)));
+      nextRgb = pow(max(rgb, vec3(0)), vec3(1 / Math.max(0.01, (effect.params.amount ?? 100) / 100)));
     } else if (effect.kind === "hue") {
-      rgb = hue(rgb, THREE.MathUtils.degToRad(effect.params.angle ?? 0));
+      nextRgb = hue(rgb, THREE.MathUtils.degToRad(effect.params.angle ?? 0));
     } else if (effect.kind === "chromaKey") {
       const key = vec3((effect.params.red ?? 0) / 100, (effect.params.green ?? 100) / 100, (effect.params.blue ?? 0) / 100);
       const threshold = Math.max(0, (effect.params.threshold ?? 20) / 100);
       const softness = Math.max(0.001, (effect.params.softness ?? 10) / 100);
-      alpha = alpha.mul(smoothstep(threshold, threshold + softness, distance(rgb, key)));
+      nextAlpha = alpha.mul(smoothstep(threshold, threshold + softness, distance(rgb, key)));
     } else if (effect.kind === "vignette") {
       const amount = Math.max(0, (effect.params.amount ?? 35) / 100);
       const size = THREE.MathUtils.clamp((effect.params.size ?? 65) / 100, 0.01, 1);
       const radius = length(uv().sub(vec2(0.5)));
-      rgb = rgb.mul(float(1).sub(smoothstep(size * 0.5, Math.max(size * 0.5 + 0.001, 0.72), radius).mul(amount)));
+      nextRgb = rgb.mul(float(1).sub(smoothstep(size * 0.5, Math.max(size * 0.5 + 0.001, 0.72), radius).mul(amount)));
+    }
+    if (effect.filterRegion) {
+      const regionMask = filterRegionMask(effect.filterRegion);
+      rgb = mix(previousRgb, nextRgb, regionMask);
+      alpha = mix(previousAlpha, nextAlpha, regionMask);
+    } else {
+      rgb = nextRgb;
+      alpha = nextAlpha;
     }
   }
-  const alphaMasked = clip.masks.some((mask) => mask.enabled) || clip.effects.some((effect) => effect.enabled && effect.kind === "chromaKey");
+  const alphaMasked = clip.masks.some((mask) => mask.enabled) || clip.effects.some((effect) => effect.enabled && (effect.kind === "chromaKey" || (effect.kind === "opacity" && Boolean(effect.filterRegion))));
   let outputColor: any = vec4(rgb, alpha);
-  const shaders = [clip.postProcess, ...(clip.filterPostProcesses ?? [])];
-  for (const shader of shaders) {
+  const shaders = [
+    ...(clip.postProcess ? [{ shader: clip.postProcess, region: undefined }] : []),
+    ...(clip.filterPostProcesses ?? []),
+  ];
+  for (const { shader, region } of shaders) {
     if (!shader?.enabled || shader.compileStatus !== "ready" || !shader.wgsl) continue;
     try {
       const shaderFunction = graphics?.backend === "webgpu" ? wgslFn(shader.wgsl) : glslFn(shader.glsl);
-      outputColor = shaderFunction({ color: outputColor, uv: uv(), time: postProcessTime });
+      const filteredColor: any = shaderFunction({ color: outputColor, uv: uv(), time: postProcessTime });
+      outputColor = region ? mix(outputColor, filteredColor, filterRegionMask(region)) : filteredColor;
     } catch (error) {
       send({ type: "error", message: `${shader.name}: ${error instanceof Error ? error.message : String(error)}` });
     }
@@ -637,7 +660,8 @@ function meshDeformedPosition(effects: readonly ClipEffect[]) {
     const coordinate = displaced.x.mul(Math.cos(angle)).add(displaced.y.mul(Math.sin(angle)));
     const wave = sin(coordinate.mul(Math.max(0, effect.params.frequency ?? 2)).add(THREE.MathUtils.degToRad(effect.params.phase ?? 0)))
       .mul((effect.params.amount ?? 25) / 100);
-    displaced = displaced.add(vec3(-Math.sin(angle), Math.cos(angle), 0).mul(wave));
+    const regionMask = effect.filterRegion ? filterRegionVertexMask(effect.filterRegion, displaced) : float(1);
+    displaced = displaced.add(vec3(-Math.sin(angle), Math.cos(angle), 0).mul(wave).mul(regionMask));
   }
   return active ? displaced : null;
 }
@@ -698,6 +722,7 @@ function applyVisualTransform(mesh: THREE.Object3D, material: THREE.Material, cl
   for (const effect of clip.effects) {
     if (!effect.enabled) continue;
     if (effect.kind === "transform") {
+      if (effect.filterRegion) continue;
       const localX = (effect.params.x ?? 0) / 100;
       const localY = -(effect.params.y ?? 0) / 100;
       const cos = Math.cos(rotation);
@@ -709,6 +734,7 @@ function applyVisualTransform(mesh: THREE.Object3D, material: THREE.Material, cl
       scaleY *= effectScale;
       rotation -= THREE.MathUtils.degToRad(effect.params.rotation ?? 0);
     } else if (effect.kind === "opacity") {
+      if (effect.filterRegion) continue;
       opacity *= (effect.params.amount ?? 100) / 100;
     }
   }
@@ -961,7 +987,9 @@ function applyModelTransform(surface: ModelSurface, clip: RenderClip) {
   let brightness = 0;
   const tint = modelTintScratch.setRGB(1, 1, 1);
   for (const effect of clip.effects) {
-    if (!effect.enabled) continue;
+    // Imported glTF materials are not node materials. Never leak a regional
+    // filter across the whole model when it cannot be composited per fragment.
+    if (!effect.enabled || effect.filterRegion) continue;
     if (effect.kind === "transform") {
       positionX += (effect.params.x ?? 0) / 100;
       positionY -= (effect.params.y ?? 0) / 100;
@@ -989,7 +1017,7 @@ function applyModelTransform(surface: ModelSurface, clip: RenderClip) {
 }
 
 function applyModelMeshDeformation(surface: ModelSurface, effects: readonly ClipEffect[]) {
-  const deformations = effects.filter((effect) => effect.enabled && effect.kind === "meshDeform");
+  const deformations = effects.filter((effect) => effect.enabled && effect.kind === "meshDeform" && !effect.filterRegion);
   const signature = JSON.stringify(deformations);
   if (signature === surface.deformSignature) return;
   surface.deformSignature = signature;
@@ -1376,27 +1404,50 @@ function applyRenderFilters(source: RenderClip, timelineTime: number) {
   };
   for (const filter of source.filterStack) {
     if (!filter.enabled || timelineTime < filter.start || timelineTime >= filter.start + filter.duration) continue;
-    const effects = evaluateFilterEffects(filter, timelineTime);
+    const { effects, region } = evaluateFilter(filter, timelineTime);
     evaluated.effects.push(...effects);
-    if (filter.postProcess) evaluated.filterPostProcesses!.push(filter.postProcess);
+    if (filter.postProcess) evaluated.filterPostProcesses!.push({ shader: filter.postProcess, region });
     if (evaluated.sceneObject) applyEffectsToFilteredSceneObject(evaluated.sceneObject, effects);
   }
   if (evaluated.sceneObject?.material) evaluated.sceneObject.material.effects = structuredClone(evaluated.effects);
   return evaluated;
 }
 
-function evaluateFilterEffects(filter: RenderFilter, timelineTime: number) {
+function evaluateFilter(filter: RenderFilter, timelineTime: number) {
   const effects = structuredClone(filter.effects);
-  if (!filter.keyframes.length) return effects;
+  const transform = {
+    positionX: filter.positionX,
+    positionY: filter.positionY,
+    scale: filter.scale,
+    scaleX: filter.scaleX,
+    scaleY: filter.scaleY,
+    rotation: filter.rotation,
+    opacity: filter.opacity,
+  };
   const localTime = THREE.MathUtils.clamp(timelineTime - filter.start, 0, filter.duration);
   for (const [property, keys] of keyframeTracksFor(filter, filter.keyframes)) {
-    if (!property.startsWith("effect.")) continue;
     const value = interpolateKeyframeTrack(keys, localTime);
-    const [, effectId, key] = property.split(".");
-    const effect = effects.find((item) => item.id === effectId);
-    if (effect && key) effect.params[key] = value;
+    if (property.startsWith("effect.")) {
+      const [, effectId, key] = property.split(".");
+      const effect = effects.find((item) => item.id === effectId);
+      if (effect && key) effect.params[key] = value;
+    } else if (property in transform) {
+      transform[property as keyof typeof transform] = value;
+    }
   }
-  return effects;
+  const worldHeight = 9;
+  const worldWidth = worldHeight * Math.max(0.000001, filter.compositionAspect);
+  const region = {
+    centerX: 0.5 + transform.positionX / 100 / worldWidth,
+    centerY: 0.5 + transform.positionY / 100 / worldHeight,
+    width: Math.max(0.000001, transform.scale / 100 * transform.scaleX / 100),
+    height: Math.max(0.000001, transform.scale / 100 * transform.scaleY / 100),
+    rotation: transform.rotation,
+    opacity: THREE.MathUtils.clamp(transform.opacity / 100, 0, 1),
+    aspect: filter.compositionAspect,
+  };
+  for (const effect of effects) effect.filterRegion = region;
+  return { effects, region };
 }
 
 function interpolateKeyframeTrack(keys: ClipKeyframe[], localTime: number) {
@@ -1419,6 +1470,7 @@ function applyEffectsToFilteredSceneObject(object: SceneObjectSpec, effects: Cli
   for (const effect of effects) {
     if (!effect.enabled) continue;
     if (effect.kind === "transform") {
+      if (effect.filterRegion) continue;
       const x = (effect.params.x ?? 0) / 100;
       const y = -(effect.params.y ?? 0) / 100;
       position[0] += (Math.cos(rotation[2]) * x - Math.sin(rotation[2]) * y) * scale[0];
@@ -1428,6 +1480,7 @@ function applyEffectsToFilteredSceneObject(object: SceneObjectSpec, effects: Cli
       scale[1] *= amount;
       rotation[2] -= THREE.MathUtils.degToRad(effect.params.rotation ?? 0);
     } else if (effect.kind === "opacity" && object.material) {
+      if (effect.filterRegion) continue;
       object.material.opacity = (object.material.opacity ?? 1) * (effect.params.amount ?? 100) / 100;
     }
   }

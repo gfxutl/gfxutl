@@ -1,8 +1,9 @@
 import * as THREE from "three/webgpu";
-import { distance, float, hue, length, max, normalLocal, positionLocal, pow, saturation, sin, smoothstep, texture as textureNode, uv, vec2, vec3, vec4 } from "three/tsl";
+import { distance, float, hue, length, max, mix, normalLocal, positionLocal, pow, saturation, sin, smoothstep, texture as textureNode, uv, vec2, vec3, vec4 } from "three/tsl";
 import type { ClipEffect, SceneMaterialSpec, SceneObjectSpec } from "../protocol/engine-protocol";
 import { createGeometry } from "./three-geometry-factory";
 import { loadBuiltInObjectClass } from "./built-in-objects/object-loader";
+import { filterRegionMask, filterRegionVertexMask } from "./filter-region-nodes";
 
 interface SceneRecord {
   root: THREE.Object3D;
@@ -245,16 +246,21 @@ function materialBlending(blending: SceneMaterialSpec["blending"]) {
   return ({ normal: THREE.NormalBlending, add: THREE.AdditiveBlending, multiply: THREE.MultiplyBlending, subtract: THREE.SubtractiveBlending, none: THREE.NoBlending })[blending ?? "normal"];
 }
 
+function hasEffectAlpha(spec: SceneMaterialSpec) {
+  return (spec.effects ?? []).some((effect) => effect.enabled && (effect.kind === "chromaKey" || (effect.kind === "opacity" && Boolean(effect.filterRegion))));
+}
+
 function commonMaterialOptions(spec: SceneMaterialSpec = {}) {
   const opacity = spec.opacity ?? 1;
+  const effectAlpha = hasEffectAlpha(spec);
   return {
     color: spec.color ?? 0xffffff,
     wireframe: spec.wireframe ?? false,
     side: materialSide(spec.side),
-    transparent: spec.transparent ?? opacity < 1,
+    transparent: (spec.transparent ?? opacity < 1) || effectAlpha,
     opacity,
     depthTest: spec.depthTest ?? true,
-    depthWrite: spec.depthWrite ?? opacity >= 1,
+    depthWrite: spec.depthWrite ?? (opacity >= 1 && !effectAlpha),
     blending: materialBlending(spec.blending),
     alphaTest: spec.alphaTest ?? 0,
     flatShading: spec.flatShading ?? false,
@@ -325,9 +331,10 @@ function updateMaterial(material: THREE.Material | THREE.Material[], spec: Scene
     if (mutable.flatShading !== undefined && mutable.flatShading !== (spec.flatShading ?? false)) { mutable.flatShading = spec.flatShading ?? false; mutable.needsUpdate = true; }
     const opacity = spec.opacity ?? 1;
     mutable.opacity = opacity;
-    mutable.transparent = spec.transparent ?? opacity < 1;
+    const effectAlpha = hasEffectAlpha(spec);
+    mutable.transparent = (spec.transparent ?? opacity < 1) || effectAlpha;
     mutable.depthTest = spec.depthTest ?? true;
-    mutable.depthWrite = spec.depthWrite ?? opacity >= 1;
+    mutable.depthWrite = spec.depthWrite ?? (opacity >= 1 && !effectAlpha);
     mutable.side = materialSide(spec.side);
     mutable.blending = materialBlending(spec.blending);
     mutable.alphaTest = spec.alphaTest ?? 0;
@@ -358,41 +365,52 @@ function applyMaterialEffects(material: THREE.Material, spec: SceneMaterialSpec)
   if (!("colorNode" in nodeMaterial)) return;
   const enabledEffects = (spec.effects ?? []).filter((effect) => effect.enabled);
   nodeMaterial.positionNode = meshDeformedPosition(enabledEffects);
-  const effects = enabledEffects.filter((effect) => effect.kind !== "transform" && effect.kind !== "opacity" && effect.kind !== "meshDeform");
+  const effects = enabledEffects.filter((effect) => effect.kind !== "transform" && effect.kind !== "meshDeform");
   if (!effects.length) {
     if (nodeMaterial.colorNode !== null) { nodeMaterial.colorNode = null; material.needsUpdate = true; }
     else material.needsUpdate = true;
     return;
   }
-  let sampleUv: any = uv();
-  for (const effect of effects) {
-    if (effect.kind === "pixelate") {
-      const cells = Math.max(1, effect.params.size ?? 8);
-      sampleUv = sampleUv.mul(cells).floor().add(0.5).div(cells);
-    }
-  }
   const color = new THREE.Color(spec.color ?? 0xffffff);
-  let rgba: any = nodeMaterial.map
-    ? textureNode(nodeMaterial.map, sampleUv).mul(vec4(color.r, color.g, color.b, 1))
-    : vec4(color.r, color.g, color.b, 1);
+  let rgba: any = nodeMaterial.map ? textureNode(nodeMaterial.map, uv()).mul(vec4(color.r, color.g, color.b, 1)) : vec4(color.r, color.g, color.b, 1);
+  if (nodeMaterial.map) for (const effect of effects) {
+    if (effect.kind !== "pixelate") continue;
+    const cells = Math.max(1, effect.params.size ?? 8);
+    const pixelated = textureNode(nodeMaterial.map, uv().mul(cells).floor().add(0.5).div(cells)).mul(vec4(color.r, color.g, color.b, 1));
+    rgba = effect.filterRegion ? mix(rgba, pixelated, filterRegionMask(effect.filterRegion)) : pixelated;
+  }
   let rgb: any = rgba.rgb;
   let alpha: any = rgba.a;
   for (const effect of effects) {
-    if (effect.kind === "brightness") rgb = rgb.mul(Math.max(0, 1 + (effect.params.amount ?? 0) / 100));
-    else if (effect.kind === "tint") rgb = rgb.mul(vec3((effect.params.red ?? 100) / 100, (effect.params.green ?? 100) / 100, (effect.params.blue ?? 100) / 100));
-    else if (effect.kind === "contrast") rgb = rgb.sub(0.5).mul(Math.max(0, 1 + (effect.params.amount ?? 0) / 100)).add(0.5);
-    else if (effect.kind === "saturation") rgb = saturation(rgb, Math.max(0, (effect.params.amount ?? 100) / 100));
-    else if (effect.kind === "gamma") rgb = pow(max(rgb, vec3(0)), vec3(1 / Math.max(0.01, (effect.params.amount ?? 100) / 100)));
-    else if (effect.kind === "hue") rgb = hue(rgb, THREE.MathUtils.degToRad(effect.params.angle ?? 0));
+    if (effect.kind === "pixelate") continue;
+    const previousRgb = rgb;
+    const previousAlpha = alpha;
+    let nextRgb = rgb;
+    let nextAlpha = alpha;
+    if (effect.kind === "brightness") nextRgb = rgb.mul(Math.max(0, 1 + (effect.params.amount ?? 0) / 100));
+    else if (effect.kind === "tint") nextRgb = rgb.mul(vec3((effect.params.red ?? 100) / 100, (effect.params.green ?? 100) / 100, (effect.params.blue ?? 100) / 100));
+    else if (effect.kind === "opacity" && effect.filterRegion) nextAlpha = alpha.mul(THREE.MathUtils.clamp((effect.params.amount ?? 100) / 100, 0, 1));
+    else if (effect.kind === "contrast") nextRgb = rgb.sub(0.5).mul(Math.max(0, 1 + (effect.params.amount ?? 0) / 100)).add(0.5);
+    else if (effect.kind === "saturation") nextRgb = saturation(rgb, Math.max(0, (effect.params.amount ?? 100) / 100));
+    else if (effect.kind === "gamma") nextRgb = pow(max(rgb, vec3(0)), vec3(1 / Math.max(0.01, (effect.params.amount ?? 100) / 100)));
+    else if (effect.kind === "hue") nextRgb = hue(rgb, THREE.MathUtils.degToRad(effect.params.angle ?? 0));
     else if (effect.kind === "chromaKey") {
       const key = vec3((effect.params.red ?? 0) / 100, (effect.params.green ?? 100) / 100, (effect.params.blue ?? 0) / 100);
       const threshold = (effect.params.threshold ?? 20) / 100;
-      alpha = alpha.mul(smoothstep(float(threshold), float(threshold + Math.max(0.001, (effect.params.softness ?? 10) / 100)), distance(rgb, key)));
+      nextAlpha = alpha.mul(smoothstep(float(threshold), float(threshold + Math.max(0.001, (effect.params.softness ?? 10) / 100)), distance(rgb, key)));
     } else if (effect.kind === "vignette") {
       const radius = Math.max(0.01, (effect.params.size ?? 65) / 100);
       const amount = Math.max(0, (effect.params.amount ?? 35) / 100);
       const edge = smoothstep(float(radius), float(Math.max(radius + 0.001, 1)), length(uv().sub(vec2(0.5)).mul(1.4142)));
-      rgb = rgb.mul(float(1).sub(edge.mul(amount)));
+      nextRgb = rgb.mul(float(1).sub(edge.mul(amount)));
+    }
+    if (effect.filterRegion) {
+      const regionMask = filterRegionMask(effect.filterRegion);
+      rgb = mix(previousRgb, nextRgb, regionMask);
+      alpha = mix(previousAlpha, nextAlpha, regionMask);
+    } else {
+      rgb = nextRgb;
+      alpha = nextAlpha;
     }
   }
   nodeMaterial.colorNode = vec4(rgb, alpha);
@@ -409,7 +427,8 @@ function meshDeformedPosition(effects: readonly ClipEffect[]) {
     const coordinate = displaced.x.mul(Math.cos(angle)).add(displaced.y.mul(Math.sin(angle)));
     const wave = sin(coordinate.mul(Math.max(0, effect.params.frequency ?? 2)).add(THREE.MathUtils.degToRad(effect.params.phase ?? 0)))
       .mul((effect.params.amount ?? 25) / 100);
-    displaced = displaced.add(vec3(-Math.sin(angle), Math.cos(angle), 0).mul(wave));
+    const regionMask = effect.filterRegion ? filterRegionVertexMask(effect.filterRegion, displaced) : float(1);
+    displaced = displaced.add(vec3(-Math.sin(angle), Math.cos(angle), 0).mul(wave).mul(regionMask));
   }
   return active ? displaced : null;
 }
