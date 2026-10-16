@@ -351,6 +351,7 @@ const EN: Record<string, string> = {
   "ドラッグで移動 / Shift+クリックで削除": "Drag to move / Shift-click to delete",
   "ここに配置": "Drop here",
   "端を揃える": "Align edge",
+  "高さを揃える": "Align vertically",
   "ミュート": "Muted",
   "左端をドラッグして長さを変更": "Drag left edge to resize",
   "右端をドラッグして長さを変更": "Drag right edge to resize",
