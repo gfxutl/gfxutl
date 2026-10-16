@@ -294,6 +294,7 @@ export function InspectorPanel() {
           <button className={selected.locked ? "active" : ""} aria-pressed={selected.locked === true} title={t("ロック")} onClick={() => controller.updateClip(selected.id, { locked: !selected.locked })}>L</button>
         </div>}
       </div>}
+      <div className="inspector-scroll">
       {tab === "inspector" ? <RealtimeLayerInspector clips={state.clips} currentTime={state.currentTime} fps={state.fps} selectedClipId={state.selectedClipId} onSelect={controller.selectClip} onToggleVisibility={(id, visible) => controller.updateClip(id, { visible })} /> : tab === "metadata" ? selectedCameraKeyframes.length ? <div className="metadata-view"><div className="metadata-row"><span>{t("種類")}</span><strong>CAMERA KEYFRAME</strong></div><div className="metadata-row"><span>{t("時刻")}</span><strong>{selectedCameraKeyframes[0].time.toFixed(3)}s</strong></div><div className="metadata-row"><span>{t("プロパティ")}</span><strong>{selectedCameraKeyframes.length}</strong></div></div> : background ? <div className="metadata-view"><div className="metadata-row"><span>{t("名前")}</span><strong>{t("背景オブジェクト")}</strong></div><div className="metadata-row"><span>{t("種類")}</span><strong>SCENE BACKGROUND</strong></div><div className="metadata-row"><span>{t("表示範囲")}</span><strong>{t("プロジェクト全体")}</strong></div></div> : <MetadataView clip={selected} asset={asset} fps={state.fps} /> : selectedCameraKeyframes.length ? <CameraKeyframeInspector keyframes={selectedCameraKeyframes} duration={state.duration} cameraName={state.background.scene.camera.name} /> : background ? <div className="inspector-section background-inspector">
         <div className="section-title"><span>{t("背景")}</span><small>THREE.SCENE</small></div>
         <div className="section-body">
@@ -442,6 +443,7 @@ export function InspectorPanel() {
       </div>}
       <ClipPropertyActionStack clip={selected} allClips={state.clips} />
       </>}
+      </div>
     </section>
   );
 }
