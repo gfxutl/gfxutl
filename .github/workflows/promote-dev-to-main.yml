@@ -25,6 +25,7 @@ jobs:
           client-id: ${{ vars.PROMOTER_APP_CLIENT_ID }}
           private-key: ${{ secrets.PROMOTER_APP_PRIVATE_KEY }}
           permission-contents: write
+          permission-workflows: write
 
       - name: Check out the repository
         uses: actions/checkout@v7
