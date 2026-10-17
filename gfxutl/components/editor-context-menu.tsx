@@ -30,7 +30,7 @@ import { shallowEqual, useEditor } from "../core/interface";
 import { useI18n } from "../core/i18n";
 
 export function EditorContextMenu() {
-  const { state, controller } = useEditor((value) => ({ canRedo: value.canRedo, canUndo: value.canUndo, clips: value.clips, contextMenu: value.contextMenu, markers: value.markers, selectedClipId: value.selectedClipId, selectedClipIds: value.selectedClipIds, snapEnabled: value.snapEnabled }), shallowEqual);
+  const { state, controller } = useEditor((value) => ({ canRedo: value.canRedo, canUndo: value.canUndo, clips: value.clips, contextMenu: value.contextMenu, markers: value.markers, selectedCameraKeyframeIds: value.selectedCameraKeyframeIds, selectedClipId: value.selectedClipId, selectedClipIds: value.selectedClipIds, snapEnabled: value.snapEnabled }), shallowEqual);
   const { t } = useI18n();
   const menu = state.contextMenu;
 
@@ -85,7 +85,11 @@ export function EditorContextMenu() {
     </div>
     <div className="context-menu-action-row context-menu-action-row-two" role="group" aria-label={t("選択操作")}>
       <button role="menuitem" aria-keyshortcuts="Meta+D Control+D" disabled={!state.selectedClipId} onClick={(event) => run(event, () => { controller.duplicateSelection(); controller.closeContextMenu(); })}><Copy /><span>{t("複製")}</span></button>
-      <button role="menuitem" aria-keyshortcuts="Delete Backspace" disabled={!state.selectedClipId} onClick={(event) => run(event, () => { controller.removeSelection(); controller.closeContextMenu(); })}><Trash2 /><span>{t("削除")}</span></button>
+      <button role="menuitem" aria-keyshortcuts="Delete Backspace" disabled={!state.selectedClipId && !state.selectedCameraKeyframeIds.length} onClick={(event) => run(event, () => {
+        if (state.selectedCameraKeyframeIds.length) controller.removeCameraKeyframes(state.selectedCameraKeyframeIds);
+        else controller.removeSelection();
+        controller.closeContextMenu();
+      })}><Trash2 /><span>{t("削除")}</span></button>
     </div>
     {(menu.scope === "timeline" || menu.scope === "clip") && <>
       <div className="context-menu-separator" />

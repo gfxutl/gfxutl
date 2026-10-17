@@ -557,6 +557,13 @@ function CameraKeyframeMarker({ group, duration, fps, pxPerSecond, selected, con
     title={`${label} · ${t("ドラッグで移動 / Shift+クリックで削除")}`}
     aria-label={label}
     onPointerDown={begin}
+    onContextMenu={(event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const ids = group.keyframes.map((keyframe) => keyframe.id);
+      controller.selectCameraKeyframes(ids);
+      controller.openContextMenu({ x: event.clientX, y: event.clientY, scope: "timeline", time: group.time, timelineY: 0, positionX: 0, positionY: 0 });
+    }}
     onDoubleClick={(event) => event.stopPropagation()}
     onKeyDown={(event) => {
       if (event.key === "Delete" || event.key === "Backspace") controller.removeCameraKeyframes(group.keyframes.map((keyframe) => keyframe.id));
