@@ -1,13 +1,13 @@
 /// <reference lib="webworker" />
 
 import * as THREE from "three/webgpu";
-import { abs, cos, distance, float, Fn, glslFn, hue, instanceIndex, length, luminance, max, min, mix, positionLocal, pow, saturation, sin, smoothstep, storage, texture as textureNode, uniform, uv, vec2, vec3, vec4, vertexIndex, wgslFn } from "three/tsl";
+import { abs, cos, distance, float, Fn, hue, instanceIndex, length, luminance, max, min, mix, positionLocal, pow, saturation, sin, smoothstep, storage, texture as textureNode, uniform, uv, vec2, vec3, vec4, vertexIndex } from "three/tsl";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { clone as cloneSkinned } from "three/addons/utils/SkeletonUtils.js";
 import { ALL_FORMATS, AudioSample, AudioSampleSink, AudioSampleSource, BufferTarget, CanvasSource, Input, Mp4OutputFormat, Output, VideoSampleSink, WebMOutputFormat } from "mediabunny";
-import type { AudioProcessingSpec, CameraHandleKind, ClipEffect, ClipKeyframe, ClipPostProcess, EngineRequest, EngineResponse, FilterRegion, MediaFileSource, PreviewPickResult, PreviewView, RenderClip, RenderFilter, SceneKeyframe, SceneObjectSpec, SceneSettings, TimelinePatch, TimelineSnapshot, TransformHandleKind } from "../protocol/engine-protocol";
+import type { AudioProcessingSpec, CameraHandleKind, ClipEffect, ClipKeyframe, EngineRequest, EngineResponse, FilterRegion, MediaFileSource, PreviewPickResult, PreviewView, RenderClip, RenderFilter, SceneKeyframe, SceneObjectSpec, SceneSettings, TimelinePatch, TimelineSnapshot, TransformHandleKind } from "../protocol/engine-protocol";
 import { RamPreviewCache } from "./ram-preview-cache";
 import { createRenderPipeline, shadowTypeFrom, ThreeRendererCore, toneMappingFrom } from "./three-renderer-core";
 import { ThreeSceneCore } from "./three-scene-core";
@@ -72,9 +72,6 @@ let playbackActive = false;
 let cacheStatusTimer = 0;
 let lastCacheStatus = "";
 let lastMediaBufferStatus = "";
-let nagaModulePromise: Promise<typeof import("../naga-wasm/pkg/naga_wasm.js")> | null = null;
-let nagaWasm: ArrayBuffer | null = null;
-const postProcessTime = uniform(0);
 let sceneSettings: SceneSettings = {
   background: { color: 0xffffff, alpha: 1, fogEnabled: false, fogColor: 0xffffff, fogNear: 5, fogFar: 30, environmentIntensity: 1, environmentRotation: 0, backgroundBlurriness: 0 },
   camera: { id: "camera-1", name: "Camera 1", projection: "orthographic", position: [0, 0, 10], target: [0, 0, 0], near: 0.01, far: 1_000, fov: 50, zoom: 1, orthographicHeight: 9 },
@@ -258,14 +255,6 @@ const pluginRuntime = new RendererPluginRuntime({
   state: (plugin) => send({ type: "plugin-state", plugin }),
 });
 
-async function compileGlslWithNaga(source: string) {
-  if (!nagaWasm) throw new Error("Naga WASMが初期化されていません");
-  nagaModulePromise ??= import("../naga-wasm/pkg/naga_wasm.js");
-  const naga = await nagaModulePromise;
-  await naga.default(nagaWasm);
-  return naga.compile_glsl_to_wgsl(source);
-}
-
 function flushCacheStatus() {
   if (cacheStatusTimer) worker.clearTimeout(cacheStatusTimer);
   cacheStatusTimer = 0;
@@ -281,7 +270,6 @@ function cacheStatus(immediate = false) {
 }
 
 async function initialize(message: Extract<EngineRequest, { type: "init" }>) {
-  nagaWasm = message.nagaWasm;
   if (message.previewCache) {
     ramPreviewEnabled = message.previewCache.enabled;
     cache.setMaxBytes(Math.max(1, message.previewCache.maxBytes));
@@ -540,9 +528,7 @@ function visualEffectSignature(clip: RenderClip) {
     isNeutralColorGrading(clip.colorGrading) ? null : clip.colorGrading,
     clip.effects.filter((effect) => effect.enabled && !isNeutralClipEffect(effect) && effect.kind !== "transform" && (effect.kind !== "opacity" || effect.filterRegion)),
     clip.masks.filter((mask) => mask.enabled),
-    clip.postProcess?.enabled && clip.postProcess.compileStatus === "ready" ? clip.postProcess : null,
     clip.propertyActionOrder,
-    clip.filterPostProcesses?.filter(({ shader }) => shader.enabled && shader.compileStatus === "ready"),
   ]);
 }
 
@@ -594,10 +580,8 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
   const filterMasks = createFilterRegionNodeCache();
   const activeEffects = clip.effects.filter((effect) => effect.enabled && !isNeutralClipEffect(effect));
   const activeMasks = clip.masks.filter((mask) => mask.enabled);
-  const hasActiveShader = Boolean(clip.postProcess?.enabled && clip.postProcess.compileStatus === "ready")
-    || Boolean(clip.filterPostProcesses?.some(({ shader }) => shader.enabled && shader.compileStatus === "ready"));
   const hasFragmentEffects = activeEffects.some((effect) => effect.kind !== "transform" && effect.kind !== "meshDeform" && (effect.kind !== "opacity" || Boolean(effect.filterRegion)));
-  if (isNeutralColorGrading(clip.colorGrading) && !activeMasks.length && !hasFragmentEffects && !hasActiveShader) {
+  if (isNeutralColorGrading(clip.colorGrading) && !activeMasks.length && !hasFragmentEffects) {
     const material = new THREE.MeshBasicNodeMaterial({ map: texture, transparent: clip.opacity < 100, depthTest: true, depthWrite: clip.opacity >= 100, toneMapped: false });
     material.userData.gfxAlphaMasked = false;
     material.positionNode = meshDeformedPosition(activeEffects, filterMasks);
@@ -668,24 +652,12 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
     }
     if (combinedMask !== null) outputColor = vec4(outputColor.rgb, outputColor.a.mul(combinedMask));
   };
-  const applyShader = ({ shader, region }: { shader: ClipPostProcess; region?: FilterRegion }) => {
-    if (!shader?.enabled || shader.compileStatus !== "ready" || !shader.wgsl) return;
-    try {
-      const shaderFunction = graphics?.backend === "webgpu" ? wgslFn(shader.wgsl) : glslFn(shader.glsl);
-      const filteredColor: any = shaderFunction({ color: outputColor, uv: uv(), time: postProcessTime });
-      outputColor = region ? mix(outputColor, filteredColor, filterMasks.fragment(region)) : filteredColor;
-    } catch (error) {
-      send({ type: "error", message: `${shader.name}: ${error instanceof Error ? error.message : String(error)}` });
-    }
-  };
-  const order = clip.propertyActionOrder ?? ["colorGrading", "effects", "postProcess", "masks"];
+  const order = clip.propertyActionOrder ?? ["colorGrading", "effects", "masks"];
   for (const action of order) {
     if (action === "colorGrading") outputColor = vec4(applyColorGrading(outputColor.rgb, clip.colorGrading), outputColor.a);
     else if (action === "effects") applyEffects();
     else if (action === "masks") applyMasks();
-    else if (action === "postProcess" && clip.postProcess) applyShader({ shader: clip.postProcess });
   }
-  for (const shader of clip.filterPostProcesses ?? []) applyShader(shader);
   const material = new THREE.MeshBasicNodeMaterial({ transparent: alphaMasked || clip.opacity < 100, depthTest: true, depthWrite: !alphaMasked && clip.opacity >= 100, toneMapped: false });
   material.userData.gfxAlphaMasked = alphaMasked;
   material.colorNode = outputColor;
@@ -1556,15 +1528,13 @@ function applyRenderFilters(source: RenderClip, timelineTime: number) {
   const evaluated: RenderClip = {
     ...source,
     effects: structuredClone(source.effects),
-    filterPostProcesses: [],
     sceneObject: source.sceneObject ? structuredClone(source.sceneObject) : undefined,
   };
   for (const filter of source.filterStack) {
     if (!filter.enabled || timelineTime < filter.start || timelineTime >= filter.start + filter.duration) continue;
-    const { effects, region, visible } = evaluateFilter(filter, timelineTime);
+    const { effects, visible } = evaluateFilter(filter, timelineTime);
     if (!visible) continue;
     evaluated.effects.push(...effects);
-    if (filter.postProcess) evaluated.filterPostProcesses!.push({ shader: filter.postProcess, region });
     if (evaluated.sceneObject) applyEffectsToFilteredSceneObject(evaluated.sceneObject, effects);
   }
   if (evaluated.sceneObject?.material) evaluated.sceneObject.material.effects = structuredClone(evaluated.effects);
@@ -1886,7 +1856,6 @@ async function render(time: number, shouldCache: boolean, mode: "realtime" | "pl
     transformHandles?.sync();
     cameraHandles?.sync();
   }
-  postProcessTime.value = renderTime;
   if (previewView === "camera" && !focusClipId && mode === "playback" && ramPreviewEnabled && await renderCachedPreview(renderTime, previewFps)) {
     return { previewSource: "cache" as const };
   }
@@ -2616,7 +2585,6 @@ async function exportVideo(message: Extract<EngineRequest, { type: "export" }>) 
       if (canceledExports.has(message.requestId)) throw new DOMException("Export canceled", "AbortError");
       const time = frame * frameDuration;
       const timelineTime = message.settings.startTime + time;
-      postProcessTime.value = timelineTime;
       const frameSettings = evaluateSceneSettingsAtTime(message.sceneSettings, timelineTime);
       graphics.applySettings(frameSettings);
       const projectionChanged = exportCamera.userData.projection !== frameSettings.camera.projection
@@ -2697,7 +2665,6 @@ async function exportStill(message: Extract<EngineRequest, { type: "export-still
   let pipeline: ReturnType<typeof createRenderPipeline> | null = null;
   try {
     await renderer.init();
-    postProcessTime.value = message.time;
     const clips = evaluateClipsAtTime(message.clips, message.time);
     const frameIndex = createRenderFrameIndex(clips, message.time);
     await updateTimelineSceneObjects(frameIndex);
@@ -2902,7 +2869,6 @@ async function handleMessage(message: EngineRequest) {
       send({ type: "camera-handle-drag-result", requestId: message.requestId, transform });
     }
     if (message.type === "pick") send({ type: "pick-result", requestId: message.requestId, ...pickSceneObject(message.ndcX, message.ndcY) });
-    if (message.type === "compile-glsl") send({ type: "glsl-compiled", requestId: message.requestId, wgsl: await compileGlslWithNaga(message.source) });
     if (message.type === "plugin-load") {
       const plugin = await pluginRuntime.load(message.plugin);
       send({ type: "plugin-state", requestId: message.requestId, plugin });

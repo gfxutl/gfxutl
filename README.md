@@ -1,6 +1,6 @@
 # GfxUtl
 
-GfxUtlは、ブラウザ上で動作するノンリニア動画編集デッキです。自由配置型タイムライン、Three.jsによる2D／3D合成、Worker上のメディア処理、GLSLポストプロセス、映像・音声書き出しを単一の編集画面にまとめています。
+GfxUtlは、ブラウザ上で動作するノンリニア動画編集デッキです。自由配置型タイムライン、Three.jsによる2D／3D合成、Worker上のメディア処理、映像・音声書き出しを単一の編集画面にまとめています。
 
 ## 起動
 
@@ -50,7 +50,7 @@ File System Access API、Local Font Access API、WebGPU、WebCodecs、OffscreenC
 - プレビューCanvasを別ウィンドウへ移動し、同じRenderer Workerへ再接続可能
 - 白背景の空プロジェクトから開始し、背景自体も編集可能な常設オブジェクトとして扱う
 
-2D TextはCanvas 2Dで文字と枠線を透明テクスチャへ描画し、平面オブジェクトとして合成します。3D TextはThree.jsのTextGeometryを使用せず、GfxUtl独自の `GfxTextGeometry` で字形レイアウト、曲線分割、前後面・側面生成、中心合わせまでを行います。ローカルフォントはlow-memoryモードで解析し、文字列に現れたグリフだけを遅延展開・キャッシュします。生成頂点には文字番号、文字ごとの遅延時間、文字原点、文字内UVを属性として保持するため、文字単位の変形や時間差シェーダーアニメーションへ利用できます。
+2D TextはCanvas 2Dで文字と枠線を透明テクスチャへ描画し、平面オブジェクトとして合成します。3D TextはThree.jsのTextGeometryを使用せず、GfxUtl独自の `GfxTextGeometry` で字形レイアウト、曲線分割、前後面・側面生成、中心合わせまでを行います。ローカルフォントはlow-memoryモードで解析し、文字列に現れたグリフだけを遅延展開・キャッシュします。生成頂点には文字番号、文字ごとの遅延時間、文字原点、文字内UVを属性として保持します。
 
 ### 作用スタック
 
@@ -63,7 +63,6 @@ File System Access API、Local Font Access API、WebGPU、WebCodecs、OffscreenC
 - キーフレーム
 - クロップ
 - 効果
-- ポストプロセス
 - マスク
 - オーディオ
 - 速度
@@ -72,32 +71,6 @@ File System Access API、Local Font Access API、WebGPU、WebCodecs、OffscreenC
 
 右ペインにはこのほか、再生ヘッド位置のリアルタイムなレイヤー情報を表示する「インスペクター」と、実ファイル・タイムライン情報を表示する「メタデータ」があります。
 
-### GLSLポストプロセス
-
-動画・静止画クリップへ「ポストプロセス」作用を追加すると、CodeMirror上でGLSLを編集できます。GLSLシンタックスハイライト、Tabインデント、Undo／Redo、括弧対応を備え、Ctrl／Cmd+Enterまたは「コンパイルして適用」で反映します。
-
-シェーダーは次の関数を定義します。
-
-```glsl
-vec4 gfxPostProcess(vec4 color, vec2 uv, float time) {
-  return color;
-}
-```
-
-- `color`: それ以前の作用を適用した色
-- `uv`: クリップ内のUV座標
-- `time`: タイムライン時刻（秒）
-
-GLSLはRenderer Worker内のNaga WASMで検証され、WebGPU用WGSLへ変換されます。WebGL 2バックエンドでは元のGLSLを使用します。NagaのGLSL入力仕様に合わせ、GLSL 450／Vulkan semanticsを前提としています。コンパイルエラーはCodeMirrorの下へ行番号付きで表示されます。
-
-生成済みのWASMバインディングはリポジトリに含まれるため、通常の開発や本番ビルドにRust環境は不要です。Nagaを更新・再生成する場合だけ、次を実行してください。
-
-```bash
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.105 --locked
-npm run build:naga
-```
-
 ### メディアと書き出し
 
 - MP4、MOV、WebM、MKV、WAV、MP3、AAC、FLAC、PNG、JPEG、WebP、HDR、EXR、GLBをメディアブラウザへ読み込み
@@ -105,7 +78,7 @@ npm run build:naga
 - 動画サムネイル、音声波形、実ファイルのコーデック・解像度・サイズ・読み取り統計を表示
 - 音声オブジェクト選択時は中央ペインを波形エディタへ切り替え、範囲選択、スクラブ、ゲイン、パン、フェード、ハイ／ローカット、3バンドEQ、コンプレッサー、リバーブ、フィードバックディレイを非破壊編集
 - MP4／WebM、映像・音声コーデック、解像度、FPS、ビットレート、上限を固定しない出力範囲、ステレオ／モノラルを設定して書き出し
-- 静止画書き出しにもタイムライン上の作用、シーン設定、ポストプロセスを反映
+- 静止画書き出しにもタイムライン上の作用とシーン設定を反映
 
 MediaBunnyがWorker内で動画・音声をデコードし、動画フレームは `VideoSample.toVideoFrame()` から `THREE.VideoFrameTexture.setFrame()` へ渡されます。GPU描画後に不要な `VideoFrame` を明示的にcloseします。
 
@@ -113,7 +86,7 @@ MediaBunnyがWorker内で動画・音声をデコードし、動画フレーム�
 
 ## UIスレッドとRenderer Worker
 
-起動時にOffscreenCanvasとMessageChannelのポートを専用Workerへ移譲し、それ以降のレンダー、メディア解析、サムネイル、ピッキング、シェーダーコンパイル、書き出しは専用ポートを通します。
+起動時にOffscreenCanvasとMessageChannelのポートを専用Workerへ移譲し、それ以降のレンダー、メディア解析、サムネイル、ピッキング、書き出しは専用ポートを通します。
 
 高頻度通信を抑えるため、次の仕組みを採用しています。
 
@@ -121,7 +94,6 @@ MediaBunnyがWorker内で動画・音声をデコードし、動画フレーム�
 - シーン設定も値単位のパッチとして送信
 - Renderer処理は同時に1件だけ実行し、処理中に届いた中間フレームを捨てて最新要求へ合流
 - 連続するピッキング要求をまとめ、古い結果をUIへ返さない
-- CodeMirrorの編集中はGLSLをUI内に保持し、明示的に適用したときだけWorkerへ送信
 - 変更の影響時間範囲だけRAMプレビューキャッシュを無効化
 - フレームごとにクリップ索引を一度だけ構築し、Three.jsルートをMap参照。モデルの再走査、未変更のマテリアル・クロップ行列・インスタンス行列・ワールド行列更新を回避
 
@@ -145,9 +117,8 @@ UIスレッドはグラフが要求したファイルを `File.stream()` のTran
 - `gfxutl/core/interface/`: エディター状態、コマンド、履歴、作用、仮想タイムライン、MessageChannelクライアント
 - `gfxutl/core/protocol/`: UIとRendererが共有するstructured-clone可能な通信契約
 - `gfxutl/core/runtime.ts`: Workerを生成しUIへ注入する合成ルート
-- `gfxutl/core/engine/media.worker.ts`: メディアI/O、Three.jsレンダー、Naga呼び出し、RAMプレビュー、書き出しを担う専用Worker
+- `gfxutl/core/engine/media.worker.ts`: メディアI/O、Three.jsレンダー、RAMプレビュー、書き出しを担う専用Worker
 - `gfxutl/core/engine/`: Three.jsシーン、ジオメトリ、Renderer、128 MiBメディアバッファ、RAMプレビューキャッシュ
-- `gfxutl/core/naga-wasm/`: Rust製Nagaブリッジと生成済みブラウザWASM
 - `gfxutl/core/persistence/`: プロジェクト文書とFileSystemHandle／IndexedDB永続化
 - `gfxutl/tests/`: Playwrightによる編集操作・描画・保存・書き出しのE2Eテスト
 

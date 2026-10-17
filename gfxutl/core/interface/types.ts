@@ -3,15 +3,15 @@ import type { FontVariationSettings } from "../fonts/font-variation";
 
 export type TrackKind = "video" | "audio" | "title" | "object" | "filter" | "group";
 
-export type ClipPropertyActionKind = "transform" | "sceneGraph" | "keyframes" | "crop" | "colorGrading" | "effects" | "postProcess" | "masks" | "audio" | "speed";
+export type ClipPropertyActionKind = "transform" | "sceneGraph" | "keyframes" | "crop" | "colorGrading" | "effects" | "masks" | "audio" | "speed";
 
 export interface ClipPropertyAction {
   id: string;
   kind: ClipPropertyActionKind;
 }
 
-import type { AudioProcessingSpec, ClipEffect, ClipKeyframe, ClipMask, ClipPostProcess, ColorGradingSpec, ExportSettings, GeometrySpec, SceneMaterialSpec, SceneSettings, SourceIoProfile } from "../protocol/engine-protocol";
-export type { AudioProcessingSpec, BackgroundSettings, BlendMode, CameraHandleKind, CameraHandleTransform, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ColorGradingSpec, EngineRequest, EngineResponse, ExportSettings, FilterRegion, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, PreviewPickResult, PreviewView, RendererSettings, RendererStats, RenderClip, RenderFilter, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, SceneSettingsPatch, SourceIoProfile, TimelinePatch, TimelineSnapshot, ToneMappingKind, TransformHandleKind } from "../protocol/engine-protocol";
+import type { AudioProcessingSpec, ClipEffect, ClipKeyframe, ClipMask, ColorGradingSpec, ExportSettings, GeometrySpec, SceneMaterialSpec, SceneSettings, SourceIoProfile } from "../protocol/engine-protocol";
+export type { AudioProcessingSpec, BackgroundSettings, BlendMode, CameraHandleKind, CameraHandleTransform, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ColorGradingSpec, EngineRequest, EngineResponse, ExportSettings, FilterRegion, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, PreviewPickResult, PreviewView, RendererSettings, RendererStats, RenderClip, RenderFilter, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, SceneSettingsPatch, SourceIoProfile, TimelinePatch, TimelineSnapshot, ToneMappingKind, TransformHandleKind } from "../protocol/engine-protocol";
 
 export interface MediaAsset {
   id: string;
@@ -32,34 +32,6 @@ export interface MediaAsset {
   color: string;
   handle?: FileSystemFileHandle;
   fileStatus?: "ready" | "loading" | "permission-required" | "missing";
-}
-
-export type ShaderGraphNodeKind = "inputColor" | "uv" | "time" | "float" | "color" | "add" | "multiply" | "sine" | "mix" | "output";
-
-export interface ShaderGraphNode {
-  id: string;
-  kind: ShaderGraphNodeKind;
-  position: { x: number; y: number };
-  data: { label: string; value?: number; color?: string };
-}
-
-export interface ShaderGraphEdge {
-  id: string;
-  source: string;
-  target: string;
-  sourceHandle?: string | null;
-  targetHandle?: string | null;
-}
-
-export interface ShaderGraphDocument {
-  id: string;
-  name: string;
-  sourcePath?: string;
-  source: string;
-  nodes: ShaderGraphNode[];
-  edges: ShaderGraphEdge[];
-  handle?: FileSystemFileHandle;
-  dirty: boolean;
 }
 
 export interface TimelineClip {
@@ -93,7 +65,6 @@ export interface TimelineClip {
   ripple?: boolean;
   effects?: ClipEffect[];
   colorGrading?: ColorGradingSpec;
-  postProcess?: ClipPostProcess;
   masks?: ClipMask[];
   keyframes?: ClipKeyframe[];
   geometry?: GeometrySpec;
@@ -247,9 +218,6 @@ export interface EditorState {
   layout: EditorLayout;
   settings: EditorSettings;
   leftPanelTab: "media" | "export" | "settings" | "plugins";
-  activeBottomPane: "timeline" | "shader";
-  shaderGraphs: ShaderGraphDocument[];
-  activeShaderGraphId: string | null;
   exportSettings: ExportSettings;
   exportStatus: "idle" | "exporting" | "done" | "error";
   exportProgress: number;

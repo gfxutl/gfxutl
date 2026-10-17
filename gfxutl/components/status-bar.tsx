@@ -1,4 +1,4 @@
-import { Code16Regular as Code, Database16Regular as Database, Delete16Regular as Trash2, Gauge16Regular as Gauge, Timeline20Regular as Timeline } from "@fluentui/react-icons";
+import { Database16Regular as Database, Delete16Regular as Trash2, Gauge16Regular as Gauge, Timeline20Regular as Timeline } from "@fluentui/react-icons";
 import { shallowEqual, useEditor } from "../core/interface";
 import { Button } from "./ui/button";
 import { Tooltip } from "./ui/tooltip";
@@ -6,14 +6,11 @@ import { useI18n } from "../core/i18n";
 
 export function StatusBar() {
   const { state, controller } = useEditor((value) => ({
-    activeBottomPane: value.activeBottomPane,
-    activeShaderGraphId: value.activeShaderGraphId,
     cache: value.cache,
     engine: value.engine,
     mediaBuffer: value.mediaBuffer,
     rendererStats: value.rendererStats,
     settings: value.settings,
-    shaderGraphs: value.shaderGraphs,
   }), shallowEqual);
   const { locale, t } = useI18n();
   const used = state.cache.usedBytes / 1024 / 1024;
@@ -25,12 +22,7 @@ export function StatusBar() {
   return (
     <footer className="status-bar panel">
       <nav className="bottom-pane-tabs" role="tablist" aria-label={t("下部ペイン")}>
-        <button className={`bottom-pane-tab bottom-pane-tab-timeline ${state.activeBottomPane === "timeline" ? "active" : ""}`} role="tab" aria-selected={state.activeBottomPane === "timeline"} onClick={() => controller.setBottomPane("timeline")}><Timeline /><span>{t("タイムライン")}</span></button>
-        {state.shaderGraphs.map((graph) => {
-          const active = state.activeBottomPane === "shader" && state.activeShaderGraphId === graph.id;
-          return <button key={graph.id} className={`bottom-pane-tab bottom-pane-tab-object ${active ? "active" : ""}`} role="tab" aria-selected={active} onClick={() => controller.setBottomPane("shader", graph.id)} title={graph.sourcePath ?? graph.name}><Code /><span>{graph.name}{graph.dirty ? " •" : ""}</span></button>;
-        })}
-        {!state.shaderGraphs.length && <button className={`bottom-pane-tab bottom-pane-tab-object ${state.activeBottomPane === "shader" ? "active" : ""}`} role="tab" aria-selected={state.activeBottomPane === "shader"} onClick={() => controller.setBottomPane("shader")}><Code /><span>{t("シェーダーグラフ")}</span></button>}
+        <button className="bottom-pane-tab bottom-pane-tab-timeline active" role="tab" aria-selected="true"><Timeline /><span>{t("タイムライン")}</span></button>
       </nav>
       <div className="status-center">
         <span className="gpu-context" data-gpu-context={state.engine}><i className={`engine-light ${state.engine}`} /><Gauge />{gpuContext}</span>

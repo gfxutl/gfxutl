@@ -130,26 +130,6 @@ test("clip action order is retained after applicability filtering", async () => 
   assert.deepEqual(resolveClipPropertyActions(clip).map((action) => action.id), ["effects", "grade"]);
 });
 
-test("shader graph emits the renderer post-process ABI", async () => {
-  const { compileShaderGraphToGlsl } = await importTypeScript("../core/shader-graph/shader-graph-document.ts");
-  const glsl = compileShaderGraphToGlsl({
-    nodes: [
-      { id: "input", kind: "inputColor", position: { x: 0, y: 0 }, data: { label: "Input" } },
-      { id: "tint", kind: "color", position: { x: 0, y: 0 }, data: { label: "Tint", color: "#ff8000" } },
-      { id: "multiply", kind: "multiply", position: { x: 0, y: 0 }, data: { label: "Multiply" } },
-      { id: "output", kind: "output", position: { x: 0, y: 0 }, data: { label: "Output" } },
-    ],
-    edges: [
-      { id: "a", source: "input", target: "multiply", targetHandle: "a" },
-      { id: "b", source: "tint", target: "multiply", targetHandle: "b" },
-      { id: "out", source: "multiply", target: "output", targetHandle: "color" },
-    ],
-  });
-  assert.match(glsl, /^vec4 gfxPostProcess\(vec4 color, vec2 uv, float time\)/);
-  assert.match(glsl, /color/);
-  assert.match(glsl, /vec4\(1\.0000, 0\.5020, 0\.0000, 1\.0\)/);
-});
-
 test("timeline transitions are identical at clip boundaries and overlap in the middle", async () => {
   const { clipTransitionGain } = await importTypeScript("../core/interface/sequencer-state.ts");
   const clip = { duration: 10, transitionIn: 2, transitionOut: 4 };

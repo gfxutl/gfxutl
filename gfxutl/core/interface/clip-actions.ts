@@ -1,10 +1,6 @@
 import type { ClipPropertyAction, ClipPropertyActionKind, TimelineClip } from "./types";
 import type { ColorGradingSpec } from "../protocol/engine-protocol";
 
-export const DEFAULT_POST_PROCESS_GLSL = `vec4 gfxPostProcess(vec4 color, vec2 uv, float time) {
-  return color;
-}`;
-
 export const CLIP_ACTION_LABELS: Record<ClipPropertyActionKind, string> = {
   transform: "変形",
   sceneGraph: "シーングラフ",
@@ -12,13 +8,12 @@ export const CLIP_ACTION_LABELS: Record<ClipPropertyActionKind, string> = {
   crop: "クロップ",
   colorGrading: "カラーグレーディング",
   effects: "効果",
-  postProcess: "ポストプロセス",
   masks: "マスク",
   audio: "オーディオ",
   speed: "速度",
 };
 
-const DEFAULT_ORDER: ClipPropertyActionKind[] = ["transform", "sceneGraph", "keyframes", "crop", "colorGrading", "effects", "postProcess", "masks", "audio", "speed"];
+const DEFAULT_ORDER: ClipPropertyActionKind[] = ["transform", "sceneGraph", "keyframes", "crop", "colorGrading", "effects", "masks", "audio", "speed"];
 
 export const DEFAULT_COLOR_GRADING: Readonly<ColorGradingSpec> = {
   enabled: true,
@@ -51,7 +46,7 @@ export function resolveColorGrading(value?: Partial<ColorGradingSpec>): ColorGra
 
 export function applicableClipActionKinds(clip: TimelineClip): ClipPropertyActionKind[] {
   if (clip.kind === "group") return [];
-  if (clip.kind === "filter") return ["transform", "effects", "postProcess", "keyframes"];
+  if (clip.kind === "filter") return ["transform", "effects", "keyframes"];
   return DEFAULT_ORDER.filter((kind) => {
     if (kind === "transform") return true;
     if (kind === "sceneGraph") return clip.kind === "title" || clip.kind === "object";
@@ -59,7 +54,6 @@ export function applicableClipActionKinds(clip: TimelineClip): ClipPropertyActio
     if (kind === "colorGrading") return clip.kind === "video";
     if (kind === "crop" || kind === "audio" || kind === "speed") return clip.kind !== "title" && clip.kind !== "object";
     if (kind === "effects") return clip.kind !== "audio" && !clip.particleSystem;
-    if (kind === "postProcess") return clip.kind === "video";
     return kind === "masks" && clip.kind === "video";
   });
 }
@@ -67,9 +61,7 @@ export function applicableClipActionKinds(clip: TimelineClip): ClipPropertyActio
 export function resolveClipPropertyActions(clip: TimelineClip): ClipPropertyAction[] {
   const applicable = new Set(applicableClipActionKinds(clip));
   if (clip.propertyActions === undefined) {
-    return [...applicable]
-      .filter((kind) => kind !== "postProcess" || Boolean(clip.postProcess))
-      .map((kind) => ({ id: `builtin:${kind}`, kind }));
+    return [...applicable].map((kind) => ({ id: `builtin:${kind}`, kind }));
   }
   const seen = new Set<ClipPropertyActionKind>();
   return clip.propertyActions.filter((action) => {
@@ -87,7 +79,6 @@ export function resetPatchForClipAction(kind: ClipPropertyActionKind): Partial<T
     case "crop": return { cropLeft: 0, cropRight: 0, cropTop: 0, cropBottom: 0 };
     case "colorGrading": return { colorGrading: undefined };
     case "effects": return { effects: [] };
-    case "postProcess": return { postProcess: undefined };
     case "masks": return { masks: [] };
     case "audio": return { volume: 0, pan: 0, audioProcessing: undefined };
     case "speed": return { speed: 100, ripple: true };

@@ -1,12 +1,10 @@
-import type { BackgroundObject, EditorSettings, FontFaceInfo, MediaAsset, ShaderGraphDocument, TimelineClip, TimelineMarker } from "../interface/types";
+import type { BackgroundObject, EditorSettings, FontFaceInfo, MediaAsset, TimelineClip, TimelineMarker } from "../interface/types";
 import type { RendererPluginInfo } from "../plugins/plugin-types";
 import type { ExportSettings } from "../protocol/engine-protocol";
 import { normalizeBackgroundSize } from "../interface/composition-size";
 import { alignExportRangeToSequence, sequenceEnd } from "../interface/sequence-duration";
 
-export const PROJECT_DOCUMENT_VERSION = 3 as const;
-
-export type ProjectShaderGraph = Omit<ShaderGraphDocument, "handle">;
+export const PROJECT_DOCUMENT_VERSION = 4 as const;
 
 export interface ProjectDocument {
   application: "GfxUtl";
@@ -18,7 +16,6 @@ export interface ProjectDocument {
   background: BackgroundObject;
   assets: Array<Omit<MediaAsset, "handle">>;
   clips: TimelineClip[];
-  shaderGraphs: ProjectShaderGraph[];
   fonts: FontFaceInfo[];
   plugins: RendererPluginInfo[];
   markers: TimelineMarker[];
@@ -34,7 +31,6 @@ export interface ProjectDocumentSource {
   background: BackgroundObject;
   assets: MediaAsset[];
   clips: TimelineClip[];
-  shaderGraphs?: ShaderGraphDocument[];
   fonts?: FontFaceInfo[];
   plugins?: RendererPluginInfo[];
   markers?: TimelineMarker[];
@@ -55,8 +51,7 @@ export function createProjectDocument(source: ProjectDocumentSource): ProjectDoc
     duration,
     background: structuredClone(normalizeBackgroundSize(source.background)),
     assets: source.assets.map(({ handle: _handle, ...asset }) => ({ ...asset })),
-    clips: structuredClone(source.clips),
-    shaderGraphs: (source.shaderGraphs ?? []).map(({ handle: _handle, ...graph }) => structuredClone(graph)),
+    clips: source.clips.map(stripRemovedClipData),
     fonts: structuredClone(source.fonts ?? []),
     plugins: structuredClone(source.plugins ?? []),
     markers: structuredClone(source.markers ?? []),
@@ -69,7 +64,7 @@ export function createProjectDocument(source: ProjectDocumentSource): ProjectDoc
 export function parseProjectDocument(text: string): ProjectDocument {
   const value = JSON.parse(text) as (Partial<ProjectDocument> & { version?: number }) | null;
   const version = value?.version as number | undefined;
-  if (!value || value.application !== "GfxUtl" || (version !== 2 && version !== PROJECT_DOCUMENT_VERSION)) {
+  if (!value || value.application !== "GfxUtl" || (version !== 2 && version !== 3 && version !== PROJECT_DOCUMENT_VERSION)) {
     throw new Error("対応していないGfxUtlプロジェクトです");
   }
   if (!Array.isArray(value.assets) || !Array.isArray(value.clips) || !value.background || !value.settings || !value.exportSettings) {
@@ -86,8 +81,7 @@ export function parseProjectDocument(text: string): ProjectDocument {
     duration,
     background: structuredClone(normalizeBackgroundSize(value.background, value.exportSettings)),
     assets: value.assets.map((asset) => ({ ...asset, handle: undefined, fileStatus: "missing" as const })),
-    clips: structuredClone(value.clips),
-    shaderGraphs: Array.isArray(value.shaderGraphs) ? value.shaderGraphs.map((graph) => ({ ...structuredClone(graph), handle: undefined })) : [],
+    clips: value.clips.map(stripRemovedClipData),
     fonts: Array.isArray(value.fonts) ? structuredClone(value.fonts) : [],
     plugins: Array.isArray(value.plugins) ? structuredClone(value.plugins) : [],
     markers: Array.isArray(value.markers) ? structuredClone(value.markers) : [],
@@ -95,6 +89,17 @@ export function parseProjectDocument(text: string): ProjectDocument {
     settings: { ...structuredClone(value.settings), autoKeyEnabled: value.settings.autoKeyEnabled === true },
     exportSettings: structuredClone(alignExportRangeToSequence(value.exportSettings, duration)),
   };
+}
+
+function stripRemovedClipData(clip: TimelineClip) {
+  const cleaned = structuredClone(clip);
+  const legacy = cleaned as unknown as {
+    postProcess?: unknown;
+    propertyActions?: Array<{ id: string; kind: string }>;
+  };
+  delete legacy.postProcess;
+  if (legacy.propertyActions) legacy.propertyActions = legacy.propertyActions.filter((action) => action.kind !== "postProcess");
+  return cleaned;
 }
 
 function finite(value: unknown, fallback: number) {

@@ -12,17 +12,15 @@ import {
   EyeOff16Regular as EyeOff,
   Options16Regular as SlidersHorizontal,
 } from "@fluentui/react-icons";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { shallowEqual, useEditor } from "../core/interface";
 import type { ClipEffect, ClipEffectKind, ClipMask, ClipPropertyAction, ClipPropertyActionKind, ColorGradingSpec, GeometryKind, GeometrySpec, KeyframeProperty, MaterialKind, MediaAsset, SceneKeyframe, SceneSettings, TimelineClip } from "../core/interface";
-import { applicableClipActionKinds, CLIP_ACTION_LABELS, DEFAULT_POST_PROCESS_GLSL, resolveClipPropertyActions, resolveColorGrading } from "../core/interface/clip-actions";
+import { applicableClipActionKinds, CLIP_ACTION_LABELS, resolveClipPropertyActions, resolveColorGrading } from "../core/interface/clip-actions";
 import { COMPOSITION_SIZE_PRESETS } from "../core/interface/composition-size";
 import { Button } from "./ui/button";
 import { Slider } from "./ui/slider";
 import { FontPicker } from "./font-picker";
 import { useI18n } from "../core/i18n";
-
-const GlslCodeEditor = lazy(() => import("./glsl-code-editor").then((module) => ({ default: module.GlslCodeEditor })));
 
 const GEOMETRY_OPTIONS: GeometryKind[] = ["box", "capsule", "circle", "cone", "cylinder", "dodecahedron", "icosahedron", "octahedron", "plane", "ring", "sphere", "tetrahedron", "torus", "torusKnot", "lathe", "shape", "extrude", "tube", "polyhedron", "edges", "wireframe", "buffer"];
 const THREE_RAD_TO_DEG = 180 / Math.PI;
@@ -378,7 +376,7 @@ export function InspectorPanel() {
         <div className="section-body">
           <label className="text-editor-field"><span>{t("名前")}</span><input aria-label={t("フィルター名")} value={selected.name} onChange={(event) => controller.updateClip(selected.id, { name: event.target.value || t("フィルター") })} /></label>
           <div className="field-grid"><NumberField label="開始" value={selected.start} suffix="s" onChange={(start) => controller.resizeStaticClip(selected.id, start, selected.duration)} /><NumberField label="長さ" value={selected.duration} suffix="s" onChange={(duration) => controller.resizeStaticClip(selected.id, selected.start, duration)} /></div>
-          <small>{t("時間が重なる下段のビジュアルオブジェクトへ、効果とシェーダーを上から順に適用します。")}</small>
+          <small>{t("時間が重なる下段のビジュアルオブジェクトへ、効果を上から順に適用します。")}</small>
         </div>
       </div>}
       {selected.kind === "title" && <div className="inspector-section text-inspector">
@@ -530,7 +528,6 @@ function ClipPropertyActionBody({ action, clip, allClips }: { action: ClipProper
     case "crop": return <div className="field-grid crop-grid"><NumberField label="左" value={clip.cropLeft ?? 0} onChange={(cropLeft) => controller.updateClip(clip.id, { cropLeft })} /><NumberField label="右" value={clip.cropRight ?? 0} onChange={(cropRight) => controller.updateClip(clip.id, { cropRight })} /><NumberField label="上" value={clip.cropTop ?? 0} onChange={(cropTop) => controller.updateClip(clip.id, { cropTop })} /><NumberField label="下" value={clip.cropBottom ?? 0} onChange={(cropBottom) => controller.updateClip(clip.id, { cropBottom })} /></div>;
     case "colorGrading": return <ColorGradingEditor clip={clip} />;
     case "effects": return <EffectStack clipId={clip.id} effects={clip.effects ?? []} embedded />;
-    case "postProcess": return <PostProcessEditor clip={clip} />;
     case "masks": return <MaskStack clipId={clip.id} masks={clip.masks ?? []} embedded />;
     case "audio": return <><label className="range-field"><span>{t("音量")}</span><Slider value={clip.volume ?? 0} min={-60} max={12} onChange={(event) => controller.updateClip(clip.id, { volume: Number(event.target.value) })} /><output>{(clip.volume ?? 0).toFixed(1)} dB</output></label><label className="range-field"><span>{t("パン")}</span><Slider value={clip.pan ?? 0} min={-100} max={100} onChange={(event) => controller.updateClip(clip.id, { pan: Number(event.target.value) })} /><output>{clip.pan ? `${clip.pan > 0 ? "R" : "L"} ${Math.abs(clip.pan)}` : t("中央")}</output></label></>;
     case "speed": return <div className="speed-row"><div><input type="number" aria-label={t("速度")} value={clip.speed ?? 100} min={1} max={1000} onChange={(event) => controller.updateClip(clip.id, { speed: Number(event.target.value) })} /><span>%</span></div><label><input type="checkbox" checked={clip.ripple ?? true} onChange={(event) => controller.updateClip(clip.id, { ripple: event.target.checked })} /> {t("リップル")}</label></div>;
@@ -590,39 +587,6 @@ function ColorGradingEditor({ clip }: { clip: TimelineClip }) {
       <div className="color-channel-row"><b>Gamma</b>{channel("gammaRed", "R")}{channel("gammaGreen", "G")}{channel("gammaBlue", "B")}</div>
       <div className="color-channel-row"><b>Gain</b>{channel("gainRed", "R")}{channel("gainGreen", "G")}{channel("gainBlue", "B")}</div>
     </div>
-  </div>;
-}
-
-const POST_PROCESS_PRESETS = {
-  passthrough: DEFAULT_POST_PROCESS_GLSL,
-  invert: `vec4 gfxPostProcess(vec4 color, vec2 uv, float time) {
-  return vec4(vec3(1.0) - color.rgb, color.a);
-}`,
-  scanline: `vec4 gfxPostProcess(vec4 color, vec2 uv, float time) {
-  float line = 0.88 + 0.12 * sin((uv.y + time * 0.08) * 900.0);
-  return vec4(color.rgb * line, color.a);
-}`,
-  channelShift: `vec4 gfxPostProcess(vec4 color, vec2 uv, float time) {
-  float pulse = 0.5 + 0.5 * sin(time * 2.0 + uv.y * 12.0);
-  return vec4(color.r * (0.85 + pulse * 0.15), color.g, color.b * (1.0 - pulse * 0.12), color.a);
-}`,
-} as const;
-
-function PostProcessEditor({ clip }: { clip: TimelineClip }) {
-  const { controller } = useEditor(() => null);
-  const { t } = useI18n();
-  const shader = clip.postProcess;
-  const [draft, setDraft] = useState(shader?.glsl ?? DEFAULT_POST_PROCESS_GLSL);
-  useEffect(() => setDraft(shader?.glsl ?? DEFAULT_POST_PROCESS_GLSL), [shader?.id, shader?.glsl]);
-  if (!shader) return <div className="shader-empty">{t("ポストプロセスを初期化できませんでした。作用を追加し直してください。")}</div>;
-  return <div className="post-process-editor" data-compile-status={shader.compileStatus}>
-    <div className="shader-runtime-row">
-      <label><input type="checkbox" checked={shader.enabled} onChange={(event) => controller.updateClipPostProcess(clip.id, { enabled: event.target.checked })} /> {t("有効")}</label>
-    </div>
-    <label className="shader-preset"><span>{t("プリセット")}</span><select aria-label={t("GLSLプリセット")} defaultValue="passthrough" onChange={(event) => setDraft(POST_PROCESS_PRESETS[event.target.value as keyof typeof POST_PROCESS_PRESETS])}><option value="passthrough">Pass through</option><option value="invert">Invert</option><option value="scanline">Scanline</option><option value="channelShift">Channel shift</option></select></label>
-    <Suspense fallback={<div className="glsl-code-editor" />}><GlslCodeEditor value={draft} onChange={setDraft} onSubmit={(source) => void controller.compileClipPostProcess(clip.id, source)} /></Suspense>
-    <div className="shader-compile-row"><Button size="sm" disabled={shader.compileStatus === "compiling" || !draft.trim()} onClick={() => void controller.compileClipPostProcess(clip.id, draft)}>{t("コンパイルして適用")}</Button></div>
-    {shader.compileError && <pre className="shader-diagnostic" role="alert">{shader.compileError}</pre>}
   </div>;
 }
 

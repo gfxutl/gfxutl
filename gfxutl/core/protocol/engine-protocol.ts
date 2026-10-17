@@ -165,16 +165,6 @@ export interface ColorGradingSpec {
   gainBlue: number;
 }
 
-export interface ClipPostProcess {
-  id: string;
-  name: string;
-  enabled: boolean;
-  glsl: string;
-  wgsl?: string;
-  compileStatus: "draft" | "compiling" | "ready" | "error";
-  compileError?: string;
-}
-
 export interface AudioProcessingSpec {
   enabled: boolean;
   fadeIn: number;
@@ -381,13 +371,10 @@ export interface RenderClip {
   cropBottom: number;
   effects: ClipEffect[];
   colorGrading: ColorGradingSpec;
-  postProcess?: ClipPostProcess;
   /** User-defined inspector stack order. Pixel operations are evaluated in this order. */
-  propertyActionOrder?: Array<"transform" | "sceneGraph" | "keyframes" | "crop" | "colorGrading" | "effects" | "postProcess" | "masks" | "audio" | "speed">;
+  propertyActionOrder?: Array<"transform" | "sceneGraph" | "keyframes" | "crop" | "colorGrading" | "effects" | "masks" | "audio" | "speed">;
   /** Timeline filters above this clip, ordered from nearest to topmost. */
   filterStack: RenderFilter[];
-  /** Active filter shaders composed after this clip's own shader. Worker-only. */
-  filterPostProcesses?: Array<{ shader: ClipPostProcess; region?: FilterRegion }>;
   masks: ClipMask[];
   keyframes: ClipKeyframe[];
   particleSystem?: ParticleSystemSpec;
@@ -412,7 +399,6 @@ export interface RenderFilter {
   opacity: number;
   compositionAspect: number;
   effects: ClipEffect[];
-  postProcess?: ClipPostProcess;
   keyframes: ClipKeyframe[];
 }
 
@@ -464,7 +450,7 @@ export interface MediaReadGraph {
 }
 
 export type EngineRequest =
-  | { type: "init"; canvas: OffscreenCanvas; port: MessagePort; width: number; height: number; dpr: number; nagaWasm: ArrayBuffer; previewCache?: { enabled: boolean; maxBytes: number } }
+  | { type: "init"; canvas: OffscreenCanvas; port: MessagePort; width: number; height: number; dpr: number; previewCache?: { enabled: boolean; maxBytes: number } }
   | { type: "attach-canvas"; canvas: OffscreenCanvas; width: number; height: number; dpr: number }
   | { type: "resize"; width: number; height: number; dpr: number }
   | { type: "render"; sequence: number; time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; previewView: PreviewView; focusClipId?: string; sceneSettingsPatch?: SceneSettingsPatch }
@@ -489,7 +475,6 @@ export type EngineRequest =
   | { type: "camera-handle-drag"; requestId: string; phase: "start"; handle: CameraHandleKind; ndcX: number; ndcY: number }
   | { type: "camera-handle-drag"; requestId: string; phase: "move" | "end"; ndcX: number; ndcY: number }
   | { type: "pick"; requestId: string; ndcX: number; ndcY: number }
-  | { type: "compile-glsl"; requestId: string; source: string }
   | { type: "plugin-load"; requestId: string; plugin: RendererPluginBundle }
   | { type: "plugin-unload"; pluginId: string }
   | { type: "export"; requestId: string; settings: ExportSettings; duration: number; clips: RenderClip[]; sceneSettings: SceneSettings; audioChannels: "stereo" | "mono" }
@@ -523,7 +508,6 @@ export type EngineResponse =
   | { type: "video-frame-ready"; clipId: string; timestamp: number }
   | { type: "pick-result"; requestId: string; clipId?: string; handle?: TransformHandleKind; camera?: boolean; cameraHandle?: CameraHandleKind }
   | { type: "camera-handle-drag-result"; requestId: string; transform?: CameraHandleTransform }
-  | { type: "glsl-compiled"; requestId: string; wgsl: string }
   | { type: "plugin-state"; plugin: RendererPluginInfo; requestId?: string }
   | { type: "cache"; usedBytes: number; maxBytes: number; entries: number }
   | { type: "media-buffer-state"; usedBytes: number; maxBytes: number; instanceCount: number; residentAssetIds: string[]; requestedAssetIds: string[]; skippedAssetIds: string[] }

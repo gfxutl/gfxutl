@@ -9,7 +9,6 @@ const AUTOSAVE_KEY = "gfxutl:project-autosave:v1";
 const AUTOSAVE_HISTORY_KEY = "gfxutl:project-autosave-history:v1";
 const PLUGIN_INDEX_KEY = "gfxutl:plugin-directories:index:v1";
 const PLUGIN_PREFIX = "gfxutl:plugin-directory:v1:";
-const SHADER_HANDLE_PREFIX = "gfxutl:shader-handle:v1:";
 
 export interface HandleProjectRecord {
   version: 1 | 2 | 3;
@@ -91,12 +90,4 @@ export async function removePluginDirectory(pluginId: string) {
   await del(`${PLUGIN_PREFIX}${pluginId}`);
   const ids = await get<string[]>(PLUGIN_INDEX_KEY) ?? [];
   await set(PLUGIN_INDEX_KEY, ids.filter((id) => id !== pluginId));
-}
-
-export async function saveShaderHandle(graphId: string, handle: FileSystemFileHandle) {
-  await set(`${SHADER_HANDLE_PREFIX}${graphId}`, handle);
-}
-
-export async function loadShaderHandle(graphId: string) {
-  return await get<FileSystemFileHandle>(`${SHADER_HANDLE_PREFIX}${graphId}`);
 }

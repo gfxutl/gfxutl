@@ -1,9 +1,9 @@
-import type { AudioProcessingSpec, CameraHandleKind, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPostProcess, ClipPropertyActionKind, ContextMenuState, EditorLayout, EditorSettings, EditorState, EngineResponse, ExportSettings, FontFaceInfo, GeometryKind, KeyframeProperty, MediaAsset, RenderClip, SceneKeyframe, SceneObjectSpec, SceneSettings, ShaderGraphDocument, ShaderGraphEdge, ShaderGraphNode, TimelineClip } from "./types";
-import { applicableClipActionKinds, DEFAULT_POST_PROCESS_GLSL, resetPatchForClipAction, resolveClipPropertyActions, resolveColorGrading } from "./clip-actions";
+import type { AudioProcessingSpec, CameraHandleKind, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ClipPropertyActionKind, ContextMenuState, EditorLayout, EditorSettings, EditorState, EngineResponse, ExportSettings, FontFaceInfo, GeometryKind, KeyframeProperty, MediaAsset, RenderClip, SceneKeyframe, SceneObjectSpec, SceneSettings, TimelineClip } from "./types";
+import { applicableClipActionKinds, resetPatchForClipAction, resolveClipPropertyActions, resolveColorGrading } from "./clip-actions";
 import { EngineClient } from "./engine-client";
 import { VirtualTimeline } from "./virtual-timeline";
 import { assignTimelineGroups, expandGroupToValidBoundary, hasGroupBoundaryCrossing, MIN_GROUP_HEIGHT, placeTimelineClip, timelineGroupDescendants } from "./timeline-groups";
-import { loadAutosaveProject, loadHandleProjects, loadPluginDirectory, loadShaderHandle, removeHandleProject, removePluginDirectory, saveAutosaveProject, saveHandleProject, savePluginDirectory, saveShaderHandle } from "../persistence/handle-project-store";
+import { loadAutosaveProject, loadHandleProjects, loadPluginDirectory, removeHandleProject, removePluginDirectory, saveAutosaveProject, saveHandleProject, savePluginDirectory } from "../persistence/handle-project-store";
 import { loadLocalFontCatalog, loadLocalFontData, saveLocalFontCatalog, saveLocalFontData } from "../persistence/local-font-store";
 import { createProjectDocument, parseProjectDocument, type ProjectDocument } from "../project/project-document";
 import { clampTimelineVerticalZoom, clampTimelineZoom } from "./timeline-zoom";
@@ -14,7 +14,6 @@ import { alignExportRangeToSequence, DEFAULT_SEQUENCE_DURATION, sequenceEnd } fr
 import { readRendererPluginPackage } from "../plugins/plugin-package";
 import { bundleRendererPlugin } from "../plugins/plugin-bundler";
 import { translateCurrent as t } from "../i18n";
-import { compileShaderGraphToGlsl, serializeShaderGraph } from "../shader-graph/shader-graph-document";
 import { clipTransitionGain } from "./sequencer-state";
 import { convertLocalFontWithFacetype, facetypeCharacterSet, readFontVariationAxes } from "../fonts/facetype";
 import { loadGoogleFontCatalog, loadGoogleFontData } from "../fonts/google-fonts";
@@ -112,9 +111,6 @@ const initialState: EditorState = {
   layout: loadLayout(),
   settings: loadedSettings,
   leftPanelTab: "media",
-  activeBottomPane: "timeline",
-  shaderGraphs: [],
-  activeShaderGraphId: null,
   exportSettings: { format: "mp4", videoCodec: "avc", audioCodec: "aac", width: 1920, height: 1080, fps: 30, bitrate: 8_000_000, audioBitrate: 192_000, filename: "Untitled Project", startTime: 0, endTime: 32 },
   exportStatus: "idle",
   exportProgress: 0,
@@ -168,7 +164,7 @@ interface PreviewAudioVoice {
 type HistorySnapshot = Pick<EditorState, "projectName" | "fps" | "duration" | "snapEnabled" | "background" | "assets" | "clips" | "markers" | "loopPlayback" | "settings" | "exportSettings">;
 
 const HISTORY_KEYS = new Set<keyof EditorState>(["projectName", "fps", "duration", "snapEnabled", "background", "assets", "clips", "markers", "loopPlayback", "settings", "exportSettings"]);
-const PERSISTED_KEYS = new Set<keyof EditorState>([...HISTORY_KEYS, "shaderGraphs", "fonts", "plugins"]);
+const PERSISTED_KEYS = new Set<keyof EditorState>([...HISTORY_KEYS, "fonts", "plugins"]);
 
 export class EditorController {
   private state = initialState;
@@ -388,7 +384,6 @@ export class EditorController {
       loopPlayback: this.state.loopPlayback,
       settings: this.state.settings,
       exportSettings: this.state.exportSettings,
-      shaderGraphs: this.state.shaderGraphs,
       fonts: this.state.fonts,
       plugins: this.state.plugins,
     });
@@ -409,7 +404,6 @@ export class EditorController {
       const clips = autosave?.clips ?? [...new Map(records.flatMap((record) => record.clips ?? []).map((clip) => [clip.id, clip])).values()];
       const project = autosave ?? [...records].sort((a, b) => b.savedAt - a.savedAt).find((record) => record.project)?.project;
       this.hydrateGoogleFontEntries(project?.fonts ?? []);
-      const shaderGraphs = await Promise.all((project?.shaderGraphs ?? []).map(async (graph) => ({ ...graph, handle: await loadShaderHandle(graph.id) })));
       this.historySuspended = true;
       this.update({
         assets,
@@ -422,8 +416,6 @@ export class EditorController {
         background: project?.background ? normalizeBackgroundSize(project.background, project.exportSettings) : this.state.background,
         settings: project?.settings ?? this.state.settings,
         exportSettings: project?.exportSettings ?? this.state.exportSettings,
-        shaderGraphs,
-        activeShaderGraphId: shaderGraphs[0]?.id ?? null,
         fonts: combineFontCatalog(project?.fonts ?? [], this.state.fonts),
         plugins: (project?.plugins ?? []).map((plugin) => ({ ...plugin, status: "error" as const, error: t("再利用するにはプラグインのディレクトリを選択してください") })),
         projectDirty: false,
@@ -507,7 +499,6 @@ export class EditorController {
       } else file = await this.openWithInput(".gfxutl,application/json");
       const project = parseProjectDocument(await file.text());
       this.hydrateGoogleFontEntries(project.fonts);
-      const shaderGraphs = await Promise.all(project.shaderGraphs.map(async (graph) => ({ ...graph, handle: await loadShaderHandle(graph.id) })));
       const assets = project.assets.map((asset) => {
         const connected = this.state.assets.find((item) => item.sourcePath && item.sourcePath === asset.sourcePath)
           ?? this.state.assets.find((item) => item.name === asset.name && item.size === asset.size);
@@ -524,8 +515,6 @@ export class EditorController {
         loopPlayback: project.loopPlayback,
         settings: project.settings,
         exportSettings: project.exportSettings,
-        shaderGraphs,
-        activeShaderGraphId: shaderGraphs[0]?.id ?? null,
         fonts: combineFontCatalog(project.fonts, this.state.fonts),
         plugins: project.plugins.map((plugin) => ({ ...plugin, status: "error" as const, error: t("再利用するにはプラグインのディレクトリを選択してください") })),
         selectedClipId: null,
@@ -580,8 +569,6 @@ export class EditorController {
       selectedAssetId: null,
       backgroundSelected: true,
       exportSettings: { ...initialState.exportSettings },
-      shaderGraphs: [],
-      activeShaderGraphId: null,
       plugins: [],
       projectDirty: false,
     });
@@ -1043,7 +1030,6 @@ export class EditorController {
       cropBottom: clip.cropBottom ?? 0,
       effects: clip.effects ?? [],
       colorGrading: resolveColorGrading(clip.colorGrading),
-      postProcess: clip.postProcess,
       propertyActionOrder: resolveClipPropertyActions(clip).map((action) => action.kind),
       filterStack: clip.kind === "audio" ? [] : filters
         .filter((filter) => filter.y < clip.y && filter.start < clip.start + clip.duration && filter.start + filter.duration > clip.start)
@@ -1061,7 +1047,6 @@ export class EditorController {
           opacity: filter.opacity ?? 100,
           compositionAspect: this.state.background.width / Math.max(1, this.state.background.height),
           effects: filter.effects ?? [],
-          postProcess: filter.postProcess,
           keyframes: filter.keyframes ?? [],
         })),
       masks: clip.masks ?? [],
@@ -1489,74 +1474,6 @@ export class EditorController {
   openContextMenu = (menu: ContextMenuState) => this.update({ contextMenu: menu });
   closeContextMenu = () => this.update({ contextMenu: null });
   setLeftPanelTab = (tab: EditorState["leftPanelTab"]) => this.update({ leftPanelTab: tab });
-  setBottomPane = (pane: EditorState["activeBottomPane"], shaderGraphId?: string) => this.update({
-    activeBottomPane: pane,
-    ...(shaderGraphId ? { activeShaderGraphId: shaderGraphId } : {}),
-  });
-  openShaderGraph = (graph: ShaderGraphDocument) => {
-    const match = this.state.shaderGraphs.find((item) => (graph.sourcePath && item.sourcePath === graph.sourcePath) || item.id === graph.id);
-    const next = match
-      ? this.state.shaderGraphs.map((item) => item.id === match.id ? { ...graph, id: match.id } : item)
-      : [...this.state.shaderGraphs, graph];
-    this.update({ shaderGraphs: next, activeShaderGraphId: match?.id ?? graph.id, activeBottomPane: "shader", contextMenu: null });
-    if (graph.handle) void saveShaderHandle(match?.id ?? graph.id, graph.handle).catch(() => undefined);
-    this.schedulePersistence();
-  };
-  updateShaderGraph = (id: string, nodes: ShaderGraphNode[], edges: ShaderGraphEdge[]) => {
-    this.update({ shaderGraphs: this.state.shaderGraphs.map((graph) => graph.id === id
-      ? { ...graph, nodes, edges, source: serializeShaderGraph({ ...graph, nodes, edges }), dirty: true }
-      : graph) });
-    this.schedulePersistence();
-  };
-  applyShaderGraphToSelection = async (graphId: string) => {
-    const graph = this.state.shaderGraphs.find((item) => item.id === graphId);
-    const targets = this.state.clips.filter((clip) => this.state.selectedClipIds.includes(clip.id) && clip.kind === "video");
-    if (!graph || !targets.length) {
-      this.toast(t("シェーダーを適用する映像または画像クリップを選択してください"));
-      return;
-    }
-    const glsl = compileShaderGraphToGlsl(graph);
-    const targetIds = new Set(targets.map((clip) => clip.id));
-    const clips = this.state.clips.map((clip) => {
-      if (!targetIds.has(clip.id)) return clip;
-      const actions = resolveClipPropertyActions(clip);
-      const propertyActions = actions.some((action) => action.kind === "postProcess")
-        ? actions
-        : [...actions, { id: crypto.randomUUID(), kind: "postProcess" as const }];
-      return {
-        ...clip,
-        propertyActions,
-        postProcess: { id: crypto.randomUUID(), name: graph.name, enabled: true, glsl, compileStatus: "compiling" as const },
-      };
-    });
-    this.update({ clips });
-    this.invalidatePreviewCache();
-    this.schedulePersistence();
-    await Promise.all(targets.map((clip) => this.compileClipPostProcess(clip.id, glsl)));
-    this.toast(t("{count} 個のクリップにシェーダーを適用しました", { count: targets.length }));
-  };
-  saveShaderGraph = async (id: string) => {
-    const graph = this.state.shaderGraphs.find((item) => item.id === id);
-    if (!graph) return;
-    try {
-      let handle = graph.handle;
-      if (!handle) {
-        if (!window.showSaveFilePicker) throw new Error(t("このブラウザーではファイル保存を利用できません"));
-        handle = await window.showSaveFilePicker({ suggestedName: graph.name, types: [{ description: "TypeScript", accept: { "text/typescript": [".ts"] } }] });
-      }
-      const writable = await handle.createWritable();
-      await writable.write(graph.source);
-      await writable.close();
-      await saveShaderHandle(id, handle).catch(() => undefined);
-      this.update({ shaderGraphs: this.state.shaderGraphs.map((item) => item.id === id ? { ...item, name: handle!.name, handle, dirty: false } : item), notice: t("シェーダーを保存しました") });
-    } catch (error) {
-      if ((error as DOMException).name !== "AbortError") this.update({ notice: error instanceof Error ? error.message : t("シェーダーを保存できませんでした") });
-    }
-  };
-  requestNewShaderGraph = () => {
-    window.dispatchEvent(new CustomEvent("gfxutl:create-shader-graph"));
-    this.closeContextMenu();
-  };
   renameProject = (projectName: string) => this.update({ projectName });
   updateSequenceSettings = (patch: { fps?: number; duration?: number }) => {
     const fps = Math.max(1, Math.min(240, Math.round(patch.fps ?? this.state.fps)));
@@ -1966,17 +1883,11 @@ export class EditorController {
     if (!clip || !applicableClipActionKinds(clip).includes(kind)) return;
     const actions = resolveClipPropertyActions(clip);
     if (actions.some((action) => action.kind === kind)) return;
-    const postProcess: ClipPostProcess | undefined = kind === "postProcess" ? {
-      id: crypto.randomUUID(), name: t("GLSLシェーダー"), enabled: true,
-      glsl: DEFAULT_POST_PROCESS_GLSL, compileStatus: "draft",
-    } : undefined;
     this.updateClip(id, {
       ...resetPatchForClipAction(kind),
       ...(kind === "colorGrading" ? { colorGrading: resolveColorGrading() } : {}),
-      ...(postProcess ? { postProcess } : {}),
       propertyActions: [...actions, { id: crypto.randomUUID(), kind }],
     });
-    if (postProcess) void this.compileClipPostProcess(id, postProcess.glsl);
   };
 
   removeClipPropertyAction = (id: string, actionId: string) => {
@@ -2002,29 +1913,6 @@ export class EditorController {
     if (index < 0 || target < 0 || target >= actions.length) return;
     [actions[index], actions[target]] = [actions[target], actions[index]];
     this.updateClip(id, { propertyActions: actions });
-  };
-
-  updateClipPostProcess = (id: string, patch: Partial<ClipPostProcess>) => {
-    const clip = this.state.clips.find((item) => item.id === id);
-    if (!clip?.postProcess) return;
-    this.updateClip(id, { postProcess: { ...clip.postProcess, ...patch } });
-  };
-
-  compileClipPostProcess = async (id: string, glsl: string) => {
-    const clip = this.state.clips.find((item) => item.id === id);
-    if (!clip?.postProcess) return;
-    const compiling: ClipPostProcess = { ...clip.postProcess, glsl, wgsl: undefined, compileStatus: "compiling", compileError: undefined };
-    this.updateClip(id, { postProcess: compiling });
-    try {
-      const wgsl = await this.engine.compileGlsl(glsl);
-      const current = this.state.clips.find((item) => item.id === id)?.postProcess;
-      if (!current || current.glsl !== glsl) return;
-      this.updateClip(id, { postProcess: { ...current, wgsl, compileStatus: "ready", compileError: undefined } });
-    } catch (error) {
-      const current = this.state.clips.find((item) => item.id === id)?.postProcess;
-      if (!current || current.glsl !== glsl) return;
-      this.updateClip(id, { postProcess: { ...current, wgsl: undefined, compileStatus: "error", compileError: error instanceof Error ? error.message : String(error) } });
-    }
   };
 
   private removeClipIds(ids: ReadonlySet<string>) {
@@ -2088,7 +1976,6 @@ export class EditorController {
           const mappedEffectId = match ? effectIdMap.get(match[1]) : undefined;
           return { ...keyframe, id: crypto.randomUUID(), property: mappedEffectId ? `effect.${mappedEffectId}.${match![2]}` as KeyframeProperty : keyframe.property };
         }),
-        postProcess: copy.postProcess ? { ...copy.postProcess, id: crypto.randomUUID() } : undefined,
       } satisfies TimelineClip;
     });
     const clips = assignTimelineGroups([...this.state.clips, ...copies]);

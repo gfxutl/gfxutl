@@ -11,7 +11,6 @@ import {
   ChevronRight16Regular as ChevronRight,
   Clipboard16Regular as Clipboard,
   ClipboardPaste16Regular as ClipboardPaste,
-  Code16Regular as Code,
   Copy16Regular as Copy,
   Cube16Regular as Box,
   Cut16Regular as Scissors,
@@ -100,12 +99,10 @@ export function EditorContextMenu() {
         : <button role="menuitem" onClick={(event) => run(event, () => { controller.addMarker(menu.time); controller.closeContextMenu(); })}><Flag />{t("マーカーを追加")}<kbd>M</kbd></button>}
       <button role="menuitemcheckbox" aria-checked={state.snapEnabled} className={state.snapEnabled ? "checked" : ""} onClick={(event) => run(event, () => { controller.toggleSnap(); controller.closeContextMenu(); })}><Magnet />{t("マグネット")}<kbd>{state.snapEnabled ? "ON" : "OFF"}</kbd></button>
     </>}
-    <div className="context-menu-separator" />
+    {menu.scope !== "media" && <><div className="context-menu-separator" />
     <div className="context-menu-submenu">
       <button role="menuitem" aria-haspopup="menu"><Sparkles /><span>{t("新規")}</span><ChevronRight className="context-menu-chevron" /></button>
       <div className="context-menu-submenu-panel" role="menu" aria-label={t("新規オブジェクト")}>
-        {menu.scope === "media" && <button role="menuitem" onClick={(event) => run(event, controller.requestNewShaderGraph)}><Code />{t("シェーダー")}</button>}
-        {menu.scope !== "media" && <>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addGroupObject(placement))}><FolderTree />{t("グループ")}</button>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addFilterObject(placement))}><Filter />{t("フィルター")}</button>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addText2DObject(placement))}><Type />2D Text</button>
@@ -114,9 +111,8 @@ export function EditorContextMenu() {
         <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("box", placement))}><Box />{t("立方体")}</button>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("sphere", placement))}><Circle />{t("球体")}</button>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addParticleObject(placement))}><Sparkles />{t("GPUパーティクル")}</button>
-        </>}
       </div>
-    </div>
+    </div></>}
     {menu.scope === "preview" && <div className="context-menu-submenu">
       <button role="menuitem" aria-haspopup="menu" disabled={!hasPreviewSelection}><Layers /><span>{t("配置")}</span><ChevronRight className="context-menu-chevron" /></button>
       {hasPreviewSelection && <div className="context-menu-submenu-panel" role="menu" aria-label={t("配置")}>

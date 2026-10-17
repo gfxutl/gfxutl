@@ -1,6 +1,5 @@
 import type { CameraHandleKind, CameraHandleTransform, EngineRequest, EngineResponse, ExportSettings, MediaFileSource, MediaReadGraph, PreviewPickResult, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, SceneSettingsPatch, TimelinePatch, TimelineSnapshot } from "../protocol/engine-protocol";
 import type { RendererPluginBundle, RendererPluginInfo } from "../plugins/plugin-types";
-import nagaWasmUrl from "../naga-wasm/pkg/naga_wasm_bg.wasm?url";
 import type { FontVariationSettings } from "../fonts/font-variation";
 
 type MediaInfo = Extract<EngineResponse, { type: "media-info" }>;
@@ -21,7 +20,6 @@ export class EngineClient {
   private thumbnailPromises = new Map<string, Promise<MediaThumbnail>>();
   private pendingPicks = new Map<string, (result: PreviewPickResult) => void>();
   private pendingCameraHandleDrags = new Map<string, (transform?: CameraHandleTransform) => void>();
-  private pendingShaders = new Map<string, { resolve: (wgsl: string) => void; reject: (reason: Error) => void }>();
   private pendingPlugins = new Map<string, { resolve: (plugin: RendererPluginInfo) => void; reject: (reason: Error) => void }>();
   private pickInFlight = false;
   private pickQueue: Array<{ ndcX: number; ndcY: number; coalescible: boolean; resolves: Array<(result: PreviewPickResult) => void> }> = [];
@@ -38,15 +36,8 @@ export class EngineClient {
   private mediaGraphRevision = 0;
   private mediaGraphSignature = "";
   private initializing = false;
-  private nagaWasmPromise: Promise<ArrayBuffer>;
 
   constructor(private workerFactory: () => Worker, private onMessage: (message: EngineResponse) => void) {
-    // Start the renderer dependency fetch at module evaluation instead of
-    // waiting for React layout effects to connect the preview canvas.
-    this.nagaWasmPromise = fetch(nagaWasmUrl).then(async (response) => {
-      if (!response.ok) throw new Error(`Naga WASMを取得できませんでした (${response.status})`);
-      return response.arrayBuffer();
-    });
   }
 
   private ensureWorker() {
@@ -90,9 +81,6 @@ export class EngineClient {
     } else if (message.type === "camera-handle-drag-result") {
       this.pendingCameraHandleDrags.get(message.requestId)?.(message.transform);
       this.pendingCameraHandleDrags.delete(message.requestId);
-    } else if (message.type === "glsl-compiled") {
-      this.pendingShaders.get(message.requestId)?.resolve(message.wgsl);
-      this.pendingShaders.delete(message.requestId);
     } else if (message.type === "plugin-state" && message.requestId) {
       this.pendingPlugins.get(message.requestId)?.resolve(message.plugin);
       this.pendingPlugins.delete(message.requestId);
@@ -115,7 +103,6 @@ export class EngineClient {
       this.pendingThumbnails.get(message.requestId)?.reject(new Error(message.message));
       this.pendingPicks.get(message.requestId)?.({});
       this.pendingCameraHandleDrags.get(message.requestId)?.();
-      this.pendingShaders.get(message.requestId)?.reject(new Error(message.message));
       this.pendingPlugins.get(message.requestId)?.reject(new Error(message.message));
       this.pending.delete(message.requestId);
       this.pendingExports.delete(message.requestId);
@@ -126,7 +113,6 @@ export class EngineClient {
       this.pendingThumbnailKeys.delete(message.requestId);
       this.pendingPicks.delete(message.requestId);
       this.pendingCameraHandleDrags.delete(message.requestId);
-      this.pendingShaders.delete(message.requestId);
       this.pendingPlugins.delete(message.requestId);
       if (this.activeExportRequestId === message.requestId) this.activeExportRequestId = undefined;
     }
@@ -150,20 +136,16 @@ export class EngineClient {
 
   private async initialize(canvas: OffscreenCanvas, width: number, height: number, dpr: number) {
     try {
-      // Worker construction downloads/evaluates its module graph, so defer it
-      // until the preview canvas actually mounts while overlapping that work
-      // with the already-started Naga fetch.
       const worker = this.ensureWorker();
-      const nagaWasm = await this.nagaWasmPromise;
       const channel = new MessageChannel();
       this.port = channel.port1;
       this.port.onmessage = this.receive;
       this.port.start();
       const message: Extract<EngineRequest, { type: "init" }> = {
-        type: "init", canvas, port: channel.port2, width, height, dpr, nagaWasm,
+        type: "init", canvas, port: channel.port2, width, height, dpr,
         ...(this.initialPreviewCache ? { previewCache: this.initialPreviewCache } : {}),
       };
-      worker.postMessage(message, [canvas, channel.port2, nagaWasm]);
+      worker.postMessage(message, [canvas, channel.port2]);
       this.lastResize = `${width}:${height}:${dpr}`;
       for (const queued of this.outbox.splice(0)) this.port.postMessage(queued.message, queued.transfer);
     } catch (error) {
@@ -370,13 +352,6 @@ export class EngineClient {
     });
   }
 
-  compileGlsl(source: string) {
-    const requestId = crypto.randomUUID();
-    return new Promise<string>((resolve, reject) => {
-      this.pendingShaders.set(requestId, { resolve, reject });
-      this.post({ type: "compile-glsl", requestId, source });
-    });
-  }
 
   loadRendererPlugin(plugin: RendererPluginBundle) {
     const requestId = crypto.randomUUID();
