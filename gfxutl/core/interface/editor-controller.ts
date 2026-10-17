@@ -16,7 +16,9 @@ import { bundleRendererPlugin } from "../plugins/plugin-bundler";
 import { translateCurrent as t } from "../i18n";
 import { compileShaderGraphToGlsl, serializeShaderGraph } from "../shader-graph/shader-graph-document";
 import { clipTransitionGain } from "./sequencer-state";
-import { convertLocalFontWithFacetype, facetypeCharacterSet } from "../fonts/facetype";
+import { convertLocalFontWithFacetype, facetypeCharacterSet, readFontVariationAxes } from "../fonts/facetype";
+import { loadGoogleFontCatalog, loadGoogleFontData } from "../fonts/google-fonts";
+import { fontVariationCss, fontVariationId, fontVariationKey, normalizeFontVariations, type FontVariationAxis, type FontVariationSettings } from "../fonts/font-variation";
 import type { FontData } from "three/addons/loaders/FontLoader.js";
 
 type Listener = () => void;
@@ -128,11 +130,12 @@ const initialState: EditorState = {
   contextMenu: null,
 };
 
-type LocalFontEntry = {
+type FontEntry = {
   postscriptName: string;
   fullName: string;
   family: string;
   style: string;
+  source: "local" | "google";
   blob(): Promise<Blob>;
 };
 
@@ -193,11 +196,16 @@ export class EditorController {
   private previewCacheDirty = false;
   private previewCacheTimer = 0;
   private persistenceTimer = 0;
-  private localFontEntries = new Map<string, LocalFontEntry>();
+  private fontEntries = new Map<string, FontEntry>();
   private fontCatalogRevision = 0;
+  private googleFontCatalogLoad?: Promise<void>;
   private registeredFonts = new Set<string>();
   private fontPreviewLoads = new Map<string, Promise<string | undefined>>();
+  private fontPreviewFaces = new Map<string, FontFace>();
   private facetypeFontLoads = new Map<string, Promise<FontData | undefined>>();
+  private fontVariationAxisLoads = new Map<string, Promise<FontVariationAxis[]>>();
+  private fontVariationUpdates = new Map<string, number>();
+  private registeredFontVariations = new Map<string, string>();
   private memoryClipboard: ClipboardPayload | null = null;
   private audioContext: AudioContext | null = null;
   private audioVoices = new Map<string, PreviewAudioVoice>();
@@ -223,6 +231,7 @@ export class EditorController {
     this.engine = new EngineClient(workerFactory, (message) => this.onEngineMessage(message));
     this.engine.configurePreviewCache(this.state.settings.ramPreviewEnabled, this.state.settings.ramPreviewMaxBytes);
     void this.restoreLocalFonts();
+    void this.restoreGoogleFonts().catch(() => { /* The font picker retries and reports remote catalog failures. */ });
     void this.restoreHandleProjects();
   }
 
@@ -399,6 +408,7 @@ export class EditorController {
         : records.map((record) => ({ ...record.asset, handle: record.handle, fileStatus: "loading" as const }));
       const clips = autosave?.clips ?? [...new Map(records.flatMap((record) => record.clips ?? []).map((clip) => [clip.id, clip])).values()];
       const project = autosave ?? [...records].sort((a, b) => b.savedAt - a.savedAt).find((record) => record.project)?.project;
+      this.hydrateGoogleFontEntries(project?.fonts ?? []);
       const shaderGraphs = await Promise.all((project?.shaderGraphs ?? []).map(async (graph) => ({ ...graph, handle: await loadShaderHandle(graph.id) })));
       this.historySuspended = true;
       this.update({
@@ -414,7 +424,7 @@ export class EditorController {
         exportSettings: project?.exportSettings ?? this.state.exportSettings,
         shaderGraphs,
         activeShaderGraphId: shaderGraphs[0]?.id ?? null,
-        fonts: project?.fonts ?? this.state.fonts,
+        fonts: combineFontCatalog(project?.fonts ?? [], this.state.fonts),
         plugins: (project?.plugins ?? []).map((plugin) => ({ ...plugin, status: "error" as const, error: t("再利用するにはプラグインのディレクトリを選択してください") })),
         projectDirty: false,
       });
@@ -496,6 +506,7 @@ export class EditorController {
         file = await handles[0].getFile();
       } else file = await this.openWithInput(".gfxutl,application/json");
       const project = parseProjectDocument(await file.text());
+      this.hydrateGoogleFontEntries(project.fonts);
       const shaderGraphs = await Promise.all(project.shaderGraphs.map(async (graph) => ({ ...graph, handle: await loadShaderHandle(graph.id) })));
       const assets = project.assets.map((asset) => {
         const connected = this.state.assets.find((item) => item.sourcePath && item.sourcePath === asset.sourcePath)
@@ -515,7 +526,7 @@ export class EditorController {
         exportSettings: project.exportSettings,
         shaderGraphs,
         activeShaderGraphId: shaderGraphs[0]?.id ?? null,
-        fonts: project.fonts,
+        fonts: combineFontCatalog(project.fonts, this.state.fonts),
         plugins: project.plugins.map((plugin) => ({ ...plugin, status: "error" as const, error: t("再利用するにはプラグインのディレクトリを選択してください") })),
         selectedClipId: null,
         selectedClipIds: [],
@@ -531,6 +542,7 @@ export class EditorController {
       this.engine.configurePreviewCache(project.settings.ramPreviewEnabled, project.settings.ramPreviewMaxBytes);
       this.engine.clearCache();
       this.renderPreview(true);
+      void this.registerTimelineFonts();
       this.schedulePersistence();
       this.toast(t("{name} を開きました", { name: project.name }));
     } catch (error) {
@@ -1076,14 +1088,14 @@ export class EditorController {
       ? isText2D
         ? {
             id: `${clip.id}:text2d`, kind: "text2d" as const, text: clip.text ?? clip.name,
-            fontId: clip.fontId, fontFamily: clip.fontFamily, size: clip.fontSize ?? 1.2,
+            fontId: timelineFontId(clip), fontFamily: clip.fontFamily, fontVariations: clip.fontVariations, size: clip.fontSize ?? 1.2,
             color: clip.textColor ?? 0x202020, outlineColor: clip.textOutlineColor ?? 0xffffff,
             outlineWidth: clip.textOutlineWidth ?? 0,
             rasterPixelsPerUnit: previewPixelsPerWorldUnit * Math.max(visual.scaleX, visual.scaleY),
           }
         : {
             id: `${clip.id}:text`, kind: "text" as const, text: clip.text ?? clip.name,
-            fontId: clip.fontId, fontFamily: clip.fontFamily, size: clip.fontSize ?? 1.2, depth: clip.textDepth ?? 0.12,
+            fontId: clip.fontId, fontFamily: clip.fontFamily, fontVariations: clip.fontVariations, size: clip.fontSize ?? 1.2, depth: clip.textDepth ?? 0.12,
             curveSegments: 8, bevelEnabled: false,
           }
       : clip.geometry;
@@ -2248,53 +2260,85 @@ export class EditorController {
   }
 
   setTextFont = async (clipId: string, fontId: string) => {
-    const entry = this.localFontEntries.get(fontId);
+    this.fontVariationUpdates.set(clipId, (this.fontVariationUpdates.get(clipId) ?? 0) + 1);
+    const entry = this.fontEntries.get(fontId);
     const clip = this.state.clips.find((item) => item.id === clipId);
-    if (entry && !this.registeredFonts.has(fontId)) {
+    if (entry) {
       try {
-        const buffer = await (await entry.blob()).arrayBuffer();
-        this.engine.registerFont(fontId, buffer);
-        this.registeredFonts.add(fontId);
+        await this.registerFontVariant(fontId);
       } catch {
-      this.toast(t("フォントデータを読み込めませんでした"));
+        this.toast(t("フォントデータを読み込めませんでした"));
         return;
       }
     }
-    this.updateClip(clipId, { fontId: entry ? fontId : undefined, fontFamily: entry?.family ?? (clip?.textMode === "2d" ? "sans-serif" : "Helvetiker") });
+    this.updateClip(clipId, { fontId: entry ? fontId : undefined, fontFamily: entry?.family ?? (clip?.textMode === "2d" ? "sans-serif" : "Helvetiker"), fontVariations: undefined });
   };
 
-  loadFontPreview = (fontId: string) => {
-    const cached = this.fontPreviewLoads.get(fontId);
+  setTextFontVariations = async (clipId: string, variations: FontVariationSettings) => {
+    const clip = this.state.clips.find((item) => item.id === clipId);
+    if (!clip?.fontId) return;
+    const normalized = normalizeFontVariations(variations);
+    const revision = (this.fontVariationUpdates.get(clipId) ?? 0) + 1;
+    this.fontVariationUpdates.set(clipId, revision);
+    try {
+      const isText2D = clip.textMode === "2d";
+      await this.registerFontVariant(
+        clip.fontId,
+        isText2D ? normalized : undefined,
+        isText2D ? timelineFontId({ ...clip, fontVariations: normalized }) : clip.fontId,
+      );
+      if (this.fontVariationUpdates.get(clipId) === revision) this.updateClip(clipId, { fontVariations: normalized });
+    } catch {
+      if (this.fontVariationUpdates.get(clipId) === revision) this.toast(t("フォントデータを読み込めませんでした"));
+    }
+  };
+
+  loadFontPreview = (fontId: string, variations?: FontVariationSettings) => {
+    const previewId = fontVariationId(fontId, variations);
+    const cached = this.fontPreviewLoads.get(previewId);
     if (cached) return cached;
-    const entry = this.localFontEntries.get(fontId);
+    const entry = this.fontEntries.get(fontId);
     if (!entry) return Promise.resolve(undefined);
-    const family = `GfxUtl Preview ${fontId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+    const family = `GfxUtl Preview ${previewId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
     const pending = entry.blob()
       .then((blob) => blob.arrayBuffer())
       .then(async (buffer) => {
-        const face = new FontFace(family, buffer);
+        const variationSettings = fontVariationCss(variations);
+        const face = new FontFace(family, buffer, variationSettings ? { variationSettings } : undefined);
         await face.load();
         document.fonts.add(face);
+        if (variationSettings) {
+          this.fontPreviewFaces.set(previewId, face);
+          if (this.fontPreviewFaces.size > 64) {
+            const oldest = this.fontPreviewFaces.keys().next().value;
+            if (oldest) {
+              const staleFace = this.fontPreviewFaces.get(oldest);
+              if (staleFace) document.fonts.delete(staleFace);
+              this.fontPreviewFaces.delete(oldest);
+              this.fontPreviewLoads.delete(oldest);
+            }
+          }
+        }
         return family;
       })
       .catch(() => {
-        this.fontPreviewLoads.delete(fontId);
+        this.fontPreviewLoads.delete(previewId);
         return undefined;
       });
-    this.fontPreviewLoads.set(fontId, pending);
+    this.fontPreviewLoads.set(previewId, pending);
     return pending;
   };
 
-  loadFacetypeFont = (fontId: string, characters: string) => {
+  loadFacetypeFont = (fontId: string, characters: string, variations?: FontVariationSettings) => {
     const characterSet = facetypeCharacterSet(characters);
-    const cacheKey = `${fontId}\u0000${characterSet}`;
+    const cacheKey = `${fontId}\u0000${fontVariationKey(variations)}\u0000${characterSet}`;
     const cached = this.facetypeFontLoads.get(cacheKey);
     if (cached) return cached;
-    const entry = this.localFontEntries.get(fontId);
+    const entry = this.fontEntries.get(fontId);
     if (!entry) return Promise.resolve(undefined);
     const pending = entry.blob()
       .then((blob) => blob.arrayBuffer())
-      .then((buffer) => convertLocalFontWithFacetype(buffer, characterSet))
+      .then((buffer) => convertLocalFontWithFacetype(buffer, characterSet, variations))
       .catch(() => {
         this.facetypeFontLoads.delete(cacheKey);
         return undefined;
@@ -2304,6 +2348,22 @@ export class EditorController {
       const oldest = this.facetypeFontLoads.keys().next().value;
       if (oldest) this.facetypeFontLoads.delete(oldest);
     }
+    return pending;
+  };
+
+  loadFontVariationAxes = (fontId: string) => {
+    const cached = this.fontVariationAxisLoads.get(fontId);
+    if (cached) return cached;
+    const entry = this.fontEntries.get(fontId);
+    if (!entry) return Promise.resolve([]);
+    const pending = entry.blob()
+      .then((blob) => blob.arrayBuffer())
+      .then(readFontVariationAxes)
+      .catch(() => {
+        this.fontVariationAxisLoads.delete(fontId);
+        return [];
+      });
+    this.fontVariationAxisLoads.set(fontId, pending);
     return pending;
   };
 
@@ -2761,6 +2821,7 @@ export class EditorController {
   }
 
   loadFonts = async () => {
+    void this.restoreGoogleFonts().catch(() => this.toast(t("Google Fontsの一覧を読み込めませんでした")));
     if (!window.queryLocalFonts) {
       this.toast(t("このブラウザはLocal Font Access APIに対応していません"));
       return;
@@ -2769,19 +2830,22 @@ export class EditorController {
       const fonts = await window.queryLocalFonts();
       this.fontCatalogRevision += 1;
       this.facetypeFontLoads.clear();
-      const unique = new Map<string, { info: FontFaceInfo; entry: LocalFontEntry }>();
-      this.localFontEntries.clear();
+      this.fontVariationAxisLoads.clear();
+      const unique = new Map<string, { info: FontFaceInfo; entry: FontEntry }>();
+      for (const [fontId, entry] of this.fontEntries) if (entry.source === "local") this.fontEntries.delete(fontId);
       fonts.forEach((font) => {
         const info: FontFaceInfo = {
           postscriptName: font.postscriptName,
           fullName: font.fullName,
           family: font.family,
           style: font.style,
+          source: "local",
         };
         unique.set(font.postscriptName, {
           info,
           entry: {
             ...info,
+            source: "local",
             blob: async () => {
               const blob = await font.blob();
               await saveLocalFontData(info.postscriptName, blob).catch(() => { /* Font use must not depend on persistent storage. */ });
@@ -2791,10 +2855,10 @@ export class EditorController {
         });
       });
       const available = [...unique.values()].slice(0, 500);
-      available.forEach(({ info, entry }) => this.localFontEntries.set(info.postscriptName, entry));
+      available.forEach(({ info, entry }) => this.fontEntries.set(info.postscriptName, entry));
       const catalog = available.map(({ info }) => info);
       await saveLocalFontCatalog(catalog).catch(() => { /* Fonts remain available for the current page session. */ });
-      this.update({ fonts: catalog });
+      this.update({ fonts: mergeFontCatalog(this.state.fonts, catalog, "local") });
       await this.registerTimelineFonts();
       this.toast(t("{count} 個のローカルフォントを利用できます", { count: unique.size }));
     } catch (error) {
@@ -2805,17 +2869,18 @@ export class EditorController {
   private async restoreLocalFonts() {
     try {
       const revision = this.fontCatalogRevision;
-      const fonts = (await loadLocalFontCatalog()).slice(0, 500);
+      const fonts = (await loadLocalFontCatalog()).slice(0, 500).map((font) => ({ ...font, source: "local" as const }));
       if (!fonts.length || revision !== this.fontCatalogRevision) return;
-      fonts.forEach((font) => this.localFontEntries.set(font.postscriptName, {
+      fonts.forEach((font) => this.fontEntries.set(font.postscriptName, {
         ...font,
+        source: "local",
         blob: async () => {
           const blob = await loadLocalFontData(font.postscriptName);
           if (!blob) throw new Error("Local font data is not cached");
           return blob;
         },
       }));
-      this.updateRuntime({ fonts });
+      this.updateRuntime({ fonts: mergeFontCatalog(this.state.fonts, fonts, "local") });
       await this.registerTimelineFonts();
     } catch {
       // IndexedDB may be unavailable in private browsing. Opening the font
@@ -2823,17 +2888,58 @@ export class EditorController {
     }
   }
 
+  private restoreGoogleFonts() {
+    if (this.googleFontCatalogLoad) return this.googleFontCatalogLoad;
+    this.googleFontCatalogLoad = (async () => {
+      const fonts = await loadGoogleFontCatalog();
+      this.hydrateGoogleFontEntries(fonts);
+      this.updateRuntime({ fonts: mergeFontCatalog(this.state.fonts, fonts, "google") });
+      await this.registerTimelineFonts();
+    })().catch((error) => {
+      this.googleFontCatalogLoad = undefined;
+      throw error;
+    });
+    return this.googleFontCatalogLoad;
+  }
+
+  private hydrateGoogleFontEntries(fonts: FontFaceInfo[]) {
+    fonts.forEach((font) => {
+      if (font.source !== "google" || !font.googleFontsPath) return;
+      this.fontEntries.set(font.postscriptName, {
+        ...font,
+        source: "google",
+        blob: () => loadGoogleFontData(font.googleFontsPath!, font.family),
+      });
+    });
+  }
+
+  private async registerFontVariant(fontId: string, variations?: FontVariationSettings, requestedRuntimeId?: string) {
+    const entry = this.fontEntries.get(fontId);
+    if (!entry) return;
+    if (!this.registeredFonts.has(fontId)) {
+      const buffer = await (await entry.blob()).arrayBuffer();
+      this.engine.registerFont(fontId, buffer);
+      this.registeredFonts.add(fontId);
+    }
+    const normalized = normalizeFontVariations(variations);
+    const runtimeId = requestedRuntimeId ?? fontVariationId(fontId, normalized);
+    const variationKey = fontVariationKey(normalized);
+    if (runtimeId === fontId || this.registeredFontVariations.get(runtimeId) === variationKey) return;
+    this.engine.registerFontVariation(runtimeId, fontId, normalized);
+    this.registeredFontVariations.set(runtimeId, variationKey);
+  }
+
   private async registerTimelineFonts() {
-    const fontIds = new Set(this.state.clips.map((clip) => clip.fontId).filter((fontId): fontId is string => Boolean(fontId)));
+    const fonts = new Map(this.state.clips
+      .filter((clip): clip is TimelineClip & { fontId: string } => Boolean(clip.fontId))
+      .map((clip) => clip.textMode === "2d"
+        ? [timelineFontId(clip)!, { fontId: clip.fontId, variations: clip.fontVariations }] as const
+        : [clip.fontId, { fontId: clip.fontId, variations: undefined }] as const));
     let registered = false;
-    await Promise.all([...fontIds].map(async (fontId) => {
-      if (this.registeredFonts.has(fontId)) return;
-      const entry = this.localFontEntries.get(fontId);
-      if (!entry) return;
+    await Promise.all([...fonts].map(async ([runtimeId, font]) => {
+      if (runtimeId === font.fontId ? this.registeredFonts.has(runtimeId) : this.registeredFontVariations.get(runtimeId) === fontVariationKey(font.variations)) return;
       try {
-        const buffer = await (await entry.blob()).arrayBuffer();
-        this.engine.registerFont(fontId, buffer);
-        this.registeredFonts.add(fontId);
+        await this.registerFontVariant(font.fontId, font.variations, runtimeId);
         registered = true;
       } catch {
         // Catalog metadata can outlive lazily cached binary font data.
@@ -2856,6 +2962,22 @@ function mediaKindForFile(file: File): MediaAsset["kind"] | null {
   if (file.type.startsWith("audio/") || ["wav", "mp3", "aac", "flac"].includes(extension)) return "audio";
   if (file.type.startsWith("image/") || ["png", "jpg", "jpeg", "webp", "hdr", "exr"].includes(extension)) return "image";
   return "video";
+}
+
+function mergeFontCatalog(current: FontFaceInfo[], incoming: FontFaceInfo[], source: "local" | "google") {
+  const retained = current.filter((font) => source === "local" ? font.source === "google" : font.source !== "google");
+  return combineFontCatalog(retained, incoming);
+}
+
+function combineFontCatalog(...catalogs: FontFaceInfo[][]) {
+  return [...new Map(catalogs.flat().map((font) => [font.postscriptName, font])).values()].sort((left, right) => (
+    left.family.localeCompare(right.family) || left.style.localeCompare(right.style)
+  ));
+}
+
+function timelineFontId(clip: Pick<TimelineClip, "id" | "fontId" | "fontVariations">) {
+  if (!clip.fontId) return undefined;
+  return fontVariationKey(clip.fontVariations) ? `${clip.fontId}#timeline:${clip.id}` : clip.fontId;
 }
 
 function isTextureImageFile(file: File) {

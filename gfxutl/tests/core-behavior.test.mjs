@@ -25,6 +25,97 @@ test("sequenceEnd preserves an explicit duration and expands for content", async
   );
 });
 
+test("Google Fonts catalog entries use jsDelivr repository paths", async () => {
+  const { googleFontsCdnUrl, parseGoogleFontsCatalog } = await importTypeScript("../core/fonts/google-fonts.ts");
+  const fonts = parseGoogleFontsCatalog({
+    families: {
+      Roboto: { fp: "./ofl/roboto/Roboto[wdth,wght].ttf" },
+      Inconsolata: { fp: "./ofl/inconsolata/static/Inconsolata-Regular.ttf" },
+      Unsafe: { fp: "../../private.ttf" },
+    },
+  });
+  assert.equal(fonts.length, 2);
+  const roboto = fonts.find((font) => font.family === "Roboto");
+  assert.ok(roboto);
+  assert.deepEqual(roboto, {
+    postscriptName: "google-fonts:Roboto",
+    fullName: "Roboto",
+    family: "Roboto",
+    style: "Regular",
+    source: "google",
+    googleFontsPath: "ofl/roboto/Roboto[wdth,wght].ttf",
+  });
+  assert.equal(
+    googleFontsCdnUrl(roboto.googleFontsPath),
+    "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/roboto/Roboto%5Bwdth%2Cwght%5D.ttf",
+  );
+});
+
+test("Google Fonts metadata selects the normal face nearest weight 400", async () => {
+  const { parseGoogleFontsMetadata } = await importTypeScript("../core/fonts/google-fonts.ts");
+  const metadata = `fonts {
+    style: "italic"
+    weight: 400
+    filename: "Example-Italic[wght].ttf"
+  }
+  fonts {
+    style: "normal"
+    weight: 700
+    filename: "Example-Bold.ttf"
+  }
+  fonts {
+    style: "normal"
+    weight: 400
+    filename: "Example-Regular.ttf"
+  }`;
+  assert.equal(
+    parseGoogleFontsMetadata(metadata, "ofl/example/Example-Italic[wght].ttf"),
+    "ofl/example/Example-Regular.ttf",
+  );
+});
+
+test("Google Fonts resolves stale nested catalog paths through family metadata", async () => {
+  const { loadGoogleFontData } = await importTypeScript("../core/fonts/google-fonts.ts");
+  const requests = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    requests.push(String(url));
+    if (String(url).endsWith("/ofl/inter/METADATA.pb")) return new Response(`name: "Inter"
+fonts {
+  style: "normal"
+  weight: 400
+  filename: "Inter[opsz,wght].ttf"
+}`);
+    if (String(url).endsWith("/ofl/inter/Inter%5Bopsz%2Cwght%5D.ttf")) return new Response(new Uint8Array([0, 1, 2]));
+    return new Response("Not found", { status: 404 });
+  };
+  try {
+    const blob = await loadGoogleFontData("ofl/inter/changed/Inter[opsz,wght].ttf", "Inter");
+    assert.equal(blob.size, 3);
+    assert.deepEqual(requests, [
+      "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/inter/METADATA.pb",
+      "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/inter/Inter%5Bopsz%2Cwght%5D.ttf",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("variable font coordinates are normalized, clamped, and keyed deterministically", async () => {
+  const { clampFontVariations, fontVariationCss, fontVariationId, fontVariationWeight, normalizeFontVariations } = await importTypeScript("../core/fonts/font-variation.ts");
+  assert.deepEqual(normalizeFontVariations({ wght: 700, opsz: 18, bad: 3, wdth: Number.NaN }), { opsz: 18, wght: 700 });
+  const axes = [
+    { tag: "wght", name: "Weight", minValue: 100, defaultValue: 400, maxValue: 900 },
+    { tag: "opsz", name: "Optical size", minValue: 14, defaultValue: 14, maxValue: 32 },
+  ];
+  assert.deepEqual(clampFontVariations({ wght: 1200 }, axes), { wght: 900, opsz: 14 });
+  assert.equal(fontVariationId("google-fonts:Inter", { wght: 700, opsz: 18 }), "google-fonts:Inter#variation:opsz=18,wght=700");
+  assert.equal(fontVariationCss({ wght: 700, opsz: 18 }), '"opsz" 18, "wght" 700');
+  assert.equal(fontVariationWeight({ wght: 725 }), 725);
+  assert.equal(fontVariationWeight({ wght: 1200 }), 1000);
+  assert.equal(fontVariationWeight({ opsz: 18 }), undefined);
+});
+
 test("clip action order is retained after applicability filtering", async () => {
   const { resolveClipPropertyActions } = await importTypeScript("../core/interface/clip-actions.ts");
   const clip = {

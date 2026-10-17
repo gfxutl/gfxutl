@@ -23,19 +23,58 @@
 
 import type * as OpenType from "opentype.js";
 import type { FontData } from "three/addons/loaders/FontLoader.js";
+import { normalizeFontVariations, type FontVariationAxis, type FontVariationSettings } from "./font-variation";
 
 type FontTables = {
   head?: { xMin?: number; xMax?: number; yMin?: number; yMax?: number };
   post?: { underlinePosition?: number; underlineThickness?: number };
+  fvar?: { axes?: VariableFontAxis[] };
 };
 
-export async function convertLocalFontWithFacetype(buffer: ArrayBuffer, characters: string): Promise<FontData> {
+type VariableFontAxis = {
+  tag: string;
+  name?: Record<string, string>;
+  minValue: number;
+  defaultValue: number;
+  maxValue: number;
+};
+
+type VariableOpenTypeFont = OpenType.Font & {
+  variation?: {
+    set(settings: FontVariationSettings): void;
+    getTransform(glyph: OpenType.Glyph, settings?: FontVariationSettings): OpenType.Glyph;
+  };
+};
+
+export async function convertLocalFontWithFacetype(buffer: ArrayBuffer, characters: string, variations?: FontVariationSettings): Promise<FontData> {
   const imported = await import("opentype.js");
   const opentype = typeof imported.parse === "function"
     ? imported
     : (imported as unknown as { default: typeof imported }).default;
-  const font = opentype.parse(buffer, { lowMemory: true });
-  return convertFacetypeFont(font, characters);
+  const font = opentype.parse(buffer, { lowMemory: true }) as VariableOpenTypeFont;
+  const normalized = normalizeFontVariations(variations);
+  if (font.variation && Object.keys(normalized).length) font.variation.set(normalized);
+  return convertFacetypeFont(font, characters, normalized);
+}
+
+export async function readFontVariationAxes(buffer: ArrayBuffer): Promise<FontVariationAxis[]> {
+  const imported = await import("opentype.js");
+  const opentype = typeof imported.parse === "function"
+    ? imported
+    : (imported as unknown as { default: typeof imported }).default;
+  const font = opentype.parse(buffer, { lowMemory: true }) as VariableOpenTypeFont;
+  const axes = (font.tables as FontTables).fvar?.axes ?? [];
+  return axes
+    .filter((axis) => /^[\x20-\x7e]{4}$/.test(axis.tag)
+      && [axis.minValue, axis.defaultValue, axis.maxValue].every(Number.isFinite)
+      && axis.minValue <= axis.defaultValue && axis.defaultValue <= axis.maxValue)
+    .map((axis) => ({
+      tag: axis.tag,
+      name: axis.name?.en ?? axis.tag,
+      minValue: axis.minValue,
+      defaultValue: axis.defaultValue,
+      maxValue: axis.maxValue,
+    }));
 }
 
 export function facetypeCharacterSet(text: string) {
@@ -44,13 +83,16 @@ export function facetypeCharacterSet(text: string) {
     .join("");
 }
 
-function convertFacetypeFont(font: OpenType.Font, characters: string): FontData {
+function convertFacetypeFont(font: VariableOpenTypeFont, characters: string, variations: FontVariationSettings): FontData {
   // This is the scale used by facetype.js for its 1000-unit typeface format.
   const scale = (1000 * 100) / ((font.unitsPerEm || 2048) * 72);
   const glyphs: FontData["glyphs"] = {};
 
   for (const character of facetypeCharacterSet(characters)) {
-    const glyph = font.charToGlyph(character);
+    const source = font.charToGlyph(character);
+    const glyph = font.variation && Object.keys(variations).length
+      ? font.variation.getTransform(source, variations)
+      : source;
     glyphs[character] = {
       ha: Math.round((glyph.advanceWidth ?? font.unitsPerEm) * scale),
       x_min: Math.round((glyph.xMin ?? 0) * scale),

@@ -138,12 +138,15 @@ export function GfxTextEditor({ entry, active }: { entry: GfxTextEditorEntry; ac
         <FontPicker
           fonts={state.fonts}
           value={document.fontId}
+          variations={document.fontVariations}
           onOpen={controller.loadFonts}
           loadPreview={controller.loadFontPreview}
+          loadVariationAxes={controller.loadFontVariationAxes}
           onChange={(fontId) => {
             const font = state.fonts.find((item) => item.postscriptName === fontId);
-            update({ fontId: fontId || undefined, fontFamily: font?.family ?? "Helvetiker" });
+            update({ fontId: fontId || undefined, fontFamily: font?.family ?? "Helvetiker", fontVariations: undefined });
           }}
+          onVariationsChange={(fontVariations) => update({ fontVariations })}
         />
         <div className="gfxtext-field-grid">
           <NumberInput label={t("サイズ")} value={document.fontSize} minimum={0.01} onChange={(fontSize) => update({ fontSize })} />
@@ -208,7 +211,7 @@ function GfxTextThreePreview({ document, active, fontAvailable, loadFacetypeFont
   document: GfxTextDocument;
   active: boolean;
   fontAvailable: boolean;
-  loadFacetypeFont: (fontId: string, characters: string) => Promise<FontData | undefined>;
+  loadFacetypeFont: (fontId: string, characters: string, variations?: GfxTextDocument["fontVariations"]) => Promise<FontData | undefined>;
 }) {
   const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -220,7 +223,7 @@ function GfxTextThreePreview({ document, active, fontAvailable, loadFacetypeFont
   const [textureStatus, setTextureStatus] = useState<"idle" | "loading" | "error">("idle");
   const [textureMap, setTextureMap] = useState<THREE.Texture | undefined>(undefined);
   const [loadedFont, setLoadedFont] = useState<{ key: string; font: Font } | undefined>(undefined);
-  const fontKey = document.fontId ? `${document.fontId}\u0000${facetypeCharacterSet(document.text || "Text")}` : "";
+  const fontKey = document.fontId ? `${document.fontId}\u0000${JSON.stringify(document.fontVariations ?? {})}\u0000${facetypeCharacterSet(document.text || "Text")}` : "";
   const geometryFont = document.fontId ? loadedFont?.key === fontKey ? loadedFont.font : undefined : previewFont;
 
   useEffect(() => {
@@ -232,7 +235,7 @@ function GfxTextThreePreview({ document, active, fontAvailable, loadFacetypeFont
     let cancelled = false;
     setFontStatus("loading");
     const timeout = window.setTimeout(() => {
-      void loadFacetypeFont(document.fontId!, document.text || "Text").then((data) => {
+      void loadFacetypeFont(document.fontId!, document.text || "Text", document.fontVariations).then((data) => {
         if (cancelled) return;
         if (!data) {
           setLoadedFont(undefined);
@@ -247,7 +250,7 @@ function GfxTextThreePreview({ document, active, fontAvailable, loadFacetypeFont
       cancelled = true;
       window.clearTimeout(timeout);
     };
-  }, [document.fontId, document.text, fontAvailable, fontKey, loadFacetypeFont]);
+  }, [document.fontId, document.fontVariations, document.text, fontAvailable, fontKey, loadFacetypeFont]);
 
   useEffect(() => {
     const source = document.texture?.dataUrl;
@@ -487,10 +490,10 @@ function GfxTextThreePreview({ document, active, fontAvailable, loadFacetypeFont
     <canvas ref={canvasRef} aria-label={t("3Dプレビュー")} />
     <span className="gfxtext-preview-label">{t("3Dプレビュー")}</span>
     <small className="gfxtext-preview-meta">TextGeometry · {document.fontId ? `facetype.js · ${document.fontFamily}` : "Helvetiker"} · {document.fontSize.toFixed(2)} · depth {document.textDepth.toFixed(2)}</small>
-    {fontStatus === "loading" && <div className="gfxtext-preview-status">{t("facetype.jsでローカルフォントを変換中…")}</div>}
+    {fontStatus === "loading" && <div className="gfxtext-preview-status">{t("facetype.jsでフォントを変換中…")}</div>}
     {textureStatus === "loading" && <div className="gfxtext-preview-status gfxtext-texture-status">{t("テクスチャを読み込み中…")}</div>}
     {textureStatus === "error" && <div className="gfxtext-preview-status gfxtext-texture-status error">{t("テクスチャを読み込めませんでした")}</div>}
-    {fontStatus === "error" && <div className="gfxtext-preview-error">{t("ローカルフォントを変換できませんでした")}</div>}
+    {fontStatus === "error" && <div className="gfxtext-preview-error">{t("フォントを変換できませんでした")}</div>}
     {(rendererError || geometryError) && <div className="gfxtext-preview-error">{t("3Dプレビューを表示できません")}</div>}
   </div>;
 }

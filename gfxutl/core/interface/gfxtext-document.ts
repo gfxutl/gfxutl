@@ -1,3 +1,5 @@
+import { normalizeFontVariations, type FontVariationSettings } from "../fonts/font-variation";
+
 export const GFX_TEXT_DOCUMENT_VERSION = 1 as const;
 export const OPEN_GFX_TEXT_EVENT = "gfxutl:open-gfx-text";
 
@@ -37,6 +39,7 @@ export interface GfxTextDocument {
   text: string;
   fontId?: string;
   fontFamily: string;
+  fontVariations?: FontVariationSettings;
   fontSize: number;
   textDepth: number;
   textColor: string;
@@ -100,6 +103,7 @@ export function parseGfxTextDocument(source: string): GfxTextDocument {
     text: typeof value.text === "string" ? value.text : "Text",
     fontId: typeof value.fontId === "string" && value.fontId ? value.fontId : undefined,
     fontFamily: text(value.fontFamily, "Helvetiker"),
+    fontVariations: Object.keys(normalizeFontVariations(value.fontVariations)).length ? normalizeFontVariations(value.fontVariations) : undefined,
     fontSize: number(value.fontSize, 0.01, 100, 1.2),
     textDepth: number(value.textDepth, 0, 100, 0.12),
     textColor: color(value.textColor, "#202020"),

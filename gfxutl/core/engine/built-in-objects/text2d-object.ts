@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import type { GeometrySpec } from "../../protocol/engine-protocol";
+import { fontVariationWeight, type FontVariationSettings } from "../../fonts/font-variation";
 import { BuiltInObject } from "./built-in-object";
 
 const FONT_PIXELS = 128;
@@ -27,9 +28,10 @@ function colorCss(color: number) {
   return `#${Math.max(0, Math.min(0xffffff, color)).toString(16).padStart(6, "0")}`;
 }
 
-function canvasFont(fontPixels: number, fontId?: string, fontFamily?: string) {
+function canvasFont(fontPixels: number, fontId?: string, fontFamily?: string, variations?: FontVariationSettings) {
   const family = (fontId ? `GfxUtl Canvas ${fontId}` : fontFamily || "sans-serif").replace(/["\\]/g, "");
-  return `${fontPixels}px "${family}", sans-serif`;
+  const weight = fontVariationWeight(variations);
+  return `${weight ?? "normal"} ${fontPixels}px "${family}", sans-serif`;
 }
 
 /**
@@ -45,7 +47,7 @@ function createCanvasTextGeometry(spec: GeometrySpec) {
   const idealPadding = Math.max(2, Math.ceil(idealOutlinePixels + fontPixels * 0.08));
   const probe = createCanvas(1, 1);
   const probeContext = contextFor(probe);
-  probeContext.font = canvasFont(fontPixels, spec.fontId, spec.fontFamily);
+  probeContext.font = canvasFont(fontPixels, spec.fontId, spec.fontFamily, spec.fontVariations);
   const contentWidth = Math.max(1, ...lines.map((line) => probeContext.measureText(line || " ").width));
   const idealLinePixels = fontPixels * LINE_HEIGHT;
   const idealWidth = contentWidth + idealPadding * 2;
@@ -59,7 +61,7 @@ function createCanvasTextGeometry(spec: GeometrySpec) {
   const canvas = createCanvas(width, height);
   const context = contextFor(canvas);
   context.clearRect(0, 0, width, height);
-  context.font = canvasFont(fontPixels * rasterScale, spec.fontId, spec.fontFamily);
+  context.font = canvasFont(fontPixels * rasterScale, spec.fontId, spec.fontFamily, spec.fontVariations);
   context.textAlign = "center";
   context.textBaseline = "middle";
   context.lineJoin = "round";

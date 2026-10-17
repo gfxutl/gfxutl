@@ -11,7 +11,7 @@ import type { AudioProcessingSpec, CameraHandleKind, ClipEffect, ClipKeyframe, C
 import { RamPreviewCache } from "./ram-preview-cache";
 import { createRenderPipeline, shadowTypeFrom, ThreeRendererCore, toneMappingFrom } from "./three-renderer-core";
 import { ThreeSceneCore } from "./three-scene-core";
-import { registerLocalFont } from "./three-geometry-factory";
+import { registerLocalFont, registerLocalFontVariation } from "./three-geometry-factory";
 import { MediaBuffer } from "./media-buffer";
 import { RendererPluginRuntime } from "./renderer-plugin-runtime";
 import { ThreeCameraHandles } from "./three-camera-handles";
@@ -2865,6 +2865,10 @@ async function handleMessage(message: EngineRequest) {
     }
     if (message.type === "font-register") {
       await registerLocalFont(message.fontId, message.buffer);
+      send({ type: "font-ready", fontId: message.fontId });
+    }
+    if (message.type === "font-variation-register") {
+      await registerLocalFontVariation(message.fontId, message.sourceFontId, message.variations);
       send({ type: "font-ready", fontId: message.fontId });
     }
     if (message.type === "inspector-camera" && graphics) {

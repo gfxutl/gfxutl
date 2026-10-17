@@ -1,4 +1,5 @@
 import type { RendererPluginBundle, RendererPluginInfo } from "../plugins/plugin-types";
+import type { FontVariationSettings } from "../fonts/font-variation";
 
 export interface ExportSettings {
   format: "mp4" | "webm";
@@ -46,6 +47,7 @@ export interface GeometrySpec {
   text?: string;
   fontId?: string;
   fontFamily?: string;
+  fontVariations?: FontVariationSettings;
   size?: number;
   depth?: number;
   color?: number;
@@ -480,6 +482,7 @@ export type EngineRequest =
   | { type: "geometry-upsert"; object: SceneObjectSpec }
   | { type: "geometry-remove"; id: string }
   | { type: "font-register"; fontId: string; buffer: ArrayBuffer }
+  | { type: "font-variation-register"; fontId: string; sourceFontId: string; variations: FontVariationSettings }
   | { type: "inspector-camera"; operation: "orbit" | "pan" | "walk"; deltaX: number; deltaY: number }
   | { type: "transform-handles"; clipId?: string }
   | { type: "camera-handles"; visible: boolean }

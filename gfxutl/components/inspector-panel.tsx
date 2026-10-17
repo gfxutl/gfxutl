@@ -385,7 +385,16 @@ export function InspectorPanel() {
         <div className="section-title"><span>{selected.textMode === "2d" ? "2D Text" : "3D Text"}</span><small>{selected.textMode === "2d" ? "CANVAS 2D" : "THREE.TEXT"}</small></div>
         <div className="section-body">
           <label className="text-editor-field"><span>{t("内容")}</span><textarea aria-label={t("テキスト内容")} value={selected.text ?? selected.name} onChange={(event) => controller.updateClip(selected.id, { text: event.target.value, name: event.target.value.split("\n")[0].slice(0, 36) || (selected.textMode === "2d" ? "2D Text" : "3D Text") })} /></label>
-          <FontPicker fonts={state.fonts} value={selected.fontId} onOpen={controller.loadFonts} loadPreview={controller.loadFontPreview} onChange={(fontId) => void controller.setTextFont(selected.id, fontId)} />
+          <FontPicker
+            fonts={state.fonts}
+            value={selected.fontId}
+            variations={selected.fontVariations}
+            onOpen={controller.loadFonts}
+            loadPreview={controller.loadFontPreview}
+            loadVariationAxes={controller.loadFontVariationAxes}
+            onChange={(fontId) => void controller.setTextFont(selected.id, fontId)}
+            onVariationsChange={(variations) => void controller.setTextFontVariations(selected.id, variations)}
+          />
           <div className="field-grid"><NumberField label="サイズ" value={selected.fontSize ?? 1.2} onChange={(value) => controller.updateClip(selected.id, { fontSize: Math.max(0.01, value) })} />{selected.textMode !== "2d" && <NumberField label="奥行き" value={selected.textDepth ?? 0.12} onChange={(value) => controller.updateClip(selected.id, { textDepth: Math.max(0, value) })} />}</div>
           <label className="color-field"><span>{t("色")}</span><input aria-label={t("テキスト色")} type="color" value={`#${(selected.textColor ?? 0x202020).toString(16).padStart(6, "0")}`} onChange={(event) => controller.updateClip(selected.id, { textColor: Number.parseInt(event.target.value.slice(1), 16) })} /></label>
           <div className="text-decoration-title">{t("枠線")}</div>

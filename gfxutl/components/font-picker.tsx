@@ -2,6 +2,7 @@ import { Checkmark16Regular as Check, ChevronDown16Regular as ChevronDown, Searc
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { FontFaceInfo } from "../core/interface";
 import { useI18n } from "../core/i18n";
+import { clampFontVariations, defaultFontVariations, fontVariationKey, type FontVariationAxis, type FontVariationSettings } from "../core/fonts/font-variation";
 
 const FONT_LOAD_GROUP_SIZE = 6;
 
@@ -10,22 +11,27 @@ type FontPickerProps = {
   value?: string;
   onChange: (fontId: string) => void;
   onOpen: () => void;
-  loadPreview: (fontId: string) => Promise<string | undefined>;
+  loadPreview: (fontId: string, variations?: FontVariationSettings) => Promise<string | undefined>;
+  variations?: FontVariationSettings;
+  loadVariationAxes?: (fontId: string) => Promise<FontVariationAxis[]>;
+  onVariationsChange?: (variations: FontVariationSettings) => void;
 };
 
-export function FontPicker({ fonts, value = "", onChange, onOpen, loadPreview }: FontPickerProps) {
+export function FontPicker({ fonts, value = "", onChange, onOpen, loadPreview, variations, loadVariationAxes, onVariationsChange }: FontPickerProps) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedPreviewFamily, setSelectedPreviewFamily] = useState<string>();
   const [previewFamilies, setPreviewFamilies] = useState<Record<string, string>>({});
+  const [variationAxes, setVariationAxes] = useState<FontVariationAxis[]>([]);
   const rootRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const selectedFont = fonts.find((font) => font.postscriptName === value);
+  const variationSignature = fontVariationKey(variations);
   const normalizedQuery = query.trim().normalize("NFKC").toLocaleLowerCase();
   const filteredFonts = useMemo(() => normalizedQuery
-    ? fonts.filter((font) => `${font.family} ${font.style} ${font.postscriptName}`.normalize("NFKC").toLocaleLowerCase().includes(normalizedQuery))
+    ? fonts.filter((font) => `${font.family} ${font.style} ${font.postscriptName} ${font.source === "google" ? "Google Fonts" : "local"}`.normalize("NFKC").toLocaleLowerCase().includes(normalizedQuery))
     : fonts, [fonts, normalizedQuery]);
   const showBuiltin = !normalizedQuery || "helvetiker 内蔵 builtin".includes(normalizedQuery);
   const fontGroups = useMemo(() => Array.from({ length: Math.ceil(filteredFonts.length / FONT_LOAD_GROUP_SIZE) }, (_, index) => (
@@ -35,11 +41,20 @@ export function FontPicker({ fonts, value = "", onChange, onOpen, loadPreview }:
   useEffect(() => {
     let cancelled = false;
     setSelectedPreviewFamily(undefined);
-    if (selectedFont) void loadPreview(selectedFont.postscriptName).then((family) => {
+    if (selectedFont) void loadPreview(selectedFont.postscriptName, variations).then((family) => {
       if (!cancelled) setSelectedPreviewFamily(family);
     });
     return () => { cancelled = true; };
-  }, [loadPreview, selectedFont]);
+  }, [loadPreview, selectedFont, variationSignature]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setVariationAxes([]);
+    if (value && loadVariationAxes) void loadVariationAxes(value).then((axes) => {
+      if (!cancelled) setVariationAxes(axes);
+    });
+    return () => { cancelled = true; };
+  }, [loadVariationAxes, value]);
 
   useEffect(() => setPreviewFamilies({}), [fonts]);
 
@@ -150,13 +165,32 @@ export function FontPicker({ fonts, value = "", onChange, onOpen, loadPreview }:
               >
                 <Check aria-hidden="true" />
                 <span style={previewFamily ? { fontFamily: previewFamily } : undefined}>{font.family}</span>
-                <small>{font.style}</small>
+                <small>{font.source === "google" ? "Google Fonts" : font.style}</small>
               </button>;
             })}
           </Fragment>)}
           {!showBuiltin && filteredFonts.length === 0 && <div className="font-picker-empty">{t("該当するフォントがありません")}</div>}
         </div>
       </div>}
+      {variationAxes.length > 0 && onVariationsChange && <div className="font-variation-controls">
+        <div className="font-variation-heading"><span>{t("Variable Font")}</span><button type="button" onClick={() => onVariationsChange(defaultFontVariations(variationAxes))}>{t("リセット")}</button></div>
+        {variationAxes.map((axis) => {
+          const values = clampFontVariations(variations, variationAxes);
+          const coordinate = values[axis.tag];
+          const step = variationStep(axis);
+          const change = (next: number) => onVariationsChange({ ...values, [axis.tag]: Math.max(axis.minValue, Math.min(axis.maxValue, next)) });
+          return <label className="font-variation-axis" key={axis.tag} title={axis.name}>
+            <span>{axis.tag}</span>
+            <input className="ui-slider" type="range" min={axis.minValue} max={axis.maxValue} step={step} value={coordinate} onChange={(event) => change(Number(event.target.value))} />
+            <input type="number" min={axis.minValue} max={axis.maxValue} step={step} value={coordinate} onChange={(event) => change(Number(event.target.value))} />
+          </label>;
+        })}
+      </div>}
     </div>
   </div>;
+}
+
+function variationStep(axis: FontVariationAxis) {
+  const range = Math.max(0.0001, axis.maxValue - axis.minValue);
+  return Math.max(0.01, 10 ** Math.floor(Math.log10(range / 100)));
 }

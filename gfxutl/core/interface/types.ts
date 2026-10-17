@@ -1,4 +1,5 @@
 import type { RendererPluginInfo } from "../plugins/plugin-types";
+import type { FontVariationSettings } from "../fonts/font-variation";
 
 export type TrackKind = "video" | "audio" | "title" | "object" | "filter" | "group";
 
@@ -123,6 +124,7 @@ export interface TimelineClip {
   textMode?: "2d" | "3d";
   fontId?: string;
   fontFamily?: string;
+  fontVariations?: FontVariationSettings;
   fontSize?: number;
   textDepth?: number;
   textColor?: number;
@@ -153,6 +155,9 @@ export interface FontFaceInfo {
   fullName: string;
   family: string;
   style: string;
+  source?: "local" | "google";
+  /** Repository-relative TTF path for a Google Fonts family. */
+  googleFontsPath?: string;
 }
 
 export interface CacheState {

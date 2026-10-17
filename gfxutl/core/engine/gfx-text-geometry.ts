@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import type * as OpenType from "opentype.js";
 import helvetikerData from "three.regular.helvetiker";
 import type { GeometrySpec } from "../protocol/engine-protocol";
+import { fontVariationId, normalizeFontVariations, type FontVariationSettings } from "../fonts/font-variation";
 
 type GlyphCommand =
   | { type: "M" | "L"; x: number; y: number }
@@ -66,6 +67,9 @@ export const GFX_TEXT_ATTRIBUTES = {
 } as const;
 
 const localFonts = new Map<string, GlyphSource>();
+const registeredOpenTypeFonts = new Map<string, OpenType.Font>();
+const derivedVariationFonts = new Map<string, GlyphSource>();
+const MAX_DERIVED_VARIATION_FONTS = 64;
 
 class TypefaceGlyphSource implements GlyphSource {
   readonly id = "gfxutl:helvetiker";
@@ -112,7 +116,7 @@ class OpenTypeGlyphSource implements GlyphSource {
   private readonly glyphById = new Map<number, OpenType.Glyph>();
   private readonly kerningCache = new Map<string, number>();
 
-  constructor(readonly id: string, private readonly font: OpenType.Font) {
+  constructor(readonly id: string, private readonly font: OpenType.Font, private readonly variations: FontVariationSettings = {}) {
     this.unitsPerEm = font.unitsPerEm;
     this.lineHeight = font.ascender - font.descender;
   }
@@ -123,7 +127,11 @@ class OpenTypeGlyphSource implements GlyphSource {
     // opentype.js is parsed in low-memory mode. charToGlyph materializes only
     // this glyph's outline from the font tables, rather than expanding the font.
     const source = this.font.charToGlyph(character);
-    const path = source.getPath(0, 0, this.unitsPerEm, { kerning: false }, this.font);
+    const variableFont = this.font as OpenType.Font & { variation?: { getTransform(glyph: OpenType.Glyph, settings?: FontVariationSettings): OpenType.Glyph } };
+    const transformed = variableFont.variation && Object.keys(this.variations).length
+      ? variableFont.variation.getTransform(source, this.variations)
+      : source;
+    const path = source.getPath(0, 0, this.unitsPerEm, { kerning: false, variation: this.variations } as OpenType.RenderOptions, this.font);
     const commands: GlyphCommand[] = [];
     for (const raw of path.commands) {
       if (raw.type === "M" || raw.type === "L") commands.push({ type: raw.type, x: raw.x, y: -raw.y });
@@ -131,7 +139,7 @@ class OpenTypeGlyphSource implements GlyphSource {
       else if (raw.type === "C") commands.push({ type: "C", x: raw.x, y: -raw.y, x1: raw.x1, y1: -raw.y1, x2: raw.x2, y2: -raw.y2 });
       else if (raw.type === "Z") commands.push({ type: "Z" });
     }
-    const glyph = { id: source.index, advance: source.advanceWidth ?? this.unitsPerEm, commands };
+    const glyph = { id: source.index, advance: transformed.advanceWidth ?? source.advanceWidth ?? this.unitsPerEm, commands };
     this.glyphCache.set(character, glyph);
     this.glyphById.set(glyph.id, source);
     return glyph;
@@ -156,7 +164,14 @@ const defaultFont = new TypefaceGlyphSource(helvetikerData as unknown as Typefac
 export async function registerGfxTextFont(fontId: string, buffer: ArrayBuffer) {
   const opentype = await import("opentype.js");
   const font = opentype.parse(buffer, { lowMemory: true });
+  registeredOpenTypeFonts.set(fontId, font);
   localFonts.set(fontId, new OpenTypeGlyphSource(fontId, font));
+}
+
+export function registerGfxTextFontVariation(fontId: string, sourceFontId: string, variations: FontVariationSettings) {
+  const font = registeredOpenTypeFonts.get(sourceFontId);
+  if (!font) throw new Error(`Source font is not registered: ${sourceFontId}`);
+  localFonts.set(fontId, new OpenTypeGlyphSource(fontId, font, normalizeFontVariations(variations)));
 }
 
 export function getGfxTextFontCacheInfo(fontId?: string) {
@@ -164,8 +179,27 @@ export function getGfxTextFontCacheInfo(fontId?: string) {
   return { fontId: font?.id, cachedGlyphs: font?.cacheSize() ?? 0 };
 }
 
-function sourceFor(fontId?: string) {
-  return fontId ? localFonts.get(fontId) ?? defaultFont : defaultFont;
+function sourceFor(fontId?: string, variations?: FontVariationSettings) {
+  if (!fontId) return defaultFont;
+  const normalized = normalizeFontVariations(variations);
+  const variationId = fontVariationId(fontId, normalized);
+  const registered = localFonts.get(variationId);
+  if (registered) return registered;
+  const cached = derivedVariationFonts.get(variationId);
+  if (cached) {
+    derivedVariationFonts.delete(variationId);
+    derivedVariationFonts.set(variationId, cached);
+    return cached;
+  }
+  const font = registeredOpenTypeFonts.get(fontId);
+  if (!font || variationId === fontId) return localFonts.get(fontId) ?? defaultFont;
+  const source = new OpenTypeGlyphSource(variationId, font, normalized);
+  derivedVariationFonts.set(variationId, source);
+  if (derivedVariationFonts.size > MAX_DERIVED_VARIATION_FONTS) {
+    const oldest = derivedVariationFonts.keys().next().value;
+    if (oldest) derivedVariationFonts.delete(oldest);
+  }
+  return source;
 }
 
 function glyphShapes(glyph: PreparedGlyph, scale: number, penX: number, penY: number) {
@@ -252,7 +286,10 @@ export class GfxTextGeometry extends THREE.BufferGeometry {
     const depth = Math.max(0, spec.depth ?? 0.12);
     const segments = Math.max(1, Math.floor(spec.curveSegments ?? 8));
     const stagger = Math.max(0, spec.glyphStagger ?? 0.04);
-    const source = sourceFor(spec.fontId);
+    // Geometry specs are the source of truth for variable coordinates. This
+    // avoids depending on a separately registered alias when a slider update
+    // and a preview render are queued close together.
+    const source = sourceFor(spec.fontId, spec.fontVariations);
     const scale = size / source.unitsPerEm;
     const buffers: GeometryBuffers = { positions: [], uvs: [], glyphIndices: [], glyphDelays: [], glyphOrigins: [], glyphUvs: [] };
     const glyphs: GfxTextGlyphLayout[] = [];

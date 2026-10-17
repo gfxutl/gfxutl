@@ -1,6 +1,7 @@
 import type { CameraHandleKind, CameraHandleTransform, EngineRequest, EngineResponse, ExportSettings, MediaFileSource, MediaReadGraph, PreviewPickResult, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, SceneSettingsPatch, TimelinePatch, TimelineSnapshot } from "../protocol/engine-protocol";
 import type { RendererPluginBundle, RendererPluginInfo } from "../plugins/plugin-types";
 import nagaWasmUrl from "../naga-wasm/pkg/naga_wasm_bg.wasm?url";
+import type { FontVariationSettings } from "../fonts/font-variation";
 
 type MediaInfo = Extract<EngineResponse, { type: "media-info" }>;
 type ExportResult = { buffer: ArrayBuffer; mimeType: string };
@@ -434,6 +435,7 @@ export class EngineClient {
   upsertGeometry(object: SceneObjectSpec) { this.post({ type: "geometry-upsert", object }); }
   removeGeometry(id: string) { this.post({ type: "geometry-remove", id }); }
   registerFont(fontId: string, buffer: ArrayBuffer) { this.post({ type: "font-register", fontId, buffer }, [buffer]); }
+  registerFontVariation(fontId: string, sourceFontId: string, variations: FontVariationSettings) { this.post({ type: "font-variation-register", fontId, sourceFontId, variations }); }
 }
 
 function abortablePromise<T>(promise: Promise<T>, signal: AbortSignal) {

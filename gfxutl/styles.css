@@ -735,6 +735,15 @@ svg { width: 16px; height: 16px; }
 .font-picker-list button > small { color: #676c71; font: 7px "IBM Plex Mono", monospace; white-space: nowrap; }
 .font-picker-list button.builtin > span { font-family: "DM Sans", "Noto Sans JP", sans-serif; font-size: 9px; }
 .font-picker-empty { padding: 18px 8px; color: #676c71; font-size: 9px; text-align: center; }
+.font-variation-controls { display: grid; gap: 5px; margin-top: 6px; }
+.font-variation-heading { display: flex; align-items: center; justify-content: space-between; color: #8e9498; font: 7px "IBM Plex Mono", monospace; letter-spacing: .04em; }
+.font-variation-heading button { border: 0; padding: 0; background: transparent; color: #747b80; font: inherit; cursor: pointer; }
+.font-variation-heading button:hover, .font-variation-heading button:focus-visible { color: #fff; outline: 0; }
+.font-variation-axis { min-width: 0; display: grid; grid-template-columns: 34px minmax(0, 1fr) 52px; align-items: center; gap: 5px; color: #777d81; font: 7px "IBM Plex Mono", monospace; }
+.font-variation-axis > span { text-transform: uppercase; }
+.font-variation-axis input[type="range"] { width: 100%; min-width: 0; accent-color: #aeb4b8; }
+.font-variation-axis input[type="number"] { width: 100%; height: 22px; box-sizing: border-box; border: 1px solid #303438; border-radius: 3px; outline: 0; padding: 0 4px; background: #0b0d0e; color: #bdc1c3; font: 7px "IBM Plex Mono", monospace; }
+.font-variation-axis input[type="number"]:focus { border-color: #777c81; }
 .color-field input { width: 100%; height: 26px; padding: 2px; border: 1px solid #2a2d31; border-radius: 3px; background: #0d0f10; }
 .text-decoration-title { margin: 10px 0 7px; padding-top: 8px; border-top: 1px solid #282b2f; color: #9c9fa3; font-size: 9px; font-weight: 600; }
 .camera-object-heading { display: flex; min-height: 29px; align-items: center; justify-content: space-between; gap: 7px; }
