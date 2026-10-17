@@ -2167,6 +2167,19 @@ async function encodeCanvasAsWebp(canvas: OffscreenCanvas) {
   return createImageBitmap(blob);
 }
 
+async function transcodeRasterImageToWebp(source: Blob) {
+  const decoded = await createImageBitmap(source, { imageOrientation: "from-image" });
+  try {
+    const canvas = new OffscreenCanvas(decoded.width, decoded.height);
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("画像変換用のOffscreenCanvas 2Dコンテキストを作成できません");
+    context.drawImage(decoded, 0, 0);
+    return await encodeCanvasAsWebp(canvas);
+  } finally {
+    decoded.close();
+  }
+}
+
 async function transcodeDataTextureToWebp(texture: THREE.DataTexture) {
   const image = texture.image as { data: ArrayLike<number>; width: number; height: number };
   const { data, width, height } = image;
@@ -2216,10 +2229,7 @@ async function hydrateImage(assetId: string) {
       bitmap = await transcodeDataTextureToWebp(sourceTexture as THREE.DataTexture);
       bitmapFlipY = sourceTexture.flipY;
     } else {
-      // Browsers already decode common raster formats into GPU-uploadable
-      // bitmaps. Avoid a full-resolution canvas draw and lossless WebP encode
-      // on the first view.
-      bitmap = await createImageBitmap(workerSource.blob, { imageOrientation: "from-image" });
+      bitmap = await transcodeRasterImageToWebp(workerSource.blob);
     }
     const textureImage = sourceTexture?.image as { width?: number; height?: number } | undefined;
     return {
