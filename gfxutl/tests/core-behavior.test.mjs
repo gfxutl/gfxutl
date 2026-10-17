@@ -142,6 +142,19 @@ test("preview resize keeps its center while Ctrl is held", async () => {
   assert.equal(result.centerOffsetY, 0);
 });
 
+test("timeline Shift-drag locks movement to its dominant axis", async () => {
+  const { constrainTimelineDrag, resolveTimelineDragAxis } = await importTypeScript("../core/interface/timeline-drag.ts");
+  const horizontal = resolveTimelineDragAxis(12, 5, null, true);
+  assert.equal(horizontal, "horizontal");
+  assert.deepEqual(constrainTimelineDrag(12, 5, horizontal), { deltaX: 12, deltaY: 0 });
+
+  const vertical = resolveTimelineDragAxis(3, -9, null, true);
+  assert.equal(vertical, "vertical");
+  assert.deepEqual(constrainTimelineDrag(3, -9, vertical), { deltaX: 0, deltaY: -9 });
+  assert.equal(resolveTimelineDragAxis(30, 1, vertical, true), "vertical");
+  assert.equal(resolveTimelineDragAxis(30, 1, vertical, false), null);
+});
+
 test("Ctrl+Meta+number resolves preview tabs in their visible order", async () => {
   const { resolvePreviewTabShortcut } = await importTypeScript("../core/interface/preview-tab-shortcut.ts");
   const shortcut = (key, overrides = {}) => resolvePreviewTabShortcut({

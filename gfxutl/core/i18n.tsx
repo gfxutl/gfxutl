@@ -426,6 +426,7 @@ const EN: Record<string, string> = {
   "混在": "Mixed",
   "レンズ": "Lens",
   "ドラッグで移動 / Shift+クリックで削除": "Drag to move / Shift-click to delete",
+  "ドラッグで移動 / Shift+ドラッグで水平・垂直移動 / Ctrl+ドラッグで複製": "Drag to move / Shift-drag horizontally or vertically / Ctrl-drag to duplicate",
   "ここに配置": "Drop here",
   "端を揃える": "Align edge",
   "高さを揃える": "Align vertically",

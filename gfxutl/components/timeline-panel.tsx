@@ -22,6 +22,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragE
 import { clampTimelineVerticalZoom, clampTimelineZoom, MIN_GROUP_HEIGHT, shallowEqual, timelineClipHeight, timelineGroupDescendants, useEditor } from "../core/interface";
 import type { MediaAsset, SceneKeyframe, TimelineClip } from "../core/interface";
 import { useI18n } from "../core/i18n";
+import { constrainTimelineDrag, resolveTimelineDragAxis, type TimelineDragAxis } from "../core/interface/timeline-drag";
 
 const MIN_WORKSPACE_HEIGHT = 720;
 const BASE_PX_PER_SECOND = 26;
@@ -631,7 +632,7 @@ const Clip = memo(function Clip({ clip, asset, waveformPeaks, pxPerSecond, verti
   const { t } = useI18n();
   const [dragging, setDragging] = useState(false);
   const [resizing, setResizing] = useState(false);
-  const drag = useRef<{ pointerId: number; startX: number; startY: number; originalStart: number; originalY: number; lastStart: number; lastY: number } | null>(null);
+  const drag = useRef<{ pointerId: number; anchorId: string; startX: number; startY: number; originalStart: number; originalY: number; lastStart: number; lastY: number; axis: TimelineDragAxis | null; duplicateOnDrag: boolean; duplicated: boolean } | null>(null);
   const visual = isVisualClip(clip);
   const muted = clip.muted === true || ((clip.kind === "video" || clip.kind === "audio") && (clip.volume ?? 0) <= -60);
   const clipWidth = Math.max(MIN_CLIP_WIDTH, clip.duration * pxPerSecond);
@@ -643,9 +644,9 @@ const Clip = memo(function Clip({ clip, asset, waveformPeaks, pxPerSecond, verti
     if (event.button !== 0 || clip.locked) return;
     event.preventDefault();
     event.stopPropagation();
-    drag.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originalStart: clip.start, originalY: clip.y, lastStart: clip.start, lastY: clip.y };
+    drag.current = { pointerId: event.pointerId, anchorId: clip.id, startX: event.clientX, startY: event.clientY, originalStart: clip.start, originalY: clip.y, lastStart: clip.start, lastY: clip.y, axis: null, duplicateOnDrag: event.ctrlKey, duplicated: false };
     event.currentTarget.setPointerCapture(event.pointerId);
-    if (event.shiftKey || event.ctrlKey || event.metaKey) controller.selectClip(clip.id, true);
+    if ((event.shiftKey || event.ctrlKey || event.metaKey) && !selected) controller.selectClip(clip.id, true);
     else if (!selected) controller.selectClip(clip.id);
     setDragging(true);
   };
@@ -653,11 +654,30 @@ const Clip = memo(function Clip({ clip, asset, waveformPeaks, pxPerSecond, verti
   const dragClip = (event: ReactPointerEvent<HTMLButtonElement>) => {
     const active = drag.current;
     if (!active || active.pointerId !== event.pointerId) return;
-    const rawStart = active.originalStart + (event.clientX - active.startX) / pxPerSecond;
-    const rawY = Math.max(0, active.originalY + (event.clientY - active.startY) / verticalZoom);
+    const pointerDeltaX = event.clientX - active.startX;
+    const pointerDeltaY = event.clientY - active.startY;
+    if (active.duplicateOnDrag && !active.duplicated) {
+      if (Math.hypot(pointerDeltaX, pointerDeltaY) < 4) return;
+      const duplicateId = controller.duplicateSelectionForDrag(clip.id);
+      if (!duplicateId) return;
+      active.anchorId = duplicateId;
+      active.duplicated = true;
+    }
+    active.axis = resolveTimelineDragAxis(pointerDeltaX, pointerDeltaY, active.axis, event.shiftKey);
+    const constrained = constrainTimelineDrag(pointerDeltaX, pointerDeltaY, active.axis);
+    const rawStart = active.originalStart + constrained.deltaX / pxPerSecond;
+    const rawY = Math.max(0, active.originalY + constrained.deltaY / verticalZoom);
     const snapshot = controller.getSnapshot();
-    const excludedIds = timelineGroupDescendants(snapshot.clips, snapshot.selectedClipIds.includes(clip.id) ? snapshot.selectedClipIds : [clip.id]);
-    const alignment = findTimelineAlignment({ start: Math.max(0, rawStart), duration: clip.duration, y: rawY, height: timelineClipHeight(clip) }, snapshot.clips, excludedIds, pxPerSecond, verticalZoom);
+    const excludedIds = timelineGroupDescendants(snapshot.clips, snapshot.selectedClipIds.includes(active.anchorId) ? snapshot.selectedClipIds : [active.anchorId]);
+    const alignment = findTimelineAlignment(
+      { start: Math.max(0, rawStart), duration: clip.duration, y: rawY, height: timelineClipHeight(clip) },
+      snapshot.clips,
+      excludedIds,
+      pxPerSecond,
+      verticalZoom,
+      active.axis === "vertical" ? [] : ["start", "end"],
+      active.axis === "horizontal" ? [] : ["top", "center", "bottom"],
+    );
     onAlignmentSuggestions(alignment?.suggestions ?? []);
     active.lastStart = Math.max(0, !snapEnabled || event.shiftKey
       ? rawStart
@@ -665,13 +685,13 @@ const Clip = memo(function Clip({ clip, asset, waveformPeaks, pxPerSecond, verti
         ? alignment.start
         : Math.round(rawStart * fps) / fps);
     active.lastY = !snapEnabled || event.shiftKey ? rawY : alignment?.y ?? rawY;
-    controller.moveClip(clip.id, active.lastStart, active.lastY);
+    controller.moveClip(active.anchorId, active.lastStart, active.lastY);
   };
 
   const endDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
     const active = drag.current;
     if (!active || active.pointerId !== event.pointerId) return;
-    controller.moveClip(clip.id, active.lastStart, active.lastY);
+    controller.moveClip(active.anchorId, active.lastStart, active.lastY);
     onAlignmentSuggestions([]);
     drag.current = null;
     setDragging(false);
@@ -813,6 +833,7 @@ const Clip = memo(function Clip({ clip, asset, waveformPeaks, pxPerSecond, verti
       data-duration={clip.duration}
       data-height={timelineClipHeight(clip)}
       data-nesting-depth={nestingDepth}
+      title={t("ドラッグで移動 / Shift+ドラッグで水平・垂直移動 / Ctrl+ドラッグで複製")}
       onPointerDown={beginDrag}
       onPointerMove={dragClip}
       onPointerUp={endDrag}

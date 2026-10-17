@@ -2051,12 +2051,10 @@ export class EditorController {
     this.selectClips(ids);
   };
 
-  duplicateSelection = () => {
-    const sourceIds = timelineGroupDescendants(this.state.clips, this.state.selectedClipIds.length ? this.state.selectedClipIds : this.state.selectedClipId ? [this.state.selectedClipId] : []);
+  private duplicateClips = (sourceIds: ReadonlySet<string>, startOffset: number, yOffset: number) => {
     const sources = this.state.clips.filter((clip) => sourceIds.has(clip.id));
-    if (!sources.length) return;
+    if (!sources.length) return new Map<string, string>();
     const idMap = new Map(sources.map((source) => [source.id, crypto.randomUUID()]));
-    const frame = 1 / this.state.fps;
     const copies = sources.map((source) => {
       const id = idMap.get(source.id)!;
       const copy = structuredClone(source);
@@ -2065,8 +2063,8 @@ export class EditorController {
         ...copy,
         id,
         name: `${source.name} ${t("のコピー")}`,
-        start: source.start + frame,
-        y: source.y + 12,
+        start: source.start + startOffset,
+        y: source.y + yOffset,
         geometry: source.geometry ? { ...copy.geometry!, id: `${id}:geometry` } : undefined,
         groupId: source.groupId ? idMap.get(source.groupId) : undefined,
         parentId: source.parentId ? idMap.get(source.parentId) ?? source.parentId : undefined,
@@ -2086,6 +2084,17 @@ export class EditorController {
     this.invalidatePreviewCache();
     this.schedulePersistence();
     this.renderPreview(false);
+    return idMap;
+  };
+
+  duplicateSelection = () => {
+    const sourceIds = timelineGroupDescendants(this.state.clips, this.state.selectedClipIds.length ? this.state.selectedClipIds : this.state.selectedClipId ? [this.state.selectedClipId] : []);
+    this.duplicateClips(sourceIds, 1 / this.state.fps, 12);
+  };
+
+  duplicateSelectionForDrag = (id: string) => {
+    const sourceIds = timelineGroupDescendants(this.state.clips, this.state.selectedClipIds.includes(id) ? this.state.selectedClipIds : [id]);
+    return this.duplicateClips(sourceIds, 0, 0).get(id) ?? null;
   };
 
   private addTextObjectWithMode = (textMode: "2d" | "3d", placement?: Partial<Pick<ContextMenuState, "time" | "timelineY" | "positionX" | "positionY">>) => {
