@@ -1,0 +1,43 @@
+name: Promote dev to main hourly
+
+on:
+  schedule:
+    # Avoid the top-of-hour congestion while still running once every hour.
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: promote-dev-to-main
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Fast-forward main when dev changed
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Compare and promote dev
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main dev
+
+          if git diff --quiet origin/main origin/dev --; then
+            echo "main already matches dev; nothing to promote."
+            exit 0
+          fi
+
+          if ! git merge-base --is-ancestor origin/main origin/dev; then
+            echo "main is not an ancestor of dev; refusing a non-fast-forward update." >&2
+            exit 1
+          fi
+
+          git push origin origin/dev:refs/heads/main
