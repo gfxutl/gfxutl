@@ -1,4 +1,4 @@
-name: Promote dev to main hourly
+name: Promote main to release hourly
 
 on:
   schedule:
@@ -10,12 +10,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: promote-dev-to-main
+  group: promote-main-to-release
   cancel-in-progress: false
 
 jobs:
   promote:
-    name: Fast-forward main when dev changed
+    name: Fast-forward release when main changed
     runs-on: ubuntu-latest
     steps:
       - name: Create promotion app token
@@ -34,20 +34,20 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.promotion-token.outputs.token }}
 
-      - name: Compare and promote dev
+      - name: Compare and promote main
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --no-tags origin main dev
+          git fetch --no-tags origin main release
 
-          if git diff --quiet origin/main origin/dev --; then
-            echo "main already matches dev; nothing to promote."
+          if git diff --quiet origin/release origin/main --; then
+            echo "release already matches main; nothing to promote."
             exit 0
           fi
 
-          if ! git merge-base --is-ancestor origin/main origin/dev; then
-            echo "main is not an ancestor of dev; refusing a non-fast-forward update." >&2
+          if ! git merge-base --is-ancestor origin/release origin/main; then
+            echo "release is not an ancestor of main; refusing a non-fast-forward update." >&2
             exit 1
           fi
 
-          git push origin origin/dev:refs/heads/main
+          git push origin origin/main:refs/heads/release
