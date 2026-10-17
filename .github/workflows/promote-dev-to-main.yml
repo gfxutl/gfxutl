@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: promote-dev-to-main
@@ -18,11 +18,20 @@ jobs:
     name: Fast-forward main when dev changed
     runs-on: ubuntu-latest
     steps:
+      - name: Create promotion app token
+        id: promotion-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.PROMOTER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PROMOTER_APP_PRIVATE_KEY }}
+          permission-contents: write
+
       - name: Check out the repository
         uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
+          token: ${{ steps.promotion-token.outputs.token }}
 
       - name: Compare and promote dev
         shell: bash
