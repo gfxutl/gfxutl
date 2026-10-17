@@ -433,7 +433,7 @@ export interface MediaFileSource {
 }
 
 export interface SourceIoProfile {
-  backend: "media-buffer";
+  backend: "media-buffer" | "blob-source";
   bytesRead: number;
   readOperations: number;
   largestRead: number;
@@ -468,14 +468,15 @@ export type EngineRequest =
   | { type: "render"; sequence: number; time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; previewView: PreviewView; focusClipId?: string; sceneSettingsPatch?: SceneSettingsPatch }
   | { type: "timeline-sync"; snapshot: TimelineSnapshot }
   | { type: "timeline-patch"; patch: TimelinePatch }
-  | { type: "inspect-media"; requestId: string; assetId: string; source: MediaFileSource; stream: ReadableStream<Uint8Array> }
-  | { type: "inspect-image"; requestId: string; assetId: string; source: MediaFileSource; stream: ReadableStream<Uint8Array> }
-  | { type: "inspect-model"; requestId: string; assetId: string; source: MediaFileSource; stream: ReadableStream<Uint8Array> }
+  | { type: "inspect-media"; requestId: string; assetId: string; source: MediaFileSource; file: File }
+  | { type: "inspect-image"; requestId: string; assetId: string; source: MediaFileSource; file: File }
+  | { type: "inspect-model"; requestId: string; assetId: string; source: MediaFileSource; file: File }
   | { type: "media-buffer-plan"; graph: MediaReadGraph }
-  | { type: "media-buffer-load"; assetId: string; source: MediaFileSource; stream: ReadableStream<Uint8Array> }
+  | { type: "media-buffer-load"; assetId: string; kind: "video" | "audio" | "image" | "model"; source: MediaFileSource; file: File }
   | { type: "release-media"; assetId: string }
   | { type: "decode-audio-preview"; requestId: string; assetId: string; startTime: number; endTime: number }
   | { type: "media-thumbnail"; requestId: string; assetId: string; time: number; timeline?: { width: number; height: number } }
+  | { type: "cancel-request"; requestId: string }
   | { type: "geometry-upsert"; object: SceneObjectSpec }
   | { type: "geometry-remove"; id: string }
   | { type: "font-register"; fontId: string; buffer: ArrayBuffer }

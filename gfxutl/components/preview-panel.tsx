@@ -1,15 +1,16 @@
 import { Camera16Regular as Camera, Dismiss16Regular as X, Eye16Regular as Inspector, MicRecord16Regular as MicRecord, Open16Regular as ExternalLink, TextFont16Regular as TextFont } from "@fluentui/react-icons";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { shallowEqual, useEditor } from "../core/interface";
 import type { CameraHandleKind, TimelineClip, TransformHandleKind } from "../core/interface";
 import type { MediaAsset } from "../core/interface";
 import { resolvePreviewResize } from "../core/interface/preview-resize";
 import { AudioWaveformEditor } from "./audio-waveform-editor";
 import { useI18n } from "../core/i18n";
-import { AudioRecordingPanel } from "./audio-recording-panel";
 import { OPEN_AUDIO_RECORDING_EVENT } from "../core/interface/recording-events";
-import { GfxTextEditor } from "./gfxtext-editor";
 import { OPEN_GFX_TEXT_EVENT, type GfxTextEditorEntry } from "../core/interface/gfxtext-document";
+
+const AudioRecordingPanel = lazy(() => import("./audio-recording-panel").then((module) => ({ default: module.AudioRecordingPanel })));
+const GfxTextEditor = lazy(() => import("./gfxtext-editor").then((module) => ({ default: module.GfxTextEditor })));
 
 export function PreviewPanel() {
   const { state, controller } = useEditor((value) => ({
@@ -530,8 +531,10 @@ export function PreviewPanel() {
         {previewTabs.map((clip, index) => <div key={clip.id} className={`preview-tab preview-tab-object ${!recordingTabActive && !activeGfxTextId && state.activePreviewClipId === clip.id ? "active" : ""}`} role="tab" tabIndex={0} aria-selected={!recordingTabActive && !activeGfxTextId && state.activePreviewClipId === clip.id} aria-keyshortcuts={index < 7 ? `Control+Meta+${index + 3}` : undefined} title={`${t("{name}のみをプレビュー", { name: clip.name })}${index < 7 ? ` (Ctrl+Meta+${index + 3})` : ""}`} onClick={() => { setRecordingTabActive(false); setActiveGfxTextId(null); controller.setPreviewTab(clip.id); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setRecordingTabActive(false); setActiveGfxTextId(null); controller.setPreviewTab(clip.id); } }}><span>{clip.name}</span><button type="button" aria-label={t("{name}のプレビューを閉じる", { name: clip.name })} onClick={(event) => { event.stopPropagation(); controller.closePreviewTab(clip.id); }}><X /></button></div>)}
       </div>
       {activeAudioClip && !recordingTabActive && !activeGfxTextId && <AudioWaveformEditor clip={activeAudioClip} asset={state.assets.find((asset) => asset.id === activeAudioClip.assetId)} />}
-      {recordingTabOpen && <AudioRecordingPanel active={recordingTabActive} onRecordingChange={setAudioRecording} />}
-      {gfxTextTabs.map((entry) => <GfxTextEditor key={entry.id} entry={entry} active={activeGfxTextId === entry.id} />)}
+      <Suspense fallback={<div className="preview-editor-loading" />}>
+        {recordingTabOpen && <AudioRecordingPanel active={recordingTabActive} onRecordingChange={setAudioRecording} />}
+        {gfxTextTabs.map((entry) => <GfxTextEditor key={entry.id} entry={entry} active={activeGfxTextId === entry.id} />)}
+      </Suspense>
       <div className={`preview-stage ${inspectorView ? "inspector-view" : ""} ${inspectorNavigation ? `inspector-${inspectorNavigation}` : ""} ${hoveredCameraHandle ? "camera-handle-hover" : ""} ${draggingCameraHandle ? "camera-handle-dragging" : ""} ${activeAudioClip || recordingTabActive || activeGfxTextId ? "preview-content-hidden" : ""} ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""} ${previewCursorClass(hoveredHandle, hoveredObject)}`} ref={stageRef} style={previewStyle} title={inspectorView ? t("ギズモ: 軸操作 / ドラッグ: 周回 / Ctrl+ドラッグ: 上下左右 / Shift+ドラッグ: 前後左右 / ホイール: カメラズーム") : undefined} onPointerDown={beginStageInteraction} onWheel={zoomInspectorCamera} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; setHoveredCamera(false); hoveredCameraHandleRef.current = null; setHoveredCameraHandle(null); if (!draggingClipId) { setHoveredClipId(null); setHoveredHandle(null); } }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
         event.preventDefault();
         const rect = event.currentTarget.getBoundingClientRect();

@@ -191,6 +191,7 @@ const TIMELINE_THUMBNAIL_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 const timelineThumbnailCache = new Map<string, { assetId: string; blob: Blob }>();
 const pendingTimelineThumbnails = new Map<string, Promise<Blob>>();
 const timelineThumbnailAssetRevisions = new Map<string, number>();
+const audioWaveformCache = new Map<string, number[]>();
 let timelineThumbnailCacheBytes = 0;
 /** THREE-OPT: O(1) timeline root lookup replaces recursive Scene.getObjectByName scans. */
 const timelineRoots = new Map<string, THREE.Object3D>();
@@ -1911,6 +1912,7 @@ async function render(time: number, shouldCache: boolean, mode: "realtime" | "pl
 
 function detachAssetInstances(assetId: string) {
   evictTimelineThumbnails(assetId);
+  audioWaveformCache.delete(assetId);
   mediaRuntimes.delete(assetId);
   for (const [clipId, surface] of videoSurfaces) if (surface.assetId === assetId) removeVideoSurface(clipId);
 
@@ -1941,10 +1943,10 @@ async function hydrateBufferedAsset(assetId: string) {
 }
 
 async function loadRequestedMediaBufferAsset(message: Extract<EngineRequest, { type: "media-buffer-load" }>) {
-  const registration = bufferedAssets.get(message.assetId);
-  if (!registration) throw new Error(`${message.source.name}: メディア登録がありません`);
+  const registration = bufferedAssets.get(message.assetId) ?? { kind: message.kind === "image" ? "image" as const : message.kind === "model" ? "model" as const : "media" as const, source: message.source };
   registration.source = message.source;
-  await mediaBuffer.load(message.assetId, message.source, message.stream);
+  bufferedAssets.set(message.assetId, registration);
+  await mediaBuffer.load(message.assetId, message.source, message.file);
   await hydrateBufferedAsset(message.assetId);
   reconcileMediaBuffer();
   if (graphics) await render(lastTimelineTime, false, "realtime", previewFps);
@@ -1993,7 +1995,7 @@ async function hydrateMedia(assetId: string) {
 
 async function inspectMedia(message: Extract<EngineRequest, { type: "inspect-media" }>) {
   bufferedAssets.set(message.assetId, { kind: "media", source: message.source });
-  await mediaBuffer.load(message.assetId, message.source, message.stream);
+  await mediaBuffer.load(message.assetId, message.source, message.file);
   const info = await hydrateMedia(message.assetId);
   send({ type: "media-info", requestId: message.requestId, ...info });
   reconcileMediaBuffer();
@@ -2040,32 +2042,21 @@ async function createMediaThumbnail(message: Extract<EngineRequest, { type: "med
   const runtime = mediaRuntimes.get(message.assetId);
   if (!runtime) throw new Error("メディアを読み込んでからサムネイルを生成してください");
   if (runtime.videoSink) {
-    const time = Math.max(0, Math.min(message.time, Math.max(0, runtime.duration - 0.001)));
-    let sample = await runtime.videoSink.getSample(time);
-    // getSample() returns null when the requested time precedes a track's first
-    // presentation timestamp. This is common with MP4 edit lists and delayed
-    // WebM tracks, especially for the first frame of a hover preview.
-    if (!sample) {
-      const samples = runtime.videoSink.samples();
-      const first = await samples.next();
-      sample = first.done ? null : first.value;
-      await samples.return(undefined);
-    }
-    if (!sample) throw new Error("動画フレームを取得できませんでした");
-    const frame = sample.toVideoFrame();
-    try {
-      try {
-        send({ type: "media-thumbnail", requestId: message.requestId, frame }, [frame]);
-      } catch (error) {
-        frame.close();
-        throw error;
-      }
-    } finally {
-      sample.close();
-    }
+    // Share the bounded WebP cache with timeline thumbnails. Quantizing hover
+    // previews to 10 fps avoids repeating seek/decode work for near-identical
+    // frames when an item leaves and re-enters the viewport.
+    const time = Math.round(Math.max(0, Math.min(message.time, Math.max(0, runtime.duration - 0.001))) * 10) / 10;
+    const blob = await getTimelineThumbnailBlob(message.assetId, time, 160, 90);
+    const bitmap = await createImageBitmap(blob);
+    send({ type: "media-thumbnail", requestId: message.requestId, bitmap }, [bitmap]);
     return;
   }
   if (runtime.audioSink) {
+    const cached = audioWaveformCache.get(message.assetId);
+    if (cached) {
+      send({ type: "media-thumbnail", requestId: message.requestId, peaks: cached });
+      return;
+    }
     const peakCount = 48;
     const timestamps = Array.from({ length: peakCount }, (_, index) => runtime.duration * (index + 0.5) / peakCount);
     const peaks: number[] = [];
@@ -2082,6 +2073,7 @@ async function createMediaThumbnail(message: Extract<EngineRequest, { type: "med
       }
     }
     if (!peaks.length) throw new Error("音声波形を取得できませんでした");
+    audioWaveformCache.set(message.assetId, peaks);
     send({ type: "media-thumbnail", requestId: message.requestId, peaks });
     return;
   }
@@ -2175,20 +2167,6 @@ async function encodeCanvasAsWebp(canvas: OffscreenCanvas) {
   return createImageBitmap(blob);
 }
 
-async function transcodeRasterImageToWebp(bytes: Uint8Array<ArrayBuffer>, mimeType: string) {
-  const decoded = await createImageBitmap(new Blob([bytes], { type: mimeType }), { imageOrientation: "from-image" });
-  try {
-    const canvas = new OffscreenCanvas(decoded.width, decoded.height);
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("画像変換用のOffscreenCanvas 2Dコンテキストを作成できません");
-    context.clearRect(0, 0, decoded.width, decoded.height);
-    context.drawImage(decoded, 0, 0);
-    return await encodeCanvasAsWebp(canvas);
-  } finally {
-    decoded.close();
-  }
-}
-
 async function transcodeDataTextureToWebp(texture: THREE.DataTexture) {
   const image = texture.image as { data: ArrayLike<number>; width: number; height: number };
   const { data, width, height } = image;
@@ -2227,18 +2205,21 @@ async function hydrateImage(assetId: string) {
   if (!registration) throw new Error("画像の登録情報がありません");
   const extension = registration.source.name.split(".").pop()?.toLowerCase();
   const runtime = await mediaBuffer.instantiate<ImageRuntime>(assetId, "three-image", async (workerSource) => {
-    const bytes = workerSource.readAll();
     let bitmap: ImageBitmap;
     let bitmapFlipY = true;
     let sourceTexture: THREE.Texture | undefined;
     if (extension === "hdr" || extension === "exr") {
+      const bytes = await workerSource.readAll();
       sourceTexture = extension === "hdr"
         ? new RGBELoader().createDataTexture(bytes.buffer)
         : new EXRLoader().createDataTexture(bytes.buffer);
       bitmap = await transcodeDataTextureToWebp(sourceTexture as THREE.DataTexture);
       bitmapFlipY = sourceTexture.flipY;
     } else {
-      bitmap = await transcodeRasterImageToWebp(bytes, registration.source.type);
+      // Browsers already decode common raster formats into GPU-uploadable
+      // bitmaps. Avoid a full-resolution canvas draw and lossless WebP encode
+      // on the first view.
+      bitmap = await createImageBitmap(workerSource.blob, { imageOrientation: "from-image" });
     }
     const textureImage = sourceTexture?.image as { width?: number; height?: number } | undefined;
     return {
@@ -2263,7 +2244,7 @@ async function hydrateImage(assetId: string) {
 
 async function inspectImage(message: Extract<EngineRequest, { type: "inspect-image" }>) {
   bufferedAssets.set(message.assetId, { kind: "image", source: message.source });
-  await mediaBuffer.load(message.assetId, message.source, message.stream);
+  await mediaBuffer.load(message.assetId, message.source, message.file);
   const info = await hydrateImage(message.assetId);
   send({ type: "media-info", requestId: message.requestId, ...info });
   reconcileMediaBuffer();
@@ -2289,7 +2270,7 @@ function disposeModelRuntime(runtime: ModelRuntime) {
 
 async function hydrateModel(assetId: string) {
   const runtime = await mediaBuffer.instantiate<ModelRuntime>(assetId, "three-gltf", async (workerSource) => {
-    const bytes = workerSource.readAll();
+    const bytes = await workerSource.readAll();
     const first = bytes.find((value) => value > 0x20);
     const source: string | ArrayBuffer = first === 0x7b ? new TextDecoder().decode(bytes) : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     const gltf = await new GLTFLoader().parseAsync(source, "");
@@ -2313,7 +2294,7 @@ async function hydrateModel(assetId: string) {
 
 async function inspectModel(message: Extract<EngineRequest, { type: "inspect-model" }>) {
   bufferedAssets.set(message.assetId, { kind: "model", source: message.source });
-  await mediaBuffer.load(message.assetId, message.source, message.stream);
+  await mediaBuffer.load(message.assetId, message.source, message.file);
   const info = await hydrateModel(message.assetId);
   send({ type: "media-info", requestId: message.requestId, ...info });
   reconcileMediaBuffer();
@@ -2938,6 +2919,11 @@ async function drainMessages() {
 }
 
 function enqueueMessage(message: EngineRequest) {
+  if (message.type === "cancel-request") {
+    const index = messageQueue.findIndex((queued) => "requestId" in queued && queued.requestId === message.requestId);
+    if (index >= 0) messageQueue.splice(index, 1);
+    return;
+  }
   if (message.type === "decode-audio-preview") {
     // Audio and video have independent MediaBunny sinks. Let audio buffering run
     // concurrently so a 750 ms audio window never blocks the visual frame queue.
@@ -2952,7 +2938,11 @@ function enqueueMessage(message: EngineRequest) {
       const index = messageQueue.findIndex((queued) => queued.type !== "timeline-sync"
         && queued.type !== "timeline-patch");
       messageQueue.splice(index < 0 ? messageQueue.length : index, 0, message);
-    } else messageQueue.push(message);
+    } else {
+      const firstBackgroundTask = messageQueue.findIndex((queued) => queued.type === "media-thumbnail"
+        || queued.type === "inspect-media" || queued.type === "inspect-image" || queued.type === "inspect-model");
+      messageQueue.splice(firstBackgroundTask < 0 ? messageQueue.length : firstBackgroundTask, 0, message);
+    }
   } else if (message.type === "media-buffer-plan") {
     for (let index = messageQueue.length - 1; index >= 0; index--) {
       if (messageQueue[index].type === "media-buffer-plan") messageQueue.splice(index, 1);

@@ -12,10 +12,10 @@ const PLUGIN_PREFIX = "gfxutl:plugin-directory:v1:";
 const SHADER_HANDLE_PREFIX = "gfxutl:shader-handle:v1:";
 
 export interface HandleProjectRecord {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   asset: Omit<MediaAsset, "handle">;
   handle: FileSystemFileHandle;
-  clips: TimelineClip[];
+  clips?: TimelineClip[];
   project?: Omit<ProjectDocument, "assets" | "clips">;
   savedAt: number;
 }
@@ -30,14 +30,12 @@ export async function saveHandleProject(asset: MediaAsset, clips: TimelineClip[]
   if (!asset.handle) return;
   const { handle, ...serializableAsset } = asset;
   const record: HandleProjectRecord = {
-    version: project ? 2 : 1,
+    version: 3,
     asset: serializableAsset,
     handle,
-    // Every handle is an entry point to the same handle-backed project. Keeping
-    // the complete timeline also preserves titles and generated objects, which
-    // do not have an assetId of their own.
-    clips,
-    project,
+    // The autosave is the single source of truth for project data. Duplicating
+    // the complete timeline in every handle record made startup I/O grow with
+    // both asset count and project size.
     savedAt: Date.now(),
   };
   await set(`${RECORD_PREFIX}${asset.id}`, record);

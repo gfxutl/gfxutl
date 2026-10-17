@@ -1,11 +1,11 @@
-import { CustomSource } from "mediabunny";
+import { BlobSource } from "mediabunny";
 import type { MediaFileSource, MediaReadGraph, SourceIoProfile } from "../protocol/engine-protocol";
 
 export const MEDIA_BUFFER_MAX_BYTES = 128 * 1024 * 1024;
 
 interface MediaBufferEntry {
   source: MediaFileSource;
-  bytes: Uint8Array<ArrayBuffer>;
+  file: File;
   profile: SourceIoProfile;
   touched: number;
   instances: Map<string, MediaBufferInstance>;
@@ -18,9 +18,10 @@ interface MediaBufferInstance {
 
 export interface BufferedMediaSource {
   source: MediaFileSource;
-  mediaSource: CustomSource;
+  blob: Blob;
+  mediaSource: BlobSource;
   profile: SourceIoProfile;
-  readAll(): Uint8Array<ArrayBuffer>;
+  readAll(): Promise<Uint8Array<ArrayBuffer>>;
 }
 
 export interface MediaBufferState {
@@ -47,9 +48,11 @@ export class MediaBuffer {
 
   get usedBytes() {
     let total = 0;
-    for (const entry of this.entries.values()) total += entry.bytes.byteLength;
+    for (const assetId of this.residentAssetIds) total += this.entries.get(assetId)?.source.size ?? 0;
     return total;
   }
+
+  private residentAssetIds = new Set<string>();
 
   has(assetId: string) { return this.entries.has(assetId); }
 
@@ -59,64 +62,45 @@ export class MediaBuffer {
     const skipped: string[] = [];
     let available = this.maxBytes;
     for (const node of this.prioritizedNodes()) {
-      if (node.size <= 0 || node.size > this.maxBytes || node.size > available) {
+      if (node.size <= 0 || (!node.active && (node.size > this.maxBytes || node.size > available))) {
         skipped.push(node.assetId);
         continue;
       }
       selected.push(node.assetId);
-      available -= node.size;
+      available = Math.max(0, available - node.size);
     }
     const selectedSet = new Set(selected);
 
     // Files outside the current timeline graph remain a best-effort LRU tail.
-    const tail = [...this.entries.entries()]
-      .filter(([assetId]) => !selectedSet.has(assetId))
+    const tail = [...this.residentAssetIds]
+      .map((assetId) => [assetId, this.entries.get(assetId)] as const)
+      .filter((entry): entry is readonly [string, MediaBufferEntry] => Boolean(entry[1]) && !selectedSet.has(entry[0]))
       .sort((left, right) => right[1].touched - left[1].touched);
     for (const [assetId, entry] of tail) {
-      if (entry.bytes.byteLength > available) continue;
+      if (entry.source.size > available) continue;
       selected.push(assetId);
       selectedSet.add(assetId);
-      available -= entry.bytes.byteLength;
+      available -= entry.source.size;
     }
 
-    for (const assetId of [...this.entries.keys()]) if (!selectedSet.has(assetId)) this.evict(assetId);
-    this.requestedAssetIds = selected.filter((assetId) => !this.entries.has(assetId));
+    for (const assetId of [...this.residentAssetIds]) if (!selectedSet.has(assetId)) this.evictInstances(assetId);
+    this.requestedAssetIds = selected.filter((assetId) => !this.residentAssetIds.has(assetId));
     this.skippedAssetIds = skipped;
     return this.state();
   }
 
   reconcile() { return this.setGraph(this.graph); }
 
-  async load(assetId: string, source: MediaFileSource, stream: ReadableStream<Uint8Array>) {
+  async load(assetId: string, source: MediaFileSource, file: File) {
     if (!Number.isSafeInteger(source.size) || source.size < 0) throw new Error(`${source.name}: ファイルサイズが不正です`);
-    if (source.size > this.maxBytes) throw new Error(`${source.name}: 128 MiBのメディアバッファに収まりません`);
     this.ensureCapacity(source.size, assetId);
-
-    const bytes = new Uint8Array(source.size);
-    const reader = stream.getReader();
-    let offset = 0;
-    let operations = 0;
-    let largestRead = 0;
-    try {
-      while (true) {
-        const result = await reader.read();
-        if (result.done) break;
-        const chunk = result.value;
-        if (!(chunk instanceof Uint8Array)) throw new Error(`${source.name}: ストリームがバイト列ではありません`);
-        if (offset + chunk.byteLength > bytes.byteLength) throw new Error(`${source.name}: 読み出し中にファイルサイズが変わりました`);
-        bytes.set(chunk, offset);
-        offset += chunk.byteLength;
-        operations++;
-        largestRead = Math.max(largestRead, chunk.byteLength);
-      }
-    } finally {
-      reader.releaseLock();
-    }
-    if (offset !== bytes.byteLength) throw new Error(`${source.name}: ${offset} / ${bytes.byteLength} bytesしか受信できませんでした`);
-
-    if (this.entries.has(assetId)) this.evict(assetId);
-    const profile: SourceIoProfile = { backend: "media-buffer", bytesRead: offset, readOperations: operations, largestRead };
-    this.entries.set(assetId, { source, bytes, profile, touched: ++this.clock, instances: new Map() });
+    const existing = this.entries.get(assetId);
+    const unchanged = existing?.source.size === source.size && existing.source.lastModified === source.lastModified;
+    if (!unchanged && existing) this.evict(assetId);
+    const profile: SourceIoProfile = { backend: "blob-source", bytesRead: 0, readOperations: 0, largestRead: 0 };
+    if (!unchanged) this.entries.set(assetId, { source, file, profile, touched: ++this.clock, instances: new Map() });
+    else { existing.source = source; existing.file = file; existing.touched = ++this.clock; }
+    this.residentAssetIds.add(assetId);
     this.requestedAssetIds = this.requestedAssetIds.filter((id) => id !== assetId);
     return this.open(assetId);
   }
@@ -125,13 +109,14 @@ export class MediaBuffer {
     const entry = this.entries.get(assetId);
     if (!entry) throw new Error(`メディアバッファに ${assetId} がありません`);
     entry.touched = ++this.clock;
-    const mediaSource = new CustomSource({
-      getSize: () => entry.bytes.byteLength,
-      read: (start, end) => entry.bytes.subarray(start, end),
-      maxCacheSize: 0,
-      prefetchProfile: "none",
-    });
-    return { source: entry.source, mediaSource, profile: entry.profile, readAll: () => entry.bytes };
+    const mediaSource = new BlobSource(entry.file);
+    return {
+      source: entry.source,
+      blob: entry.file,
+      mediaSource,
+      profile: entry.profile,
+      readAll: async () => new Uint8Array(await entry.file.arrayBuffer()),
+    };
   }
 
   getInstance<T>(assetId: string, key: string) {
@@ -183,7 +168,7 @@ export class MediaBuffer {
       usedBytes: this.usedBytes,
       maxBytes: this.maxBytes,
       instanceCount: [...this.entries.values()].reduce((total, entry) => total + entry.instances.size, 0),
-      residentAssetIds: [...this.entries.keys()],
+      residentAssetIds: [...this.residentAssetIds],
       requestedAssetIds: [...this.requestedAssetIds],
       skippedAssetIds: [...this.skippedAssetIds],
     };
@@ -211,21 +196,28 @@ export class MediaBuffer {
   }
 
   private ensureCapacity(size: number, protectedAssetId: string) {
-    if (this.entries.has(protectedAssetId)) this.evict(protectedAssetId);
+    if (this.residentAssetIds.has(protectedAssetId)) return;
     const priorities = new Map(this.prioritizedNodes().map((node, index) => [node.assetId, index]));
-    const candidates = [...this.entries.entries()].sort((left, right) =>
-      (priorities.get(right[0]) ?? Number.MAX_SAFE_INTEGER) - (priorities.get(left[0]) ?? Number.MAX_SAFE_INTEGER)
-      || left[1].touched - right[1].touched);
-    while (this.usedBytes + size > this.maxBytes && candidates.length) this.evict(candidates.shift()![0]);
-    if (this.usedBytes + size > this.maxBytes) throw new Error("メディアバッファの空き容量を確保できませんでした");
+    const candidates = [...this.residentAssetIds]
+      .map((assetId) => [assetId, this.entries.get(assetId)] as const)
+      .filter((entry): entry is readonly [string, MediaBufferEntry] => Boolean(entry[1]))
+      .sort((left, right) => (priorities.get(right[0]) ?? Number.MAX_SAFE_INTEGER) - (priorities.get(left[0]) ?? Number.MAX_SAFE_INTEGER)
+        || left[1].touched - right[1].touched);
+    while (this.usedBytes + size > this.maxBytes && candidates.length) this.evictInstances(candidates.shift()![0]);
+  }
+
+  private evictInstances(assetId: string) {
+    const entry = this.entries.get(assetId);
+    if (!entry || !this.residentAssetIds.delete(assetId)) return;
+    this.onEvict?.(assetId);
+    for (const instance of [...entry.instances.values()].reverse()) instance.dispose(instance.value);
+    entry.instances.clear();
   }
 
   private evict(assetId: string) {
     const entry = this.entries.get(assetId);
     if (!entry) return;
-    this.onEvict?.(assetId);
-    for (const instance of [...entry.instances.values()].reverse()) instance.dispose(instance.value);
-    entry.instances.clear();
+    this.evictInstances(assetId);
     this.entries.delete(assetId);
   }
 }

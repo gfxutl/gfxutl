@@ -920,7 +920,8 @@ function TimelineThumbnailCanvas({ assetId, sourceTime, left, width, height, ena
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    void getTimelineThumbnailCanvas(controller, assetId, sourceTime, height).then((source) => {
+    const abortController = new AbortController();
+    void getTimelineThumbnailCanvas(controller, assetId, sourceTime, height, abortController.signal).then((source) => {
       if (cancelled) return;
       const canvas = canvasRef.current;
       const context = canvas?.getContext("2d");
@@ -930,13 +931,13 @@ function TimelineThumbnailCanvas({ assetId, sourceTime, left, width, height, ena
       context.drawImage(source, 0, 0);
       canvas.dataset.thumbnailReady = "true";
     }).catch(() => { /* The clip color remains visible while its media is unavailable. */ });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; abortController.abort(); };
   }, [assetId, controller, enabled, height, sourceTime]);
 
   return <canvas ref={canvasRef} style={{ left, width }} data-source-time={sourceTime.toFixed(6)} aria-hidden="true" />;
 }
 
-function getTimelineThumbnailCanvas(controller: typeof import("../core/interface").editorController, assetId: string, time: number, cssHeight: number) {
+function getTimelineThumbnailCanvas(controller: typeof import("../core/interface").editorController, assetId: string, time: number, cssHeight: number, signal?: AbortSignal) {
   const scale = Math.min(2, window.devicePixelRatio || 1, 256 / Math.max(1, cssHeight));
   const width = Math.max(1, Math.round(TIMELINE_THUMBNAIL_RASTER_WIDTH * scale));
   const height = Math.max(1, Math.round(cssHeight * scale));
@@ -948,7 +949,7 @@ function getTimelineThumbnailCanvas(controller: typeof import("../core/interface
     return cached;
   }
 
-  const request = scheduleTimelineThumbnail(() => controller.getMediaThumbnail(assetId, time, { width, height })).then((thumbnail) => {
+  const request = scheduleTimelineThumbnail(() => controller.getMediaThumbnail(assetId, time, { width, height }, signal), signal).then((thumbnail) => {
     const raster = thumbnail.frame ?? thumbnail.bitmap;
     if (!raster) throw new Error("Timeline thumbnail has no raster image");
     const canvas = document.createElement("canvas");
@@ -974,9 +975,10 @@ function getTimelineThumbnailCanvas(controller: typeof import("../core/interface
   return request;
 }
 
-function scheduleTimelineThumbnail<T>(request: () => Promise<T>) {
+function scheduleTimelineThumbnail<T>(request: () => Promise<T>, signal?: AbortSignal) {
   return new Promise<T>((resolve, reject) => {
     timelineThumbnailQueue.push(async () => {
+      if (signal?.aborted) { reject(new DOMException("Thumbnail canceled", "AbortError")); return; }
       try { resolve(await request()); } catch (error) { reject(error); }
     });
     drainTimelineThumbnailQueue();

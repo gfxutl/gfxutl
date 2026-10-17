@@ -24,20 +24,20 @@ import {
   TextBulletListTree16Regular as ListTree,
   VideoClip16Regular as FileVideo,
 } from "@fluentui/react-icons";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { canEncodeAudio, canEncodeVideo, MediaStreamAudioTrackSource, Output, StreamTarget, VideoSample, VideoSampleSource, WebMOutputFormat } from "mediabunny";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import type { Output, VideoSampleSource } from "mediabunny";
 import { shallowEqual, useEditor } from "../core/interface";
 import type { MediaAsset } from "../core/interface";
 import { clearMediaDirectory, loadMediaDirectory, saveMediaDirectory } from "../core/persistence/handle-project-store";
 import { Button } from "./ui/button";
 import { Tooltip } from "./ui/tooltip";
-import { ExportPanel } from "./export-panel";
-import { SettingsPanel } from "./settings-panel";
-import { PluginPanel } from "./plugin-panel";
 import { useI18n } from "../core/i18n";
 import { createShaderGraph, parseShaderGraph } from "../core/shader-graph/shader-graph-document";
 import { openAudioRecordingTab, SAVE_AUDIO_RECORDING_EVENT, type SaveAudioRecordingDetail } from "../core/interface/recording-events";
-import { createGfxTextDocument, openGfxTextEditor, parseGfxTextDocument, serializeGfxTextDocument } from "../core/interface/gfxtext-document";
+
+const ExportPanel = lazy(() => import("./export-panel").then((module) => ({ default: module.ExportPanel })));
+const SettingsPanel = lazy(() => import("./settings-panel").then((module) => ({ default: module.SettingsPanel })));
+const PluginPanel = lazy(() => import("./plugin-panel").then((module) => ({ default: module.PluginPanel })));
 
 type ExplorerNode = {
   id: string;
@@ -59,13 +59,24 @@ const KindIcon = ({ kind }: { kind: MediaAsset["kind"] }) => kind === "audio" ? 
 function MediaThumbnail({ asset, playing }: { asset: MediaAsset; playing: boolean }) {
   const { controller } = useEditor(() => null);
   const { t } = useI18n();
+  const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hovered, setHovered] = useState(false);
+  const [visible, setVisible] = useState(false);
 
   useEffect(() => {
-    if (asset.kind === "model" || (asset.fileStatus && asset.fileStatus !== "ready")) return;
+    const host = hostRef.current;
+    if (!host) return;
+    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting), { rootMargin: "80px" });
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!visible || asset.kind === "model" || (asset.fileStatus && asset.fileStatus !== "ready")) return;
     let cancelled = false;
     let timer = 0;
+    const abortController = new AbortController();
     const startedAt = performance.now();
     const draw = async () => {
       if (playing) return;
@@ -73,7 +84,7 @@ function MediaThumbnail({ asset, playing }: { asset: MediaAsset; playing: boolea
       const elapsed = (performance.now() - startedAt) / 1000;
       const time = isPreviewing ? elapsed % asset.duration : asset.kind === "video" ? Math.min(asset.duration * 0.1, Math.max(0, asset.duration - 0.04)) : 0;
       try {
-        const thumbnail = await controller.getMediaThumbnail(asset.id, time);
+        const thumbnail = await controller.getMediaThumbnail(asset.id, time, undefined, abortController.signal);
         const raster = thumbnail.frame ?? thumbnail.bitmap;
         if (cancelled) { raster?.close(); return; }
         const canvas = canvasRef.current;
@@ -106,10 +117,10 @@ function MediaThumbnail({ asset, playing }: { asset: MediaAsset; playing: boolea
       if (!cancelled && isPreviewing) timer = window.setTimeout(draw, 100);
     };
     void draw();
-    return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [asset.duration, asset.fileStatus, asset.id, asset.kind, controller, hovered, playing]);
+    return () => { cancelled = true; abortController.abort(); window.clearTimeout(timer); };
+  }, [asset.duration, asset.fileStatus, asset.id, asset.kind, controller, hovered, playing, visible]);
 
-  return <div className={`media-thumb thumb-${asset.kind}`} onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
+  return <div ref={hostRef} className={`media-thumb thumb-${asset.kind}`} onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
     <canvas ref={canvasRef} width={160} height={90} aria-label={`${asset.name} ${t("プレビュー")}`} />
     <KindIcon kind={asset.kind} />
     {asset.duration > 0 && <time>{formatDuration(asset.duration)}</time>}
@@ -119,9 +130,20 @@ function MediaThumbnail({ asset, playing }: { asset: MediaAsset; playing: boolea
 
 function ExplorerImageThumbnail({ node }: { node: ExplorerNode }) {
   const { t } = useI18n();
+  const hostRef = useRef<HTMLSpanElement>(null);
+  const [visible, setVisible] = useState(false);
   const [url, setUrl] = useState<string | null>(null);
 
   useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting), { rootMargin: "80px" });
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!visible) { setUrl(null); return; }
     let cancelled = false;
     let objectUrl: string | null = null;
     void (async () => {
@@ -137,11 +159,11 @@ function ExplorerImageThumbnail({ node }: { node: ExplorerNode }) {
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [node.file, node.handle, node.path]);
+  }, [node.file, node.handle, node.path, visible]);
 
-  return url
-    ? <img className="explorer-image-thumbnail" src={url} alt={`${node.name} ${t("プレビュー")}`} draggable={false} />
-    : <FileImage />;
+  return <span ref={hostRef} className="explorer-image-thumbnail-host">{url
+    ? <img className="explorer-image-thumbnail" src={url} alt={`${node.name} ${t("プレビュー")}`} loading="lazy" decoding="async" draggable={false} />
+    : <FileImage />}</span>;
 }
 
 function ExplorerVideoThumbnail({ node, playing }: { node: ExplorerNode; playing: boolean }) {
@@ -161,12 +183,13 @@ function ExplorerVideoThumbnail({ node, playing }: { node: ExplorerNode; playing
   useEffect(() => {
     if (!visible) { setPreviewAsset(null); return; }
     let cancelled = false;
-    const previewId = `explorer-preview:${crypto.randomUUID()}`;
+    let previewId = `explorer-preview:${node.path}`;
     void (async () => {
       try {
         const handle = node.handle?.kind === "file" ? node.handle : undefined;
         const file = node.file ?? await handle?.getFile();
         if (!file || cancelled) return;
+        previewId = `explorer-preview:${node.path}:${file.size}:${file.lastModified}`;
         const info = await controller.prepareMediaPreview(file, previewId, handle);
         if (cancelled) { controller.releaseMediaPreview(previewId); return; }
         setPreviewAsset({
@@ -212,6 +235,7 @@ export function MediaPanel() {
   const [root, setRoot] = useState<ExplorerNode | null>(null);
   const [currentDirectoryId, setCurrentDirectoryId] = useState<string | null>(null);
   const [directoryError, setDirectoryError] = useState<string | null>(null);
+  const [gridLimit, setGridLimit] = useState(120);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [recordMenuOpen, setRecordMenuOpen] = useState(false);
   const [screenStarting, setScreenStarting] = useState(false);
@@ -231,9 +255,12 @@ export function MediaPanel() {
     void loadMediaDirectory().then(async (handle) => {
       if (!handle || cancelled) return;
       const permission = await queryDirectoryPermission(handle);
-      const nextRoot = createRootNode(handle, permission !== "granted");
-      if (permission === "granted") nextRoot.children = await readDirectory(handle, nextRoot.path);
+      const nextRoot = { ...createRootNode(handle, permission !== "granted"), loading: permission === "granted" };
       if (!cancelled) { setRoot(nextRoot); setCurrentDirectoryId(nextRoot.id); }
+      if (permission === "granted") nextRoot.children = await readDirectory(handle, nextRoot.path, (children) => {
+        if (!cancelled) setRoot({ ...nextRoot, children, loading: true });
+      });
+      if (!cancelled) setRoot({ ...nextRoot, loading: false });
     }).catch(() => { /* IndexedDB or a saved handle may be unavailable. */ });
     return () => { cancelled = true; };
   }, []);
@@ -247,7 +274,7 @@ export function MediaPanel() {
         nextRoot.loading = true;
         setRoot(nextRoot);
         setCurrentDirectoryId(nextRoot.id);
-        const children = await readDirectory(handle, nextRoot.path);
+        const children = await readDirectory(handle, nextRoot.path, (partial) => setRoot({ ...nextRoot, children: partial, loading: true }));
         setRoot({ ...nextRoot, children, loading: false });
         await saveMediaDirectory(handle).catch(() => { /* Some private contexts cannot persist handles. */ });
       } else {
@@ -334,6 +361,7 @@ export function MediaPanel() {
       const handle = node.handle?.kind === "file" ? node.handle : undefined;
       const file = node.file ?? await handle?.getFile();
       if (!file) return;
+      const { openGfxTextEditor, parseGfxTextDocument } = await import("../core/interface/gfxtext-document");
       openGfxTextEditor({ id: node.path, name: node.name, path: node.path, handle, document: parseGfxTextDocument(await file.text()) });
     } catch (cause) {
       setDirectoryError(cause instanceof Error ? cause.message : t("3D Textファイルを開けませんでした"));
@@ -368,6 +396,9 @@ export function MediaPanel() {
   const currentDirectory = root ? findNode(root, currentDirectoryId) ?? root : null;
   const directoryTrail = root && currentDirectory ? findNodeTrail(root, currentDirectory.id) : [];
   const gridChildren = (currentDirectory?.children ?? []).filter((node) => !query || node.name.toLowerCase().includes(query.toLowerCase()));
+  const visibleGridChildren = gridChildren.slice(0, gridLimit);
+
+  useEffect(() => { setGridLimit(120); }, [currentDirectoryId, query]);
 
   const registerRecordedFile = async (directory: ExplorerNode, handle: FileSystemFileHandle, name: string) => {
     const sourcePath = `${directory.path}/${name}`;
@@ -396,6 +427,7 @@ export function MediaPanel() {
       const target = await writableRecordingDirectory();
       const { handle, name } = await createUniqueFile(target.handle, target.directory.children ?? [], "text.gfxtext.json");
       const writable = await handle.createWritable();
+      const { createGfxTextDocument, serializeGfxTextDocument } = await import("../core/interface/gfxtext-document");
       await writable.write(serializeGfxTextDocument(createGfxTextDocument()));
       await writable.close();
       const sourcePath = `${target.directory.path}/${name}`;
@@ -418,6 +450,7 @@ export function MediaPanel() {
     let pendingOutput: Output | null = null;
     try {
       if (!navigator.mediaDevices?.getDisplayMedia || typeof VideoEncoder === "undefined" || typeof MediaStreamTrackProcessor === "undefined") throw new Error(t("このブラウザーでは画面録画を利用できません"));
+      const { canEncodeAudio, canEncodeVideo, MediaStreamAudioTrackSource, Output, StreamTarget, VideoSample, VideoSampleSource, WebMOutputFormat } = await import("mediabunny");
       const target = await writableRecordingDirectory();
       stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       const videoTrack = stream.getVideoTracks()[0];
@@ -448,7 +481,7 @@ export function MediaPanel() {
 
       const processor = new MediaStreamTrackProcessor({ track: videoTrack });
       const reader = processor.readable.getReader();
-      const encodingTask = encodeScreenFrames(reader, videoSource, frameRate);
+      const encodingTask = encodeScreenFrames(reader, videoSource, frameRate, VideoSample);
       screenStreamRef.current = stream;
       let stopping: Promise<void> | null = null;
       const stop = () => stopping ??= (async () => {
@@ -614,7 +647,7 @@ export function MediaPanel() {
       <button className={state.leftPanelTab === "export" ? "active" : ""} onClick={() => controller.setLeftPanelTab("export")}>{t("書き出し")}</button>
       <button className={state.leftPanelTab === "settings" ? "active" : ""} onClick={() => controller.setLeftPanelTab("settings")}>{t("設定")}</button>
     </div>
-    {state.leftPanelTab === "plugins" ? <PluginPanel /> : state.leftPanelTab === "export" ? <ExportPanel /> : state.leftPanelTab === "settings" ? <SettingsPanel /> : <div className="media-explorer">
+    {state.leftPanelTab === "plugins" ? <Suspense fallback={null}><PluginPanel /></Suspense> : state.leftPanelTab === "export" ? <Suspense fallback={null}><ExportPanel /></Suspense> : state.leftPanelTab === "settings" ? <Suspense fallback={null}><SettingsPanel /></Suspense> : <div className="media-explorer">
       <div className="media-toolbar">
         <Button size="icon" onClick={() => void openDirectory()} aria-label={t("フォルダーを開く")} title={t("メディアフォルダを開く")}><FolderOpen /></Button>
         <span className={`ui-tooltip create-menu-wrap ${createMenuOpen ? "open" : ""}`} data-tooltip={t("ファイルを作成")} ref={createMenuRef}>
@@ -645,7 +678,8 @@ export function MediaPanel() {
         {standaloneAssets.length > 0 && <div className="standalone-assets"><div className="media-tree-section"><File /> {t("単体ファイル")}</div>{standaloneAssets.map((asset) => <AssetRow key={asset.id} asset={asset} depth={1} selected={state.selectedAssetId === asset.id} onSelect={controller.selectAsset} onRestore={controller.restoreMediaAccess} />)}</div>}
         {directoryError && <div className="explorer-error">{directoryError}</div>}
       </div> : <div className="media-grid-page" role="list" aria-label={t("メディアグリッド")}>
-        {currentDirectory ? gridChildren.map((node) => <ExplorerGridCard key={node.id} node={node} asset={assetsByPath.get(node.path)} selectedAssetId={state.selectedAssetId} playing={state.playing} onOpenDirectory={openGridDirectory} onImport={importNode} onOpenShader={openShaderNode} onOpenGfxText={openGfxTextNode} onStage={controller.stageExplorerFile} onSelect={controller.selectAsset} />) : <div className="empty-media"><FolderOpen /><strong>{t("メディアフォルダを開く")}</strong><span>{t("フォルダごとにページを移動して素材を表示できます")}</span></div>}
+        {currentDirectory ? visibleGridChildren.map((node) => <ExplorerGridCard key={node.id} node={node} asset={assetsByPath.get(node.path)} selectedAssetId={state.selectedAssetId} playing={state.playing} onOpenDirectory={openGridDirectory} onImport={importNode} onOpenShader={openShaderNode} onOpenGfxText={openGfxTextNode} onStage={controller.stageExplorerFile} onSelect={controller.selectAsset} />) : <div className="empty-media"><FolderOpen /><strong>{t("メディアフォルダを開く")}</strong><span>{t("フォルダごとにページを移動して素材を表示できます")}</span></div>}
+        {currentDirectory && visibleGridChildren.length < gridChildren.length && <GridLoadMore onVisible={() => setGridLimit((limit) => Math.min(gridChildren.length, limit + 120))} />}
         {currentDirectory && gridChildren.length === 0 && <div className="empty-grid-page">{t("このフォルダに表示できる項目はありません")}</div>}
         {!root && standaloneAssets.map((asset) => <GridAssetCard key={asset.id} asset={asset} selected={state.selectedAssetId === asset.id} playing={state.playing} onSelect={controller.selectAsset} onRestore={controller.restoreMediaAccess} />)}
         {directoryError && <div className="explorer-error">{directoryError}</div>}
@@ -765,13 +799,26 @@ function FileKindIcon({ name, asset }: { name: string; asset?: MediaAsset }) {
   return supportedExtension(extension) ? <FileVideo /> : <File />;
 }
 
-async function readDirectory(handle: FileSystemDirectoryHandle, parentPath: string) {
+async function readDirectory(handle: FileSystemDirectoryHandle, parentPath: string, onBatch?: (entries: ExplorerNode[]) => void) {
   const entries: ExplorerNode[] = [];
   for await (const entry of handle.values()) {
     const path = `${parentPath}/${entry.name}`;
     entries.push({ id: path, name: entry.name, path, kind: entry.kind, handle: entry, expanded: false });
+    if (onBatch && entries.length % 100 === 0) onBatch(sortNodes([...entries]));
   }
   return sortNodes(entries);
+}
+
+function GridLoadMore({ onVisible }: { onVisible: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const observer = new IntersectionObserver(([entry]) => { if (entry.isIntersecting) onVisible(); }, { rootMargin: "240px" });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [onVisible]);
+  return <div ref={ref} className="media-grid-load-more" aria-hidden="true" />;
 }
 
 function createRootNode(handle: FileSystemDirectoryHandle, accessRequired: boolean): ExplorerNode {
@@ -888,7 +935,7 @@ function screenRecordingBitrate(width: number, height: number, frameRate: number
   return Math.max(2_500_000, Math.min(24_000_000, Math.round(width * height * frameRate * 0.12)));
 }
 
-async function encodeScreenFrames(reader: ReadableStreamDefaultReader<VideoFrame>, source: VideoSampleSource, frameRate: number) {
+async function encodeScreenFrames(reader: ReadableStreamDefaultReader<VideoFrame>, source: VideoSampleSource, frameRate: number, VideoSample: typeof import("mediabunny").VideoSample) {
   let firstTimestamp: number | null = null;
   while (true) {
     const { done, value: frame } = await reader.read();

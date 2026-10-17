@@ -230,9 +230,12 @@ svg { width: 16px; height: 16px; }
 .directory-card.access-required .grid-card-visual { border-color: #644d3c; }
 .explorer-grid-card .grid-card-visual .media-thumb { width: 100%; height: 100%; }
 .explorer-image-thumbnail { display: block; width: 100%; height: 100%; object-fit: cover; }
+.explorer-image-thumbnail-host { width: 100%; height: 100%; display: grid; place-items: center; }
 .explorer-video-thumbnail { display: grid; place-items: center; width: 100%; height: 100%; }
 .explorer-video-thumbnail > svg { width: 25px; height: 25px; color: #747a80; }
 .explorer-video-thumbnail .media-thumb { width: 100%; height: 100%; }
+.explorer-grid-item { content-visibility: auto; contain-intrinsic-size: 148px 118px; }
+.media-grid-load-more { width: 100%; height: 1px; grid-column: 1 / -1; }
 .explorer-grid-card .grid-card-name { width: 100%; overflow: hidden; color: inherit; font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
 .explorer-grid-card > small { width: 100%; min-height: 10px; overflow: hidden; color: #62676c; font: 7px "IBM Plex Mono", monospace; white-space: nowrap; text-overflow: ellipsis; }
 .explorer-grid-card > small.media-file-status { position: static; inset: auto; height: auto; padding: 0; display: block; border: 0; background: transparent; color: #c99779; text-align: left; }

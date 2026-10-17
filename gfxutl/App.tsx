@@ -5,13 +5,14 @@ import { StatusBar } from "./components/status-bar";
 import { TimelinePanel } from "./components/timeline-panel";
 import { PanelResizers } from "./components/panel-resizers";
 import { shallowEqual, useEditor } from "./core/interface";
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { EditorContextMenu } from "./components/editor-context-menu";
 import { observeWindowControlsOverlay } from "./core/interface/window-controls-overlay";
 import { useI18n } from "./core/i18n";
 import { Button } from "./components/ui/button";
-import { ShaderGraphPanel } from "./components/shader-graph-panel";
 import { resolvePreviewTabShortcut } from "./core/interface/preview-tab-shortcut";
+
+const ShaderGraphPanel = lazy(() => import("./components/shader-graph-panel").then((module) => ({ default: module.ShaderGraphPanel })));
 
 export function App() {
   const { state, controller } = useEditor((value) => ({
@@ -133,7 +134,7 @@ export function App() {
       <MediaPanel />
       <PreviewPanel />
       <InspectorPanel />
-      {state.activeBottomPane === "timeline" ? <TimelinePanel /> : <ShaderGraphPanel />}
+      {state.activeBottomPane === "timeline" ? <TimelinePanel /> : <Suspense fallback={null}><ShaderGraphPanel /></Suspense>}
       <StatusBar />
       <PanelResizers />
       <EditorContextMenu />

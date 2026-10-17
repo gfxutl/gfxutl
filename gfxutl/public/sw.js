@@ -1,20 +1,15 @@
-const CACHE_NAME = "gfxutl-shell-v1";
+const CACHE_NAME = "gfxutl-shell-v2";
 const STATIC_SHELL = ["/manifest.webmanifest", "/icons/gfxutl.svg", "/icons/gfxutl-192.png", "/icons/gfxutl-512.png"];
 
 async function precacheAppShell() {
   const cache = await caches.open(CACHE_NAME);
-  const [documentResponse, assetManifestResponse] = await Promise.all([
-    fetch("/index.html", { cache: "reload" }),
-    fetch("/asset-manifest.json", { cache: "reload" }).catch(() => null),
-  ]);
+  const documentResponse = await fetch("/index.html", { cache: "reload" });
   if (!documentResponse.ok) throw new Error("GfxUtl app shell could not be fetched");
   const html = await documentResponse.clone().text();
   const generatedAssets = new Set([...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)].map((match) => match[1]));
-  if (assetManifestResponse?.ok) {
-    const buildAssets = await assetManifestResponse.clone().json();
-    for (const file of buildAssets) if (typeof file === "string") generatedAssets.add(`/${file}`);
-    await cache.put("/asset-manifest.json", assetManifestResponse);
-  }
+  // Only precache the entry chunks referenced by index.html. Feature chunks,
+  // the renderer worker and large WASM assets are cached on first use instead
+  // of competing with the first navigation for bandwidth and compilation.
   await Promise.all([
     cache.put("/", documentResponse.clone()),
     cache.put("/index.html", documentResponse),

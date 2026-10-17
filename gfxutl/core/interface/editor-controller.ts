@@ -205,6 +205,9 @@ export class EditorController {
   private activeAudioSignature = "";
   private explorerFiles = new Map<string, { file?: File; handle?: FileSystemFileHandle }>();
   private runtimeFiles = new Map<string, File>();
+  private runtimeAssetLoads = new Map<string, Promise<void>>();
+  private runtimeReadyAssetIds = new Set<string>();
+  private persistedHandleSignatures = new Map<string, string>();
   private undoStack: HistorySnapshot[] = [];
   private redoStack: HistorySnapshot[] = [];
   private historySuspended = false;
@@ -216,8 +219,8 @@ export class EditorController {
   private cameraHandleDragGeneration = 0;
   private cameraHandleDragTime = 0;
 
-  constructor(worker: Worker) {
-    this.engine = new EngineClient(worker, (message) => this.onEngineMessage(message));
+  constructor(workerFactory: () => Worker) {
+    this.engine = new EngineClient(workerFactory, (message) => this.onEngineMessage(message));
     this.engine.configurePreviewCache(this.state.settings.ramPreviewEnabled, this.state.settings.ramPreviewMaxBytes);
     void this.restoreLocalFonts();
     void this.restoreHandleProjects();
@@ -247,6 +250,13 @@ export class EditorController {
     }
     this.state = nextState;
     this.listeners.forEach((listener) => listener());
+  }
+
+  private updateRuntime(patch: Partial<EditorState>) {
+    const historySuspended = this.historySuspended;
+    this.historySuspended = true;
+    this.update({ ...patch, projectDirty: this.state.projectDirty });
+    this.historySuspended = historySuspended;
   }
 
   private historySnapshot(state = this.state): HistorySnapshot {
@@ -346,7 +356,14 @@ export class EditorController {
       const document = this.currentProjectDocument();
       const { assets: _assets, clips: _clips, ...project } = document;
       void saveAutosaveProject(document).catch(() => { /* Autosave may be unavailable in private browsing. */ });
-      for (const asset of this.state.assets) void saveHandleProject(asset, this.state.clips, project).catch(() => { /* Editing remains available if handle persistence is blocked. */ });
+      for (const asset of this.state.assets) {
+        if (!asset.handle) continue;
+        const signature = handleAssetSignature(asset);
+        if (this.persistedHandleSignatures.get(asset.id) === signature) continue;
+        void saveHandleProject(asset, this.state.clips, project).then(() => {
+          if (this.state.assets.some((item) => item.id === asset.id && handleAssetSignature(item) === signature)) this.persistedHandleSignatures.set(asset.id, signature);
+        }).catch(() => { /* Editing remains available if handle persistence is blocked. */ });
+      }
     }, 200);
   }
 
@@ -370,17 +387,17 @@ export class EditorController {
 
   private async restoreHandleProjects() {
     try {
-      const records = await loadHandleProjects();
-      const autosave = await loadAutosaveProject();
+      const [records, autosave] = await Promise.all([loadHandleProjects(), loadAutosaveProject()]);
       if (!records.length && !autosave) return;
       const handles = new Map(records.map((record) => [record.asset.id, record]));
+      for (const record of records) if (record.version === 3) this.persistedHandleSignatures.set(record.asset.id, handleAssetSignature(record.asset));
       const assets = autosave
         ? autosave.assets.map((asset) => {
           const record = handles.get(asset.id);
           return record ? { ...asset, handle: record.handle, fileStatus: "loading" as const } : { ...asset, fileStatus: "missing" as const };
         })
         : records.map((record) => ({ ...record.asset, handle: record.handle, fileStatus: "loading" as const }));
-      const clips = autosave?.clips ?? [...new Map(records.flatMap((record) => record.clips).map((clip) => [clip.id, clip])).values()];
+      const clips = autosave?.clips ?? [...new Map(records.flatMap((record) => record.clips ?? []).map((clip) => [clip.id, clip])).values()];
       const project = autosave ?? [...records].sort((a, b) => b.savedAt - a.savedAt).find((record) => record.project)?.project;
       const shaderGraphs = await Promise.all((project?.shaderGraphs ?? []).map(async (graph) => ({ ...graph, handle: await loadShaderHandle(graph.id) })));
       this.historySuspended = true;
@@ -402,21 +419,36 @@ export class EditorController {
         projectDirty: false,
       });
       this.historySuspended = false;
-      await this.registerTimelineFonts();
-      await Promise.allSettled(assets.map((asset) => this.restoreAssetFile(asset.id, false)));
-      await Promise.allSettled((project?.plugins ?? []).map(async (plugin) => {
+      // Cached project metadata is sufficient for the first UI and background
+      // frame. File handles, decoders, fonts and plugins hydrate afterwards.
+      this.renderPreview(true);
+      void this.registerTimelineFonts();
+      const prioritizedAssets = [...assets].sort((left, right) => this.assetRestorePriority(left.id) - this.assetRestorePriority(right.id));
+      void runWithConcurrency(prioritizedAssets, 3, (asset) => this.restoreAssetFile(asset.id, false)).then(() => {
+        this.updateRuntime({ projectDirty: false });
+        this.renderPreview(true);
+        // Rewrites legacy per-handle v1/v2 records into the normalized v3
+        // shape after the non-blocking restoration pass has completed.
+        this.schedulePersistence();
+      });
+      void Promise.allSettled((project?.plugins ?? []).map(async (plugin) => {
         const directory = await loadPluginDirectory(plugin.id);
         if (!directory || await queryDirectoryReadPermission(directory) !== "granted") return;
         this.pluginDirectories.set(plugin.id, directory);
         await this.reloadRendererPlugin(plugin.id);
-      }));
-      this.update({ projectDirty: false });
-      this.renderPreview(true);
+      })).then(() => this.updateRuntime({ projectDirty: false }));
     } catch {
       // IndexedDB or a persisted handle may be unavailable in private browsing.
     } finally {
       this.historySuspended = false;
     }
+  }
+
+  private assetRestorePriority(assetId: string) {
+    const clip = this.state.clips.find((item) => item.assetId === assetId
+      && item.start <= this.state.currentTime + 5
+      && item.start + item.duration >= this.state.currentTime - 1);
+    return clip ? Math.max(0, clip.start - this.state.currentTime) : Number.MAX_SAFE_INTEGER;
   }
 
   saveProject = async () => {
@@ -579,18 +611,19 @@ export class EditorController {
       let permission = await queryReadPermission(asset.handle);
       if (permission !== "granted" && requestPermission) permission = await requestReadPermission(asset.handle);
       if (permission !== "granted") {
-        this.update({ assets: this.state.assets.map((item) => item.id === assetId ? { ...item, fileStatus: "permission-required" } : item) });
+        this.updateRuntime({ assets: this.state.assets.map((item) => item.id === assetId ? { ...item, fileStatus: "permission-required" } : item) });
         return false;
       }
       const file = await asset.handle.getFile();
-      const info: Partial<MediaAsset> = { size: file.size, lastModified: file.lastModified, ...await this.registerRuntimeFile(asset, file) };
-      if (asset.kind === "audio") {
-        try { info.waveformPeaks = (await this.engine.getMediaThumbnail(asset.id)).peaks; } catch { /* Waveform is an optional visual aid. */ }
-      }
-      this.update({ assets: this.state.assets.map((item) => item.id === assetId ? { ...item, ...info, fileStatus: "ready" } : item) });
+      this.registerAvailableFile(asset.id, file);
+      const changed = asset.size !== file.size || asset.lastModified !== file.lastModified;
+      const info: Partial<MediaAsset> = { size: file.size, lastModified: file.lastModified };
+      if (changed) Object.assign(info, await this.registerRuntimeFile(asset, file), { waveformPeaks: undefined });
+      this.updateRuntime({ assets: this.state.assets.map((item) => item.id === assetId ? { ...item, ...info, fileStatus: "ready" } : item) });
+      if (this.assetRestorePriority(assetId) !== Number.MAX_SAFE_INTEGER) this.renderPreview(true);
       return true;
     } catch {
-      this.update({ assets: this.state.assets.map((item) => item.id === assetId ? { ...item, fileStatus: "missing" } : item) });
+      this.updateRuntime({ assets: this.state.assets.map((item) => item.id === assetId ? { ...item, fileStatus: "missing" } : item) });
       return false;
     }
   }
@@ -619,7 +652,7 @@ export class EditorController {
       const pending: MediaAsset = { ...asset, handle, size: file.size, lastModified: file.lastModified, fileStatus: "loading" };
       this.update({ assets: this.state.assets.map((item) => item.id === assetId ? pending : item) });
       const info = await this.registerRuntimeFile(pending, file);
-      const waveformPeaks = asset.kind === "audio" ? await this.engine.getMediaThumbnail(assetId).then((thumbnail) => thumbnail.peaks).catch(() => undefined) : asset.waveformPeaks;
+      const waveformPeaks = asset.kind === "audio" && asset.size === file.size && asset.lastModified === file.lastModified ? asset.waveformPeaks : undefined;
       const ready: MediaAsset = { ...pending, ...info, waveformPeaks, fileStatus: "ready" };
       this.update({ assets: this.state.assets.map((item) => item.id === assetId ? ready : item) });
       if (handle) {
@@ -635,11 +668,41 @@ export class EditorController {
   };
 
   private async registerRuntimeFile(asset: MediaAsset, file: File) {
-    this.runtimeFiles.set(asset.id, file);
-    if (asset.kind === "image") return this.engine.inspectImage(file, asset.id, asset.handle);
-    if (asset.kind === "model") return this.engine.inspectModel(file, asset.id, asset.handle);
-    const info = await this.engine.inspectMedia(file, asset.id, asset.handle);
+    this.registerAvailableFile(asset.id, file);
+    this.runtimeReadyAssetIds.delete(asset.id);
+    const info = asset.kind === "image"
+      ? await this.engine.inspectImage(file, asset.id, asset.handle)
+      : asset.kind === "model"
+        ? await this.engine.inspectModel(file, asset.id, asset.handle)
+        : await this.engine.inspectMedia(file, asset.id, asset.handle);
+    this.runtimeReadyAssetIds.add(asset.id);
     return info;
+  }
+
+  private registerAvailableFile(assetId: string, file: File) {
+    this.runtimeFiles.set(assetId, file);
+    const kind = this.state.assets.find((asset) => asset.id === assetId)?.kind;
+    if (kind) this.engine.registerMediaFile(assetId, file, kind);
+  }
+
+  private ensureAssetRuntime(assetId: string) {
+    if (this.runtimeReadyAssetIds.has(assetId)) return Promise.resolve();
+    const pending = this.runtimeAssetLoads.get(assetId);
+    if (pending) return pending;
+    const request = (async () => {
+      const asset = this.state.assets.find((item) => item.id === assetId);
+      if (!asset) throw new Error("Media asset is unavailable");
+      const file = this.runtimeFiles.get(assetId) ?? await asset.handle?.getFile();
+      if (!file) throw new Error("Media file access is unavailable");
+      const info = await this.registerRuntimeFile(asset, file);
+      this.updateRuntime({
+        assets: this.state.assets.map((item) => item.id === assetId
+          ? { ...item, ...info, size: file.size, lastModified: file.lastModified, fileStatus: "ready" }
+          : item),
+      });
+    })().finally(() => this.runtimeAssetLoads.delete(assetId));
+    this.runtimeAssetLoads.set(assetId, request);
+    return request;
   }
 
   private stopAudioPreview() {
@@ -1228,6 +1291,9 @@ export class EditorController {
     if (referenced.size) this.removeClipIds(referenced);
     this.engine.releaseMedia(id);
     this.runtimeFiles.delete(id);
+    this.runtimeReadyAssetIds.delete(id);
+    this.runtimeAssetLoads.delete(id);
+    this.persistedHandleSignatures.delete(id);
     void removeHandleProject(id).catch(() => undefined);
     this.update({ assets: this.state.assets.filter((asset) => asset.id !== id), selectedAssetId: this.state.selectedAssetId === id ? null : this.state.selectedAssetId });
     this.schedulePersistence();
@@ -1531,9 +1597,30 @@ export class EditorController {
     });
   };
 
-  getMediaThumbnail = (assetId: string, time = 0, timeline?: { width: number; height: number }) => this.engine.getMediaThumbnail(assetId, time, timeline);
-  prepareMediaPreview = (file: File, previewId: string, handle?: FileSystemFileHandle) => this.engine.inspectMedia(file, previewId, handle);
-  releaseMediaPreview = (previewId: string) => this.engine.releaseMedia(previewId);
+  getMediaThumbnail = async (assetId: string, time = 0, timeline?: { width: number; height: number }, signal?: AbortSignal) => {
+    const cachedAsset = this.state.assets.find((item) => item.id === assetId);
+    if (!timeline && cachedAsset?.kind === "audio" && cachedAsset.waveformPeaks?.length) return { peaks: cachedAsset.waveformPeaks };
+    await this.ensureAssetRuntime(assetId);
+    const thumbnail = await this.engine.getMediaThumbnail(assetId, time, timeline, signal);
+    if (thumbnail.peaks?.length) {
+      const asset = this.state.assets.find((item) => item.id === assetId);
+      if (asset && asset.waveformPeaks !== thumbnail.peaks) {
+        this.updateRuntime({ assets: this.state.assets.map((item) => item.id === assetId ? { ...item, waveformPeaks: thumbnail.peaks } : item) });
+        this.schedulePersistence();
+      }
+    }
+    return thumbnail;
+  };
+  prepareMediaPreview = async (file: File, previewId: string, handle?: FileSystemFileHandle) => {
+    const info = await this.engine.inspectMedia(file, previewId, handle);
+    this.runtimeReadyAssetIds.add(previewId);
+    return info;
+  };
+  releaseMediaPreview = (previewId: string) => {
+    this.runtimeReadyAssetIds.delete(previewId);
+    this.runtimeAssetLoads.delete(previewId);
+    this.engine.releaseMedia(previewId);
+  };
   pickPreview = async (ndcX: number, ndcY: number, coalesce = false) => (await this.engine.pick(ndcX, ndcY, coalesce)).clipId;
   pickPreviewTarget = (ndcX: number, ndcY: number, coalesce = false) => this.engine.pick(ndcX, ndcY, coalesce);
   moveInspectorCamera = (operation: "orbit" | "pan" | "walk", deltaX: number, deltaY: number) => this.engine.moveInspectorCamera(operation, deltaX, deltaY);
@@ -2603,7 +2690,9 @@ export class EditorController {
     });
     try {
       const info = await this.registerRuntimeFile(asset, file);
-      const waveformPeaks = kind === "audio" ? await this.engine.getMediaThumbnail(id).then((thumbnail) => thumbnail.peaks).catch(() => undefined) : undefined;
+      // Waveforms are requested by the first visible thumbnail and persisted
+      // afterwards; they are not part of the file-import critical path.
+      const waveformPeaks = kind === "audio" && existing?.size === file.size && existing.lastModified === file.lastModified ? existing.waveformPeaks : undefined;
       const readyAsset = { ...asset, ...info, waveformPeaks, fileStatus: "ready" as const };
       this.update({ assets: this.state.assets.map((item) => item.id === id ? readyAsset : item) });
       this.renderPreview(true);
@@ -2717,7 +2806,7 @@ export class EditorController {
           return blob;
         },
       }));
-      this.update({ fonts, projectDirty: this.state.projectDirty });
+      this.updateRuntime({ fonts });
       await this.registerTimelineFonts();
     } catch {
       // IndexedDB may be unavailable in private browsing. Opening the font
@@ -2988,4 +3077,19 @@ async function requestReadPermission(handle: FileSystemFileHandle) {
 async function queryDirectoryReadPermission(handle: FileSystemDirectoryHandle) {
   const permissionHandle = handle as FileSystemDirectoryHandle & { queryPermission?: (options: { mode: "read" }) => Promise<PermissionState> };
   return permissionHandle.queryPermission ? permissionHandle.queryPermission({ mode: "read" }) : "prompt";
+}
+
+async function runWithConcurrency<T>(items: readonly T[], concurrency: number, task: (item: T) => Promise<unknown>) {
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex++];
+      try { await task(item); } catch { /* Each restore updates its own availability state. */ }
+    }
+  });
+  await Promise.all(workers);
+}
+
+function handleAssetSignature(asset: Omit<MediaAsset, "handle"> | MediaAsset) {
+  return JSON.stringify([asset.name, asset.kind, asset.size, asset.lastModified, asset.sourcePath ?? null]);
 }

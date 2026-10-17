@@ -8,13 +8,14 @@ export type AudioPreviewChunk = { timestamp: number; duration: number; sampleRat
 export type MediaThumbnail = { bitmap?: ImageBitmap; frame?: VideoFrame; peaks?: number[] };
 
 export class EngineClient {
+  private worker: Worker | null = null;
   private port: MessagePort | null = null;
   private outbox: Array<{ message: Exclude<EngineRequest, { type: "init" }>; transfer: Transferable[] }> = [];
-  private pending = new Map<string, { resolve: (value: MediaInfo) => void; reject: (reason: Error) => void }>();
+  private pending = new Map<string, { resolve: (value: MediaInfo) => void; reject: (reason: Error) => void; timer: number }>();
   private pendingExports = new Map<string, { resolve: (value: ExportResult) => void; reject: (reason: Error) => void }>();
   private activeExportRequestId?: string;
   private pendingAudio = new Map<string, { resolve: (value: AudioPreviewChunk[]) => void; reject: (reason: Error) => void }>();
-  private pendingThumbnails = new Map<string, { resolve: (value: MediaThumbnail) => void; reject: (reason: Error) => void }>();
+  private pendingThumbnails = new Map<string, { resolve: (value: MediaThumbnail) => void; reject: (reason: Error) => void; timer: number; cleanupAbort?: () => void }>();
   private pendingThumbnailKeys = new Map<string, string>();
   private thumbnailPromises = new Map<string, Promise<MediaThumbnail>>();
   private pendingPicks = new Map<string, (result: PreviewPickResult) => void>();
@@ -30,20 +31,37 @@ export class EngineClient {
   private lastSceneSettings: SceneSettings | null = null;
   private lastResize = "";
   private initialPreviewCache: { enabled: boolean; maxBytes: number } | undefined;
-  private mediaFiles = new Map<string, File>();
+  private mediaFiles = new Map<string, { file: File; kind: "video" | "audio" | "image" | "model" }>();
   private mediaBufferLoads = new Set<string>();
+  private requestedMediaAssets = new Set<string>();
   private mediaGraphRevision = 0;
   private mediaGraphSignature = "";
   private initializing = false;
+  private nagaWasmPromise: Promise<ArrayBuffer>;
 
-  constructor(private worker: Worker, private onMessage: (message: EngineResponse) => void) {
-    this.worker.onerror = (event) => this.onMessage({ type: "error", message: event.message || "Workerの初期化に失敗しました" });
+  constructor(private workerFactory: () => Worker, private onMessage: (message: EngineResponse) => void) {
+    // Start the renderer dependency fetch at module evaluation instead of
+    // waiting for React layout effects to connect the preview canvas.
+    this.nagaWasmPromise = fetch(nagaWasmUrl).then(async (response) => {
+      if (!response.ok) throw new Error(`Naga WASMを取得できませんでした (${response.status})`);
+      return response.arrayBuffer();
+    });
+  }
+
+  private ensureWorker() {
+    if (this.worker) return this.worker;
+    const worker = this.workerFactory();
+    worker.onerror = (event) => this.onMessage({ type: "error", message: event.message || "Workerの初期化に失敗しました" });
+    this.worker = worker;
+    return worker;
   }
 
   private receive = (event: MessageEvent<EngineResponse>) => {
     const message = event.data;
     if (message.type === "media-info") {
-      this.pending.get(message.requestId)?.resolve(message);
+      const pending = this.pending.get(message.requestId);
+      if (pending) window.clearTimeout(pending.timer);
+      pending?.resolve(message);
       this.pending.delete(message.requestId);
     } else if (message.type === "export-complete") {
       this.pendingExports.get(message.requestId)?.resolve(message);
@@ -57,7 +75,10 @@ export class EngineClient {
       this.pendingAudio.get(message.requestId)?.resolve(message.chunks);
       this.pendingAudio.delete(message.requestId);
     } else if (message.type === "media-thumbnail") {
-      this.pendingThumbnails.get(message.requestId)?.resolve(message);
+      const pending = this.pendingThumbnails.get(message.requestId);
+      if (pending) window.clearTimeout(pending.timer);
+      pending?.cleanupAbort?.();
+      pending?.resolve(message);
       this.pendingThumbnails.delete(message.requestId);
       const key = this.pendingThumbnailKeys.get(message.requestId);
       if (key) this.thumbnailPromises.delete(key);
@@ -79,8 +100,14 @@ export class EngineClient {
       this.flushPendingRender();
     } else if (message.type === "media-buffer-state") {
       for (const assetId of message.residentAssetIds) this.mediaBufferLoads.delete(assetId);
-      for (const assetId of message.requestedAssetIds) this.loadMediaBufferAsset(assetId);
+      this.requestedMediaAssets = new Set(message.requestedAssetIds);
+      for (const assetId of this.requestedMediaAssets) this.loadMediaBufferAsset(assetId);
     } else if (message.type === "error" && message.requestId) {
+      const pendingMedia = this.pending.get(message.requestId);
+      const pendingThumbnail = this.pendingThumbnails.get(message.requestId);
+      if (pendingMedia) window.clearTimeout(pendingMedia.timer);
+      if (pendingThumbnail) window.clearTimeout(pendingThumbnail.timer);
+      pendingThumbnail?.cleanupAbort?.();
       this.pending.get(message.requestId)?.reject(new Error(message.message));
       this.pendingExports.get(message.requestId)?.reject(new Error(message.message));
       this.pendingAudio.get(message.requestId)?.reject(new Error(message.message));
@@ -122,9 +149,11 @@ export class EngineClient {
 
   private async initialize(canvas: OffscreenCanvas, width: number, height: number, dpr: number) {
     try {
-      const response = await fetch(nagaWasmUrl);
-      if (!response.ok) throw new Error(`Naga WASMを取得できませんでした (${response.status})`);
-      const nagaWasm = await response.arrayBuffer();
+      // Worker construction downloads/evaluates its module graph, so defer it
+      // until the preview canvas actually mounts while overlapping that work
+      // with the already-started Naga fetch.
+      const worker = this.ensureWorker();
+      const nagaWasm = await this.nagaWasmPromise;
       const channel = new MessageChannel();
       this.port = channel.port1;
       this.port.onmessage = this.receive;
@@ -133,7 +162,7 @@ export class EngineClient {
         type: "init", canvas, port: channel.port2, width, height, dpr, nagaWasm,
         ...(this.initialPreviewCache ? { previewCache: this.initialPreviewCache } : {}),
       };
-      this.worker.postMessage(message, [canvas, channel.port2, nagaWasm]);
+      worker.postMessage(message, [canvas, channel.port2, nagaWasm]);
       this.lastResize = `${width}:${height}:${dpr}`;
       for (const queued of this.outbox.splice(0)) this.port.postMessage(queued.message, queued.transfer);
     } catch (error) {
@@ -196,31 +225,31 @@ export class EngineClient {
 
   inspectMedia(file: File, assetId: string, handle?: FileSystemFileHandle) {
     const requestId = crypto.randomUUID();
-    this.mediaFiles.set(assetId, file);
+    this.mediaFiles.set(assetId, { file, kind: "video" });
     return new Promise<MediaInfo>((resolve, reject) => {
-      this.pending.set(requestId, { resolve, reject });
-      const stream = file.stream();
-      this.post({ type: "inspect-media", requestId, assetId, source: mediaFileSource(file), stream }, [stream as unknown as Transferable]);
+      const timer = this.mediaRequestTimeout(requestId, reject);
+      this.pending.set(requestId, { resolve, reject, timer });
+      this.post({ type: "inspect-media", requestId, assetId, source: mediaFileSource(file), file });
     });
   }
 
   inspectImage(file: File, assetId: string, handle?: FileSystemFileHandle) {
     const requestId = crypto.randomUUID();
-    this.mediaFiles.set(assetId, file);
+    this.mediaFiles.set(assetId, { file, kind: "image" });
     return new Promise<MediaInfo>((resolve, reject) => {
-      this.pending.set(requestId, { resolve, reject });
-      const stream = file.stream();
-      this.post({ type: "inspect-image", requestId, assetId, source: mediaFileSource(file), stream }, [stream as unknown as Transferable]);
+      const timer = this.mediaRequestTimeout(requestId, reject);
+      this.pending.set(requestId, { resolve, reject, timer });
+      this.post({ type: "inspect-image", requestId, assetId, source: mediaFileSource(file), file });
     });
   }
 
   inspectModel(file: File, assetId: string, handle?: FileSystemFileHandle) {
     const requestId = crypto.randomUUID();
-    this.mediaFiles.set(assetId, file);
+    this.mediaFiles.set(assetId, { file, kind: "model" });
     return new Promise<MediaInfo>((resolve, reject) => {
-      this.pending.set(requestId, { resolve, reject });
-      const stream = file.stream();
-      this.post({ type: "inspect-model", requestId, assetId, source: mediaFileSource(file), stream }, [stream as unknown as Transferable]);
+      const timer = this.mediaRequestTimeout(requestId, reject);
+      this.pending.set(requestId, { resolve, reject, timer });
+      this.post({ type: "inspect-model", requestId, assetId, source: mediaFileSource(file), file });
     });
   }
 
@@ -228,6 +257,11 @@ export class EngineClient {
     this.mediaFiles.delete(assetId);
     this.mediaBufferLoads.delete(assetId);
     this.post({ type: "release-media", assetId });
+  }
+
+  registerMediaFile(assetId: string, file: File, kind: "video" | "audio" | "image" | "model") {
+    this.mediaFiles.set(assetId, { file, kind });
+    if (this.requestedMediaAssets.has(assetId)) this.loadMediaBufferAsset(assetId);
   }
 
   setMediaReadGraph(graph: Omit<MediaReadGraph, "revision">) {
@@ -238,11 +272,10 @@ export class EngineClient {
   }
 
   private loadMediaBufferAsset(assetId: string) {
-    const file = this.mediaFiles.get(assetId);
-    if (!file || this.mediaBufferLoads.has(assetId)) return;
+    const registration = this.mediaFiles.get(assetId);
+    if (!registration || this.mediaBufferLoads.has(assetId)) return;
     this.mediaBufferLoads.add(assetId);
-    const stream = file.stream();
-    this.post({ type: "media-buffer-load", assetId, source: mediaFileSource(file), stream }, [stream as unknown as Transferable]);
+    this.post({ type: "media-buffer-load", assetId, kind: registration.kind, source: mediaFileSource(registration.file), file: registration.file });
   }
 
   decodeAudioPreview(assetId: string, startTime: number, endTime: number) {
@@ -253,18 +286,48 @@ export class EngineClient {
     });
   }
 
-  getMediaThumbnail(assetId: string, time = 0, timeline?: { width: number; height: number }) {
+  getMediaThumbnail(assetId: string, time = 0, timeline?: { width: number; height: number }, signal?: AbortSignal) {
+    if (signal?.aborted) return Promise.reject(new DOMException("Thumbnail canceled", "AbortError"));
     const key = `${assetId}:${time.toFixed(6)}:${timeline ? `${timeline.width}x${timeline.height}` : "media"}`;
     const pending = this.thumbnailPromises.get(key);
-    if (pending) return pending;
+    if (pending) return signal ? abortablePromise(pending, signal) : pending;
     const requestId = crypto.randomUUID();
     const request = new Promise<MediaThumbnail>((resolve, reject) => {
-      this.pendingThumbnails.set(requestId, { resolve, reject });
+      const timer = window.setTimeout(() => {
+        const pendingRequest = this.pendingThumbnails.get(requestId);
+        if (!pendingRequest || !this.pendingThumbnails.delete(requestId)) return;
+        pendingRequest.cleanupAbort?.();
+        this.pendingThumbnailKeys.delete(requestId);
+        this.thumbnailPromises.delete(key);
+        this.post({ type: "cancel-request", requestId });
+        reject(new Error("サムネイル生成がタイムアウトしました"));
+      }, 30_000);
+      const onAbort = () => {
+        if (!this.pendingThumbnails.delete(requestId)) return;
+        window.clearTimeout(timer);
+        this.pendingThumbnailKeys.delete(requestId);
+        this.thumbnailPromises.delete(key);
+        this.post({ type: "cancel-request", requestId });
+        reject(new DOMException("Thumbnail canceled", "AbortError"));
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.pendingThumbnails.set(requestId, {
+        resolve, reject, timer,
+        ...(signal ? { cleanupAbort: () => signal.removeEventListener("abort", onAbort) } : {}),
+      });
       this.pendingThumbnailKeys.set(requestId, key);
       this.post({ type: "media-thumbnail", requestId, assetId, time, ...(timeline ? { timeline } : {}) });
     });
     this.thumbnailPromises.set(key, request);
     return request;
+  }
+
+  private mediaRequestTimeout(requestId: string, reject: (reason: Error) => void) {
+    return window.setTimeout(() => {
+      if (!this.pending.delete(requestId)) return;
+      this.post({ type: "cancel-request", requestId });
+      reject(new Error("メディア解析がタイムアウトしました"));
+    }, 30_000);
   }
 
   pick(ndcX: number, ndcY: number, coalesce = false) {
@@ -371,6 +434,14 @@ export class EngineClient {
   upsertGeometry(object: SceneObjectSpec) { this.post({ type: "geometry-upsert", object }); }
   removeGeometry(id: string) { this.post({ type: "geometry-remove", id }); }
   registerFont(fontId: string, buffer: ArrayBuffer) { this.post({ type: "font-register", fontId, buffer }, [buffer]); }
+}
+
+function abortablePromise<T>(promise: Promise<T>, signal: AbortSignal) {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new DOMException("Thumbnail canceled", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    void promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
 function mediaFileSource(file: File): MediaFileSource {

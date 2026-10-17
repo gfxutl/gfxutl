@@ -12,13 +12,7 @@ import {
   EyeOff16Regular as EyeOff,
   Options16Regular as SlidersHorizontal,
 } from "@fluentui/react-icons";
-import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
-import { bracketMatching, indentOnInput, indentUnit, StreamLanguage } from "@codemirror/language";
-import { shader } from "@codemirror/legacy-modes/mode/clike";
-import { EditorState } from "@codemirror/state";
-import { oneDark } from "@codemirror/theme-one-dark";
-import { drawSelection, dropCursor, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { shallowEqual, useEditor } from "../core/interface";
 import type { ClipEffect, ClipEffectKind, ClipMask, ClipPropertyAction, ClipPropertyActionKind, ColorGradingSpec, GeometryKind, GeometrySpec, KeyframeProperty, MaterialKind, MediaAsset, SceneKeyframe, SceneSettings, TimelineClip } from "../core/interface";
 import { applicableClipActionKinds, CLIP_ACTION_LABELS, DEFAULT_POST_PROCESS_GLSL, resolveClipPropertyActions, resolveColorGrading } from "../core/interface/clip-actions";
@@ -27,6 +21,8 @@ import { Button } from "./ui/button";
 import { Slider } from "./ui/slider";
 import { FontPicker } from "./font-picker";
 import { useI18n } from "../core/i18n";
+
+const GlslCodeEditor = lazy(() => import("./glsl-code-editor").then((module) => ({ default: module.GlslCodeEditor })));
 
 const GEOMETRY_OPTIONS: GeometryKind[] = ["box", "capsule", "circle", "cone", "cylinder", "dodecahedron", "icosahedron", "octahedron", "plane", "ring", "sphere", "tetrahedron", "torus", "torusKnot", "lathe", "shape", "extrude", "tube", "polyhedron", "edges", "wireframe", "buffer"];
 const THREE_RAD_TO_DEG = 180 / Math.PI;
@@ -615,62 +611,10 @@ function PostProcessEditor({ clip }: { clip: TimelineClip }) {
       <label><input type="checkbox" checked={shader.enabled} onChange={(event) => controller.updateClipPostProcess(clip.id, { enabled: event.target.checked })} /> {t("有効")}</label>
     </div>
     <label className="shader-preset"><span>{t("プリセット")}</span><select aria-label={t("GLSLプリセット")} defaultValue="passthrough" onChange={(event) => setDraft(POST_PROCESS_PRESETS[event.target.value as keyof typeof POST_PROCESS_PRESETS])}><option value="passthrough">Pass through</option><option value="invert">Invert</option><option value="scanline">Scanline</option><option value="channelShift">Channel shift</option></select></label>
-    <GlslCodeEditor value={draft} onChange={setDraft} onSubmit={(source) => void controller.compileClipPostProcess(clip.id, source)} />
+    <Suspense fallback={<div className="glsl-code-editor" />}><GlslCodeEditor value={draft} onChange={setDraft} onSubmit={(source) => void controller.compileClipPostProcess(clip.id, source)} /></Suspense>
     <div className="shader-compile-row"><Button size="sm" disabled={shader.compileStatus === "compiling" || !draft.trim()} onClick={() => void controller.compileClipPostProcess(clip.id, draft)}>{t("コンパイルして適用")}</Button></div>
     {shader.compileError && <pre className="shader-diagnostic" role="alert">{shader.compileError}</pre>}
   </div>;
-}
-
-function GlslCodeEditor({ value, onChange, onSubmit }: { value: string; onChange: (value: string) => void; onSubmit: (value: string) => void }) {
-  const { t } = useI18n();
-  const hostRef = useRef<HTMLDivElement>(null);
-  const viewRef = useRef<EditorView | null>(null);
-  const onChangeRef = useRef(onChange);
-  const onSubmitRef = useRef(onSubmit);
-  onChangeRef.current = onChange;
-  onSubmitRef.current = onSubmit;
-
-  useEffect(() => {
-    if (!hostRef.current) return;
-    const view = new EditorView({
-      parent: hostRef.current,
-      doc: value,
-      extensions: [
-        lineNumbers(),
-        highlightActiveLineGutter(),
-        history(),
-        drawSelection(),
-        dropCursor(),
-        indentOnInput(),
-        bracketMatching(),
-        highlightActiveLine(),
-        oneDark,
-        StreamLanguage.define(shader),
-        EditorState.tabSize.of(2),
-        indentUnit.of("  "),
-        keymap.of([
-          { key: "Mod-Enter", run: (editor) => { onSubmitRef.current(editor.state.doc.toString()); return true; } },
-          indentWithTab,
-          ...defaultKeymap,
-          ...historyKeymap,
-        ]),
-        EditorView.contentAttributes.of({ "aria-label": t("GLSLシェーダー"), spellcheck: "false" }),
-        EditorView.updateListener.of((update) => {
-          if (update.docChanged) onChangeRef.current(update.state.doc.toString());
-        }),
-      ],
-    });
-    viewRef.current = view;
-    return () => { view.destroy(); viewRef.current = null; };
-  }, [t]);
-
-  useEffect(() => {
-    const view = viewRef.current;
-    if (!view || view.state.doc.toString() === value) return;
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
-  }, [value]);
-
-  return <div className="glsl-code-editor" ref={hostRef} />;
 }
 
 function RealtimeLayerInspector({ clips, currentTime, fps, selectedClipId, onSelect, onToggleVisibility }: {
