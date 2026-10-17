@@ -1,4 +1,4 @@
-import { Camera16Regular as Camera, Dismiss16Regular as X, Eye16Regular as Inspector, Open16Regular as ExternalLink } from "@fluentui/react-icons";
+import { Camera16Regular as Camera, Dismiss16Regular as X, Eye16Regular as Inspector, MicRecord16Regular as MicRecord, Open16Regular as ExternalLink, TextFont16Regular as TextFont } from "@fluentui/react-icons";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { shallowEqual, useEditor } from "../core/interface";
 import type { CameraHandleKind, TimelineClip, TransformHandleKind } from "../core/interface";
@@ -6,6 +6,10 @@ import type { MediaAsset } from "../core/interface";
 import { resolvePreviewResize } from "../core/interface/preview-resize";
 import { AudioWaveformEditor } from "./audio-waveform-editor";
 import { useI18n } from "../core/i18n";
+import { AudioRecordingPanel } from "./audio-recording-panel";
+import { OPEN_AUDIO_RECORDING_EVENT } from "../core/interface/recording-events";
+import { GfxTextEditor } from "./gfxtext-editor";
+import { OPEN_GFX_TEXT_EVENT, type GfxTextEditorEntry } from "../core/interface/gfxtext-document";
 
 export function PreviewPanel() {
   const { state, controller } = useEditor((value) => ({
@@ -51,12 +55,17 @@ export function PreviewPanel() {
   const [inspectorNavigation, setInspectorNavigation] = useState<"orbit" | "pan" | "walk" | null>(null);
   const [poppedOut, setPoppedOut] = useState(false);
   const [surfaceKey, setSurfaceKey] = useState(0);
+  const [recordingTabOpen, setRecordingTabOpen] = useState(false);
+  const [recordingTabActive, setRecordingTabActive] = useState(false);
+  const [audioRecording, setAudioRecording] = useState(false);
+  const [gfxTextTabs, setGfxTextTabs] = useState<GfxTextEditorEntry[]>([]);
+  const [activeGfxTextId, setActiveGfxTextId] = useState<string | null>(null);
   const previewTabs = useMemo(() => state.previewClipTabs
     .map((id) => state.clips.find((clip) => clip.id === id))
     .filter((clip): clip is TimelineClip => Boolean(clip)), [state.clips, state.previewClipTabs]);
   const activePreviewClip = state.clips.find((clip) => clip.id === state.activePreviewClipId);
   const activeAudioClip = activePreviewClip?.kind === "audio" ? activePreviewClip : undefined;
-  const inspectorView = state.activePreviewClipId === null && state.activePreviewView === "inspector";
+  const inspectorView = !recordingTabActive && !activeGfxTextId && state.activePreviewClipId === null && state.activePreviewView === "inspector";
   const cameraName = state.background.scene.camera.name;
   const compositionAspect = state.background.width / state.background.height;
   const previewWorldHeight = 9;
@@ -69,13 +78,36 @@ export function PreviewPanel() {
   useEffect(() => {
     const canvas = canvasRef.current;
     const stage = stageRef.current;
-    if (!canvas || !stage || poppedOut || activeAudioClip) return;
+    if (!canvas || !stage || poppedOut || activeAudioClip || recordingTabActive || activeGfxTextId) return;
     const rect = stage.getBoundingClientRect();
     controller.connectPreview(canvas, Math.floor(rect.width), Math.floor(rect.height));
     const observer = new ResizeObserver(([entry]) => controller.resizePreview(Math.floor(entry.contentRect.width), Math.floor(entry.contentRect.height)));
     observer.observe(stage);
     return () => observer.disconnect();
-  }, [controller, poppedOut, surfaceKey, activeAudioClip?.id]);
+  }, [controller, poppedOut, surfaceKey, activeAudioClip?.id, recordingTabActive, activeGfxTextId]);
+
+  useEffect(() => {
+    const openRecording = () => {
+      setRecordingTabOpen(true);
+      setRecordingTabActive(true);
+      setActiveGfxTextId(null);
+    };
+    window.addEventListener(OPEN_AUDIO_RECORDING_EVENT, openRecording);
+    return () => window.removeEventListener(OPEN_AUDIO_RECORDING_EVENT, openRecording);
+  }, []);
+
+  useEffect(() => {
+    const openTextEditor = (event: Event) => {
+      const entry = (event as CustomEvent<GfxTextEditorEntry>).detail;
+      setGfxTextTabs((current) => current.some((item) => item.id === entry.id)
+        ? current.map((item) => item.id === entry.id ? entry : item)
+        : [...current, entry]);
+      setRecordingTabActive(false);
+      setActiveGfxTextId(entry.id);
+    };
+    window.addEventListener(OPEN_GFX_TEXT_EVENT, openTextEditor);
+    return () => window.removeEventListener(OPEN_GFX_TEXT_EVENT, openTextEditor);
+  }, []);
 
   useEffect(() => () => {
     if (pickFrameRef.current !== null) cancelAnimationFrame(pickFrameRef.current);
@@ -491,12 +523,16 @@ export function PreviewPanel() {
   return (
     <section className="preview-panel panel" ref={panelRef}>
       <div className="preview-tabs" role="tablist" aria-label={t("プレビュータブ")}>
-        <button className={`preview-tab preview-tab-composite ${inspectorView ? "active" : ""}`} role="tab" aria-selected={inspectorView} aria-label={t("インスペクター視点")} aria-keyshortcuts="Control+Meta+1" title={`${t("カメラを含むシーン全体を俯瞰")} (Ctrl+Meta+1)`} onClick={() => controller.setPreviewView("inspector")}><Inspector /><span>{t("Inspector")}</span></button>
-        <button type="button" className={`preview-tab preview-tab-object preview-tab-camera ${state.activePreviewClipId === null && state.activePreviewView === "camera" ? "active" : ""}`} role="tab" aria-selected={state.activePreviewClipId === null && state.activePreviewView === "camera"} aria-keyshortcuts="Control+Meta+2" title={`${t("{name}の視点をプレビュー", { name: cameraName })} (Ctrl+Meta+2)`} onClick={() => controller.setPreviewView("camera")}><Camera /><span>{t("Camera")}</span></button>
-        {previewTabs.map((clip, index) => <div key={clip.id} className={`preview-tab preview-tab-object ${state.activePreviewClipId === clip.id ? "active" : ""}`} role="tab" tabIndex={0} aria-selected={state.activePreviewClipId === clip.id} aria-keyshortcuts={index < 7 ? `Control+Meta+${index + 3}` : undefined} title={`${t("{name}のみをプレビュー", { name: clip.name })}${index < 7 ? ` (Ctrl+Meta+${index + 3})` : ""}`} onClick={() => controller.setPreviewTab(clip.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); controller.setPreviewTab(clip.id); } }}><span>{clip.name}</span><button type="button" aria-label={t("{name}のプレビューを閉じる", { name: clip.name })} onClick={(event) => { event.stopPropagation(); controller.closePreviewTab(clip.id); }}><X /></button></div>)}
+        <button className={`preview-tab preview-tab-composite ${inspectorView ? "active" : ""}`} role="tab" aria-selected={inspectorView} aria-label={t("インスペクター視点")} aria-keyshortcuts="Control+Meta+1" title={`${t("カメラを含むシーン全体を俯瞰")} (Ctrl+Meta+1)`} onClick={() => { setRecordingTabActive(false); setActiveGfxTextId(null); controller.setPreviewView("inspector"); }}><Inspector /><span>{t("Inspector")}</span></button>
+        <button type="button" className={`preview-tab preview-tab-object preview-tab-camera ${!recordingTabActive && !activeGfxTextId && state.activePreviewClipId === null && state.activePreviewView === "camera" ? "active" : ""}`} role="tab" aria-selected={!recordingTabActive && !activeGfxTextId && state.activePreviewClipId === null && state.activePreviewView === "camera"} aria-keyshortcuts="Control+Meta+2" title={`${t("{name}の視点をプレビュー", { name: cameraName })} (Ctrl+Meta+2)`} onClick={() => { setRecordingTabActive(false); setActiveGfxTextId(null); controller.setPreviewView("camera"); }}><Camera /><span>{t("Camera")}</span></button>
+        {recordingTabOpen && <div className={`preview-tab preview-tab-object preview-tab-recording ${recordingTabActive ? "active" : ""}`} role="tab" tabIndex={0} aria-selected={recordingTabActive} onClick={() => { setActiveGfxTextId(null); setRecordingTabActive(true); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setActiveGfxTextId(null); setRecordingTabActive(true); } }}><MicRecord /><span>{t("収録")}</span><button type="button" disabled={audioRecording} title={audioRecording ? t("録音を停止してから閉じてください") : undefined} aria-label={t("収録タブを閉じる")} onClick={(event) => { event.stopPropagation(); if (!audioRecording) { setRecordingTabOpen(false); setRecordingTabActive(false); } }}><X /></button></div>}
+        {gfxTextTabs.map((entry) => <div key={entry.id} className={`preview-tab preview-tab-object preview-tab-gfxtext ${activeGfxTextId === entry.id ? "active" : ""}`} role="tab" tabIndex={0} aria-selected={activeGfxTextId === entry.id} title={entry.path} onClick={() => { setRecordingTabActive(false); setActiveGfxTextId(entry.id); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setRecordingTabActive(false); setActiveGfxTextId(entry.id); } }}><TextFont /><span>{entry.name}</span><button type="button" aria-label={t("{name}の編集を閉じる", { name: entry.name })} onClick={(event) => { event.stopPropagation(); setGfxTextTabs((current) => current.filter((item) => item.id !== entry.id)); if (activeGfxTextId === entry.id) setActiveGfxTextId(null); }}><X /></button></div>)}
+        {previewTabs.map((clip, index) => <div key={clip.id} className={`preview-tab preview-tab-object ${!recordingTabActive && !activeGfxTextId && state.activePreviewClipId === clip.id ? "active" : ""}`} role="tab" tabIndex={0} aria-selected={!recordingTabActive && !activeGfxTextId && state.activePreviewClipId === clip.id} aria-keyshortcuts={index < 7 ? `Control+Meta+${index + 3}` : undefined} title={`${t("{name}のみをプレビュー", { name: clip.name })}${index < 7 ? ` (Ctrl+Meta+${index + 3})` : ""}`} onClick={() => { setRecordingTabActive(false); setActiveGfxTextId(null); controller.setPreviewTab(clip.id); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setRecordingTabActive(false); setActiveGfxTextId(null); controller.setPreviewTab(clip.id); } }}><span>{clip.name}</span><button type="button" aria-label={t("{name}のプレビューを閉じる", { name: clip.name })} onClick={(event) => { event.stopPropagation(); controller.closePreviewTab(clip.id); }}><X /></button></div>)}
       </div>
-      {activeAudioClip && <AudioWaveformEditor clip={activeAudioClip} asset={state.assets.find((asset) => asset.id === activeAudioClip.assetId)} />}
-      <div className={`preview-stage ${inspectorView ? "inspector-view" : ""} ${inspectorNavigation ? `inspector-${inspectorNavigation}` : ""} ${hoveredCameraHandle ? "camera-handle-hover" : ""} ${draggingCameraHandle ? "camera-handle-dragging" : ""} ${activeAudioClip ? "audio-preview-hidden" : ""} ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""} ${previewCursorClass(hoveredHandle, hoveredObject)}`} ref={stageRef} style={previewStyle} title={inspectorView ? t("ギズモ: 軸操作 / ドラッグ: 周回 / Ctrl+ドラッグ: 上下左右 / Shift+ドラッグ: 前後左右 / ホイール: カメラズーム") : undefined} onPointerDown={beginStageInteraction} onWheel={zoomInspectorCamera} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; setHoveredCamera(false); hoveredCameraHandleRef.current = null; setHoveredCameraHandle(null); if (!draggingClipId) { setHoveredClipId(null); setHoveredHandle(null); } }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
+      {activeAudioClip && !recordingTabActive && !activeGfxTextId && <AudioWaveformEditor clip={activeAudioClip} asset={state.assets.find((asset) => asset.id === activeAudioClip.assetId)} />}
+      {recordingTabOpen && <AudioRecordingPanel active={recordingTabActive} onRecordingChange={setAudioRecording} />}
+      {gfxTextTabs.map((entry) => <GfxTextEditor key={entry.id} entry={entry} active={activeGfxTextId === entry.id} />)}
+      <div className={`preview-stage ${inspectorView ? "inspector-view" : ""} ${inspectorNavigation ? `inspector-${inspectorNavigation}` : ""} ${hoveredCameraHandle ? "camera-handle-hover" : ""} ${draggingCameraHandle ? "camera-handle-dragging" : ""} ${activeAudioClip || recordingTabActive || activeGfxTextId ? "preview-content-hidden" : ""} ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""} ${previewCursorClass(hoveredHandle, hoveredObject)}`} ref={stageRef} style={previewStyle} title={inspectorView ? t("ギズモ: 軸操作 / ドラッグ: 周回 / Ctrl+ドラッグ: 上下左右 / Shift+ドラッグ: 前後左右 / ホイール: カメラズーム") : undefined} onPointerDown={beginStageInteraction} onWheel={zoomInspectorCamera} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; setHoveredCamera(false); hoveredCameraHandleRef.current = null; setHoveredCameraHandle(null); if (!draggingClipId) { setHoveredClipId(null); setHoveredHandle(null); } }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
         event.preventDefault();
         const rect = event.currentTarget.getBoundingClientRect();
         controller.openContextMenu({

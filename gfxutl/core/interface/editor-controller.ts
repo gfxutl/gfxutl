@@ -16,6 +16,8 @@ import { bundleRendererPlugin } from "../plugins/plugin-bundler";
 import { translateCurrent as t } from "../i18n";
 import { compileShaderGraphToGlsl, serializeShaderGraph } from "../shader-graph/shader-graph-document";
 import { clipTransitionGain } from "./sequencer-state";
+import { convertLocalFontWithFacetype, facetypeCharacterSet } from "../fonts/facetype";
+import type { FontData } from "three/addons/loaders/FontLoader.js";
 
 type Listener = () => void;
 
@@ -195,12 +197,14 @@ export class EditorController {
   private fontCatalogRevision = 0;
   private registeredFonts = new Set<string>();
   private fontPreviewLoads = new Map<string, Promise<string | undefined>>();
+  private facetypeFontLoads = new Map<string, Promise<FontData | undefined>>();
   private memoryClipboard: ClipboardPayload | null = null;
   private audioContext: AudioContext | null = null;
   private audioVoices = new Map<string, PreviewAudioVoice>();
   private audioPreviewToken = 0;
   private activeAudioSignature = "";
   private explorerFiles = new Map<string, { file?: File; handle?: FileSystemFileHandle }>();
+  private runtimeFiles = new Map<string, File>();
   private undoStack: HistorySnapshot[] = [];
   private redoStack: HistorySnapshot[] = [];
   private historySuspended = false;
@@ -631,6 +635,7 @@ export class EditorController {
   };
 
   private async registerRuntimeFile(asset: MediaAsset, file: File) {
+    this.runtimeFiles.set(asset.id, file);
     if (asset.kind === "image") return this.engine.inspectImage(file, asset.id, asset.handle);
     if (asset.kind === "model") return this.engine.inspectModel(file, asset.id, asset.handle);
     const info = await this.engine.inspectMedia(file, asset.id, asset.handle);
@@ -1222,6 +1227,7 @@ export class EditorController {
     const referenced = new Set(this.state.clips.filter((clip) => clip.assetId === id).map((clip) => clip.id));
     if (referenced.size) this.removeClipIds(referenced);
     this.engine.releaseMedia(id);
+    this.runtimeFiles.delete(id);
     void removeHandleProject(id).catch(() => undefined);
     this.update({ assets: this.state.assets.filter((asset) => asset.id !== id), selectedAssetId: this.state.selectedAssetId === id ? null : this.state.selectedAssetId });
     this.schedulePersistence();
@@ -2183,6 +2189,28 @@ export class EditorController {
     return pending;
   };
 
+  loadFacetypeFont = (fontId: string, characters: string) => {
+    const characterSet = facetypeCharacterSet(characters);
+    const cacheKey = `${fontId}\u0000${characterSet}`;
+    const cached = this.facetypeFontLoads.get(cacheKey);
+    if (cached) return cached;
+    const entry = this.localFontEntries.get(fontId);
+    if (!entry) return Promise.resolve(undefined);
+    const pending = entry.blob()
+      .then((blob) => blob.arrayBuffer())
+      .then((buffer) => convertLocalFontWithFacetype(buffer, characterSet))
+      .catch(() => {
+        this.facetypeFontLoads.delete(cacheKey);
+        return undefined;
+      });
+    this.facetypeFontLoads.set(cacheKey, pending);
+    if (this.facetypeFontLoads.size > 64) {
+      const oldest = this.facetypeFontLoads.keys().next().value;
+      if (oldest) this.facetypeFontLoads.delete(oldest);
+    }
+    return pending;
+  };
+
   loadRendererPlugin = async () => {
     const pickDirectory = window.showDirectoryPicker;
     if (!pickDirectory) {
@@ -2596,6 +2624,22 @@ export class EditorController {
     this.explorerFiles.set(sourcePath, { file, handle });
   };
 
+  loadTextureImageFile = async (assetId?: string, sourcePath?: string) => {
+    let file: File | undefined;
+    if (assetId) {
+      const asset = this.state.assets.find((item) => item.id === assetId);
+      if (!asset || asset.kind !== "image") return undefined;
+      file = this.runtimeFiles.get(assetId)
+        ?? (asset.sourcePath ? this.explorerFiles.get(asset.sourcePath)?.file : undefined)
+        ?? await asset.handle?.getFile();
+    } else if (sourcePath) {
+      const source = this.explorerFiles.get(sourcePath);
+      file = source?.file ?? await source?.handle?.getFile();
+    }
+    if (!file || !isTextureImageFile(file)) return undefined;
+    return file;
+  };
+
   addExplorerFileToTimeline = async (sourcePath: string, start: number, y: number) => {
     const existing = this.state.assets.find((asset) => asset.sourcePath === sourcePath);
     let assetId = existing?.fileStatus === "ready" ? existing.id : null;
@@ -2626,6 +2670,7 @@ export class EditorController {
     try {
       const fonts = await window.queryLocalFonts();
       this.fontCatalogRevision += 1;
+      this.facetypeFontLoads.clear();
       const unique = new Map<string, { info: FontFaceInfo; entry: LocalFontEntry }>();
       this.localFontEntries.clear();
       fonts.forEach((font) => {
@@ -2713,6 +2758,12 @@ function mediaKindForFile(file: File): MediaAsset["kind"] | null {
   if (file.type.startsWith("audio/") || ["wav", "mp3", "aac", "flac"].includes(extension)) return "audio";
   if (file.type.startsWith("image/") || ["png", "jpg", "jpeg", "webp", "hdr", "exr"].includes(extension)) return "image";
   return "video";
+}
+
+function isTextureImageFile(file: File) {
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return ["png", "jpg", "jpeg", "webp"].includes(extension)
+    || ["image/png", "image/jpeg", "image/webp"].includes(file.type.toLowerCase());
 }
 
 function mediaColor(kind: MediaAsset["kind"]) {
