@@ -146,6 +146,22 @@ test("audio waveform peaks follow trim, duration, speed, and include the clip en
   [0.8, 0.3, 0.4, 0.9].forEach((expected, index) => assert.ok(Math.abs(decoded[index] - expected) < 1e-6));
 });
 
+test("audio waveform zoom preserves the time beneath the pointer", async () => {
+  const { audioWaveformScrollForAnchor, audioWaveformTimeAtPointer, clampAudioWaveformZoom } = await importTypeScript("../core/interface/audio-waveform-viewport.ts");
+  assert.equal(clampAudioWaveformZoom(0.5), 1);
+  assert.equal(clampAudioWaveformZoom(100), 64);
+
+  const duration = 20;
+  const viewportWidth = 500;
+  const pointerX = 125;
+  const initialTime = audioWaveformTimeAtPointer(375, pointerX, 2, duration, viewportWidth);
+  assert.equal(initialTime, 10);
+  const zoomedScroll = audioWaveformScrollForAnchor(initialTime, pointerX, 4, duration, viewportWidth);
+  assert.equal(zoomedScroll, 875);
+  assert.equal(audioWaveformTimeAtPointer(zoomedScroll, pointerX, 4, duration, viewportWidth), initialTime);
+  assert.equal(audioWaveformScrollForAnchor(duration, pointerX, 4, duration, viewportWidth), 1_500);
+});
+
 test("clip action order is retained after applicability filtering", async () => {
   const { resolveClipPropertyActions } = await importTypeScript("../core/interface/clip-actions.ts");
   const clip = {
