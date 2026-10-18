@@ -19,6 +19,7 @@ import { convertLocalFontWithFacetype, facetypeCharacterSet, readFontVariationAx
 import { loadGoogleFontCatalog, loadGoogleFontData } from "../fonts/google-fonts";
 import { fontVariationCss, fontVariationId, fontVariationKey, normalizeFontVariations, type FontVariationAxis, type FontVariationSettings } from "../fonts/font-variation";
 import { AUDIO_WAVEFORM_VERSION } from "./audio-waveform";
+import { orderedTimelineFilters, orderedVisualClips } from "./timeline-draw-order";
 import type { FontData } from "three/addons/loaders/FontLoader.js";
 
 type Listener = () => void;
@@ -33,7 +34,7 @@ const defaultSceneSettings: SceneSettings = {
   camera: { id: "camera-1", name: "Camera 1", projection: "orthographic", position: [0, 0, 10], target: [0, 0, 0], near: 0.01, far: 1_000, fov: 50, zoom: 1, orthographicHeight: 9 },
   cameras: [{ id: "camera-1", name: "Camera 1", projection: "orthographic", position: [0, 0, 10], target: [0, 0, 0], near: 0.01, far: 1_000, fov: 50, zoom: 1, orthographicHeight: 9 }],
   cameraCuts: [],
-  renderer: { previewScale: 0.75, toneMapping: "aces", exposure: 1, outputBuffer: "uint8", antialias: true, samples: 2, shadows: true, shadowType: "pcf", transparentBackground: false, postProcessing: false, fxaa: false, bloomStrength: 0, bloomRadius: 0.25, bloomThreshold: 0.8 },
+  renderer: { previewScale: 0.75, toneMapping: "aces", exposure: 1, outputBuffer: "uint8", antialias: true, samples: 2, shadows: true, shadowType: "pcf", transparentBackground: false, postProcessing: false, fxaa: false, bloomStrength: 0, bloomRadius: 0.25, bloomThreshold: 0.8, gtaoEnabled: false, gtaoRadius: 0.25, gtaoThickness: 1, gtaoScale: 1, gtaoSamples: 16, depthOfFieldEnabled: false, depthOfFieldFocusDistance: 10, depthOfFieldFocalLength: 1, depthOfFieldBokehScale: 1, motionBlurEnabled: false, motionBlurSamples: 12 },
   lights: [
     { id: "ambient", kind: "ambient", color: 0xffffff, intensity: 1.2, position: [0, 0, 0] },
     { id: "key", kind: "directional", color: 0xffffff, intensity: 2.5, position: [4, 6, 8], target: [0, 0, 0], castShadow: true },
@@ -993,9 +994,8 @@ export class EditorController {
     const visualSolo = this.state.clips.some((clip) => clip.solo && clip.kind !== "group" && clip.kind !== "audio");
     const audioSolo = this.state.clips.some((clip) => clip.solo && clipHasAudio(clip, this.state.assets));
     const visualClips = this.state.clips.filter((clip) => clip.kind !== "group" && clip.kind !== "filter");
-    const filters = this.state.clips
-      .filter((clip) => clip.kind === "filter" && !clip.muted && (!visualSolo || clip.solo))
-      .sort((a, b) => b.y - a.y);
+    const filters = orderedTimelineFilters(this.state.clips)
+      .filter((clip) => !clip.muted && (!visualSolo || clip.solo));
     const depth = new Map(orderedVisualClips(visualClips)
       .map((clip, index) => [clip.id, 1_000 + index]));
     this.renderClipSource = this.state.clips;
@@ -1054,6 +1054,8 @@ export class EditorController {
       keyframes: clip.keyframes ?? [],
       particleSystem: clip.particleSystem,
       modelAnimation: clip.modelAnimation,
+      modelAnimationLayers: clip.modelAnimationLayers ? structuredClone(clip.modelAnimationLayers) : undefined,
+      modelBonePoses: clip.modelBonePoses ? structuredClone(clip.modelBonePoses) : undefined,
       instanceCount: clip.instanceCount ?? 1,
       instanceSpacing: clip.instanceSpacing ?? 2.5,
       renderOrder: depth.get(clip.id) ?? 1_000,
@@ -2502,7 +2504,15 @@ export class EditorController {
     const duration = asset.kind === "image" || asset.kind === "model" ? Math.max(5, asset.duration || 0) : Math.max(0.1, asset.duration || 5);
     const nextStart = this.state.snapEnabled ? Math.round(Math.max(0, start) * this.state.fps) / this.state.fps : Math.max(0, start);
     const id = crypto.randomUUID();
-    const clip = placeTimelineClip(this.state.clips, { id, assetId, y: Math.max(0, y), name: asset.name, start: nextStart, duration, offset: 0, color: asset.color, kind: asset.kind === "audio" ? "audio" : asset.kind === "model" ? "object" : "video", positionX: 0, positionY: 0, positionZ: 0, scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: 0, rotationY: 0, opacity: 100, castShadow: true, receiveShadow: true });
+    const clip = placeTimelineClip(this.state.clips, {
+      id, assetId, y: Math.max(0, y), name: asset.name, start: nextStart, duration, offset: 0, color: asset.color,
+      kind: asset.kind === "audio" ? "audio" : asset.kind === "model" ? "object" : "video",
+      positionX: 0, positionY: 0, positionZ: 0, scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: 0, rotationY: 0, opacity: 100,
+      castShadow: true, receiveShadow: true,
+      modelAnimationLayers: asset.kind === "model" && asset.animationNames?.[0]
+        ? [{ id: crypto.randomUUID(), animation: asset.animationNames[0], enabled: true, weight: 1, timeScale: 1, offset: 0, loop: "repeat", additive: false }]
+        : undefined,
+    });
     this.update({
       clips: assignTimelineGroups([...this.state.clips, clip]),
       selectedClipId: id,
@@ -3006,18 +3016,6 @@ function clipHasAudio(clip: TimelineClip, assets: readonly MediaAsset[]) {
   if (!clip.assetId) return false;
   const asset = assets.find((item) => item.id === clip.assetId);
   return asset?.kind === "audio" || asset?.hasAudio === true;
-}
-
-function orderedVisualClips(clips: readonly TimelineClip[]) {
-  const visualClips = clips.filter((clip) => clip.kind !== "group" && clip.kind !== "filter");
-  const legacyOrder = new Map([...visualClips]
-    .sort((a, b) => (a.positionZ ?? 0) - (b.positionZ ?? 0) || b.y - a.y)
-    .map((clip, index) => [clip.id, index]));
-  return [...visualClips].sort((a, b) => {
-    const aOrder = Number.isFinite(a.stackOrder) ? a.stackOrder! : legacyOrder.get(a.id) ?? 0;
-    const bOrder = Number.isFinite(b.stackOrder) ? b.stackOrder! : legacyOrder.get(b.id) ?? 0;
-    return aOrder - bOrder || (legacyOrder.get(a.id) ?? 0) - (legacyOrder.get(b.id) ?? 0);
-  });
 }
 
 function cubicBezierAt(easing: ClipKeyframe["easing"], x: number) {

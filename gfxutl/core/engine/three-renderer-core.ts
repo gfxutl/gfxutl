@@ -1,7 +1,10 @@
 import * as THREE from "three/webgpu";
-import { emissive, mrt, output, pass, renderOutput } from "three/tsl";
+import { builtinAOContext, emissive, float, int, mrt, normalView, orthographicDepthToViewZ, output, pass, renderOutput, screenUV, velocity } from "three/tsl";
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
+import { ao } from "three/addons/tsl/display/GTAONode.js";
+import { dof } from "three/addons/tsl/display/DepthOfFieldNode.js";
 import { fxaa } from "three/addons/tsl/display/FXAANode.js";
+import { motionBlur } from "three/addons/tsl/display/MotionBlur.js";
 import type { LightSpec, PreviewView, SceneSettings, ToneMappingKind } from "../protocol/engine-protocol";
 import { INSPECTOR_HELPERS_LAYER, TRANSFORM_HANDLES_LAYER } from "./editor-layers";
 
@@ -361,13 +364,7 @@ export class ThreeRendererCore {
       this.renderer.render(this.scene, this.activeCamera);
       return;
     }
-    const signature = JSON.stringify([
-      this.activeCamera.uuid,
-      this.settings.renderer.fxaa,
-      this.settings.renderer.bloomStrength,
-      this.settings.renderer.bloomRadius,
-      this.settings.renderer.bloomThreshold,
-    ]);
+    const signature = renderPipelineSettingsSignature(this.settings, this.activeCamera.uuid);
     if (!this.renderPipeline || signature !== this.renderPipelineSignature) {
       this.renderPipeline?.dispose();
       this.renderPipeline = createRenderPipeline(this.renderer, this.scene, this.activeCamera, this.settings);
@@ -402,15 +399,52 @@ export class ThreeRendererCore {
 
 export function createRenderPipeline(renderer: THREE.WebGPURenderer, scene: THREE.Scene, camera: THREE.Camera, settings: SceneSettings) {
   const scenePass = pass(scene, camera);
-  if (settings.renderer.bloomStrength > 0) scenePass.setMRT(mrt({ output, emissive }));
+  const mrtOutputs: Record<string, THREE.Node> = { output };
+  if (settings.renderer.bloomStrength > 0) mrtOutputs.emissive = emissive;
+  if (settings.renderer.motionBlurEnabled) mrtOutputs.velocity = velocity;
+  scenePass.setMRT(mrt(mrtOutputs));
+
+  if (settings.renderer.gtaoEnabled) {
+    const normalPass = pass(scene, camera);
+    normalPass.setMRT(mrt({ output: normalView }));
+    const gtao = ao(normalPass.getTextureNode("depth"), normalPass.getTextureNode(), camera);
+    gtao.radius.value = Math.max(0.001, settings.renderer.gtaoRadius ?? 0.25);
+    gtao.thickness.value = Math.max(0.001, settings.renderer.gtaoThickness ?? 1);
+    gtao.scale.value = Math.max(0, settings.renderer.gtaoScale ?? 1);
+    gtao.samples.value = Math.max(1, Math.min(32, Math.floor(settings.renderer.gtaoSamples ?? 16)));
+    scenePass.contextNode = builtinAOContext(gtao.getTextureNode().sample(screenUV).r);
+  }
+
   const color = scenePass.getTextureNode("output");
   let outputNode: any = color;
+  if (settings.renderer.motionBlurEnabled) {
+    outputNode = motionBlur(color, scenePass.getTextureNode("velocity"), int(Math.max(2, Math.min(32, Math.floor(settings.renderer.motionBlurSamples ?? 12)))));
+  }
   if (settings.renderer.bloomStrength > 0) {
     outputNode = outputNode.add(bloom(scenePass.getTextureNode("emissive"), settings.renderer.bloomStrength, settings.renderer.bloomRadius, settings.renderer.bloomThreshold));
   }
-  const pipeline = new THREE.RenderPipeline(renderer, settings.renderer.fxaa ? fxaa(renderOutput(outputNode)) : outputNode);
+  if (settings.renderer.depthOfFieldEnabled) {
+    const depth = scenePass.getTextureNode("depth");
+    const viewZ = camera instanceof THREE.OrthographicCamera
+      ? orthographicDepthToViewZ(depth, float(camera.near), float(camera.far))
+      : scenePass.getViewZNode("depth");
+    outputNode = dof(outputNode, viewZ, Math.max(0, settings.renderer.depthOfFieldFocusDistance ?? 10), Math.max(0.001, settings.renderer.depthOfFieldFocalLength ?? 1), Math.max(0, settings.renderer.depthOfFieldBokehScale ?? 1));
+  }
+  const antialiased = settings.renderer.fxaa ? fxaa(renderOutput(outputNode)) : outputNode;
+  const pipeline = new THREE.RenderPipeline(renderer, antialiased);
   if (settings.renderer.fxaa) pipeline.outputColorTransform = false;
   return pipeline;
+}
+
+export function renderPipelineSettingsSignature(settings: SceneSettings, cameraKey: string = settings.camera.projection) {
+  const renderer = settings.renderer;
+  return JSON.stringify([
+    cameraKey, renderer.postProcessing, renderer.fxaa,
+    renderer.bloomStrength, renderer.bloomRadius, renderer.bloomThreshold,
+    renderer.gtaoEnabled, renderer.gtaoRadius, renderer.gtaoThickness, renderer.gtaoScale, renderer.gtaoSamples,
+    renderer.depthOfFieldEnabled, renderer.depthOfFieldFocusDistance, renderer.depthOfFieldFocalLength, renderer.depthOfFieldBokehScale,
+    renderer.motionBlurEnabled, renderer.motionBlurSamples,
+  ]);
 }
 
 function rendererOptions(canvas: OffscreenCanvas, settings: SceneSettings) {

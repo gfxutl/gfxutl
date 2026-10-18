@@ -60,6 +60,14 @@ function keyframeProperties(clip: TimelineClip): Array<[KeyframeProperty, string
     for (const [key, label] of [["color", "材質 色"], ["emissive", "材質 発光色"], ["emissiveIntensity", "材質 発光強度"], ["roughness", "材質 粗さ"], ["metalness", "材質 金属度"], ["clearcoat", "材質 クリアコート"], ["transmission", "材質 透過"], ["ior", "材質 IOR"]] as const) properties.push([`material.${key}`, label]);
   }
   if (clip.particleSystem) for (const [key, label] of [["count", "粒子数"], ["size", "粒子サイズ"], ["spread", "粒子の広がり"], ["speed", "粒子速度"], ["color", "粒子色"]] as const) properties.push([`particleSystem.${key}`, label]);
+  for (const layer of clip.modelAnimationLayers ?? []) {
+    properties.push([`animation.${layer.id}.weight`, `${layer.animation} · ウェイト`], [`animation.${layer.id}.timeScale`, `${layer.animation} · 速度`], [`animation.${layer.id}.offset`, `${layer.animation} · オフセット`]);
+  }
+  for (const [path] of Object.entries(clip.modelBonePoses ?? {})) {
+    for (const channel of ["position", "rotation", "scale"] as const) for (const axis of [0, 1, 2] as const) {
+      properties.push([`bone.${encodeURIComponent(path)}.${channel}.${axis}`, `${path} · ${channel} ${["X", "Y", "Z"][axis]}`]);
+    }
+  }
   for (const mask of clip.masks ?? []) for (const [key, label] of [["x", "X"], ["y", "Y"], ["width", "幅"], ["height", "高さ"], ["feather", "ぼかし"], ["opacity", "不透明度"]] as const) properties.push([`mask.${mask.id}.${key}`, `${mask.name} · ${label}`]);
   for (const effect of clip.effects ?? []) for (const key of Object.keys(effect.params)) properties.push([`effect.${effect.id}.${key}`, `${effect.name} · ${key}`]);
   return properties;
@@ -69,6 +77,15 @@ function keyframeValue(clip: TimelineClip, property: KeyframeProperty) {
   if (property.startsWith("colorGrading.")) return Number(resolveColorGrading(clip.colorGrading)[property.slice(13) as keyof ColorGradingSpec] ?? 0);
   if (property.startsWith("material.")) return Number((clip.material as unknown as Record<string, unknown> | undefined)?.[property.slice(9)] ?? 0);
   if (property.startsWith("particleSystem.")) return Number((clip.particleSystem as unknown as Record<string, unknown> | undefined)?.[property.slice(15)] ?? 0);
+  if (property.startsWith("animation.")) {
+    const [, layerId, key] = property.split(".");
+    return Number((clip.modelAnimationLayers?.find((layer) => layer.id === layerId) as unknown as Record<string, unknown> | undefined)?.[key] ?? 0);
+  }
+  if (property.startsWith("bone.")) {
+    const [, encodedPath, channel, axis] = property.split(".");
+    const pose = encodedPath ? clip.modelBonePoses?.[decodeURIComponent(encodedPath)] : undefined;
+    return Number(pose?.[channel as "position" | "rotation" | "scale"]?.[Number(axis)] ?? 0);
+  }
   if (property.startsWith("effect.")) {
     const [, id, key] = property.split(".");
     return Number(clip.effects?.find((effect) => effect.id === id)?.params[key] ?? 0);
@@ -130,6 +147,48 @@ function TextureField({ label, assets, value, onChange }: { label: string; asset
   return <label className="select-field"><span>{t(label)}</span><select value={value ?? ""} onChange={(event) => onChange(event.target.value || undefined)}><option value="">{t("なし")}</option>{assets.filter((asset) => asset.kind === "image").map((asset) => <option value={asset.id} key={asset.id}>{asset.name}</option>)}</select></label>;
 }
 
+function ModelAnimationRigEditor({ clip, asset }: { clip: TimelineClip; asset: MediaAsset }) {
+  const { controller } = useEditor(() => null);
+  const { t } = useI18n();
+  const animationNames = asset.animationNames ?? [];
+  const fallbackAnimation = clip.modelAnimation ?? animationNames[0];
+  const layers = clip.modelAnimationLayers ?? (fallbackAnimation ? [{ id: "legacy", animation: fallbackAnimation, enabled: true, weight: 1, timeScale: 1, offset: 0, loop: "repeat" as const, additive: false }] : []);
+  const boneNames = asset.boneNames ?? [];
+  const [selectedBone, setSelectedBone] = useState(boneNames[0] ?? "");
+  const activeBone = boneNames.includes(selectedBone) ? selectedBone : boneNames[0] ?? "";
+  useEffect(() => { if (activeBone !== selectedBone) setSelectedBone(activeBone); }, [activeBone, selectedBone]);
+  const poses = clip.modelBonePoses ?? {};
+  const pose = activeBone ? poses[activeBone] ?? { position: [0, 0, 0] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [1, 1, 1] as [number, number, number] } : undefined;
+  const updateLayers = (next: typeof layers) => controller.updateClip(clip.id, { modelAnimationLayers: next });
+  const updatePoseAxis = (channel: "position" | "rotation" | "scale", axis: 0 | 1 | 2, value: number) => {
+    if (!activeBone || !pose) return;
+    const nextPose = { position: [...pose.position] as [number, number, number], rotation: [...pose.rotation] as [number, number, number], scale: [...pose.scale] as [number, number, number] };
+    nextPose[channel][axis] = value;
+    controller.updateClip(clip.id, { modelBonePoses: { ...poses, [activeBone]: nextPose } });
+  };
+  return <>
+    <div className="text-decoration-title camera-object-heading"><span>{t("アニメーションレイヤー")}</span><Button size="icon" variant="ghost" aria-label={t("アニメーションレイヤーを追加")} disabled={!animationNames.length} onClick={() => animationNames[0] && updateLayers([...layers, { id: crypto.randomUUID(), animation: animationNames[0], enabled: true, weight: layers.length ? 0.5 : 1, timeScale: 1, offset: 0, loop: "repeat", additive: layers.length > 0 }])}><Plus /></Button></div>
+    {!layers.length && <small>{t("このモデルにはアニメーションクリップがありません。")}</small>}
+    <div className="model-animation-layers">{layers.map((layer, index) => <div className="effect-item" key={layer.id}>
+      <div className="effect-header"><label className="checkbox-field"><input type="checkbox" checked={layer.enabled} onChange={(event) => updateLayers(layers.map((item) => item.id === layer.id ? { ...item, enabled: event.target.checked } : item))} /> {t("レイヤー {index}", { index: index + 1 })}</label><Button size="icon" variant="ghost" aria-label={t("レイヤーを削除")} onClick={() => updateLayers(layers.filter((item) => item.id !== layer.id))}><Trash2 /></Button></div>
+      <label className="select-field"><span>{t("アニメーション")}</span><select value={layer.animation} onChange={(event) => updateLayers(layers.map((item) => item.id === layer.id ? { ...item, animation: event.target.value } : item))}>{animationNames.map((name) => <option value={name} key={name}>{name}</option>)}</select></label>
+      <div className="field-grid"><NumberField label="ウェイト" value={layer.weight} onChange={(weight) => updateLayers(layers.map((item) => item.id === layer.id ? { ...item, weight: Math.max(0, Math.min(1, weight)) } : item))} /><NumberField label="速度" value={layer.timeScale} onChange={(timeScale) => updateLayers(layers.map((item) => item.id === layer.id ? { ...item, timeScale } : item))} /></div>
+      <div className="field-grid"><NumberField label="オフセット" value={layer.offset} suffix="s" onChange={(offset) => updateLayers(layers.map((item) => item.id === layer.id ? { ...item, offset } : item))} /><label className="select-field"><span>{t("ループ")}</span><select value={layer.loop} onChange={(event) => updateLayers(layers.map((item) => item.id === layer.id ? { ...item, loop: event.target.value as typeof layer.loop } : item))}><option value="once">Once</option><option value="repeat">Repeat</option><option value="pingpong">Ping-pong</option></select></label></div>
+      <label className="checkbox-field"><input type="checkbox" checked={layer.additive} onChange={(event) => updateLayers(layers.map((item) => item.id === layer.id ? { ...item, additive: event.target.checked } : item))} /> {t("加算ブレンド")}</label>
+    </div>)}</div>
+    <div className="text-decoration-title">{t("リグ姿勢")}</div>
+    {boneNames.length ? <>
+      <label className="select-field"><span>{t("ボーン")}</span><select value={activeBone} onChange={(event) => setSelectedBone(event.target.value)}>{boneNames.map((name) => <option value={name} key={name}>{name}</option>)}</select></label>
+      {pose && <div className="rig-pose-editor">
+        <small>{t("位置オフセット")}</small><div className="field-grid transform-position-grid">{([0, 1, 2] as const).map((axis) => <NumberField key={axis} label={["X", "Y", "Z"][axis]} value={pose.position[axis]} onChange={(value) => updatePoseAxis("position", axis, value)} />)}</div>
+        <small>{t("回転オフセット")}</small><div className="field-grid transform-position-grid">{([0, 1, 2] as const).map((axis) => <NumberField key={axis} label={["X", "Y", "Z"][axis]} suffix="°" value={pose.rotation[axis]} onChange={(value) => updatePoseAxis("rotation", axis, value)} />)}</div>
+        <small>{t("スケール倍率")}</small><div className="field-grid transform-position-grid">{([0, 1, 2] as const).map((axis) => <NumberField key={axis} label={["X", "Y", "Z"][axis]} value={pose.scale[axis]} onChange={(value) => updatePoseAxis("scale", axis, Math.max(0.001, value))} />)}</div>
+        <Button size="sm" variant="ghost" onClick={() => { const next = { ...poses }; delete next[activeBone]; controller.updateClip(clip.id, { modelBonePoses: next }); }}>{t("姿勢をリセット")}</Button>
+      </div>}
+    </> : <small>{t("編集可能なボーンはありません。")}</small>}
+  </>;
+}
+
 function sceneKeyframeProperties(scene: SceneSettings) {
   const properties: Array<{ property: string; label: string; value: number }> = [
     { property: "camera.position.0", label: "カメラ位置 X", value: scene.camera.position[0] },
@@ -147,6 +206,12 @@ function sceneKeyframeProperties(scene: SceneSettings) {
     { property: "renderer.bloomStrength", label: "Bloom 強度", value: scene.renderer.bloomStrength },
     { property: "renderer.bloomRadius", label: "Bloom 半径", value: scene.renderer.bloomRadius },
     { property: "renderer.bloomThreshold", label: "Bloom しきい値", value: scene.renderer.bloomThreshold },
+    { property: "renderer.gtaoRadius", label: "GTAO 半径", value: scene.renderer.gtaoRadius ?? 0.25 },
+    { property: "renderer.gtaoThickness", label: "GTAO 厚み", value: scene.renderer.gtaoThickness ?? 1 },
+    { property: "renderer.gtaoScale", label: "GTAO 強度", value: scene.renderer.gtaoScale ?? 1 },
+    { property: "renderer.depthOfFieldFocusDistance", label: "DOF 焦点距離", value: scene.renderer.depthOfFieldFocusDistance ?? 10 },
+    { property: "renderer.depthOfFieldFocalLength", label: "DOF 焦点幅", value: scene.renderer.depthOfFieldFocalLength ?? 1 },
+    { property: "renderer.depthOfFieldBokehScale", label: "DOF ボケ", value: scene.renderer.depthOfFieldBokehScale ?? 1 },
     { property: "background.environmentIntensity", label: "環境強度", value: scene.background.environmentIntensity },
     { property: "background.environmentRotation", label: "環境回転", value: scene.background.environmentRotation },
     { property: "background.backgroundBlurriness", label: "背景ぼかし", value: scene.background.backgroundBlurriness },
@@ -328,9 +393,15 @@ export function InspectorPanel() {
           {background.scene.renderer.transparentBackground && <NumberField label="背景アルファ" value={background.scene.background.alpha} onChange={(alpha) => controller.updateSceneSettings({ background: { ...background.scene.background, alpha: Math.max(0, Math.min(1, alpha)) } })} />}
           <div className="text-decoration-title">{t("ポストプロセス")}</div>
           <label className="checkbox-field"><input type="checkbox" checked={background.scene.renderer.postProcessing} onChange={(event) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, postProcessing: event.target.checked } })} /> RenderPipeline</label>
-          <label className="checkbox-field"><input type="checkbox" checked={background.scene.renderer.fxaa} onChange={(event) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, fxaa: event.target.checked } })} /> FXAA</label>
+          <label className="checkbox-field"><input type="checkbox" checked={background.scene.renderer.fxaa} onChange={(event) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, fxaa: event.target.checked, ...(event.target.checked ? { postProcessing: true } : {}) } })} /> FXAA</label>
           <div className="field-grid"><NumberField label="Bloom" value={background.scene.renderer.bloomStrength} onChange={(bloomStrength) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, bloomStrength: Math.max(0, bloomStrength) } })} /><NumberField label="半径" value={background.scene.renderer.bloomRadius} onChange={(bloomRadius) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, bloomRadius } })} /></div>
           <NumberField label="Bloomしきい値" value={background.scene.renderer.bloomThreshold} onChange={(bloomThreshold) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, bloomThreshold } })} />
+          <label className="checkbox-field"><input type="checkbox" checked={background.scene.renderer.gtaoEnabled ?? false} onChange={(event) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, gtaoEnabled: event.target.checked, ...(event.target.checked ? { postProcessing: true } : {}) } })} /> GTAO</label>
+          {background.scene.renderer.gtaoEnabled && <><div className="field-grid"><NumberField label="GTAO 半径" value={background.scene.renderer.gtaoRadius ?? 0.25} onChange={(gtaoRadius) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, gtaoRadius: Math.max(0.001, gtaoRadius) } })} /><NumberField label="厚み" value={background.scene.renderer.gtaoThickness ?? 1} onChange={(gtaoThickness) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, gtaoThickness: Math.max(0.001, gtaoThickness) } })} /></div><div className="field-grid"><NumberField label="強度" value={background.scene.renderer.gtaoScale ?? 1} onChange={(gtaoScale) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, gtaoScale: Math.max(0, gtaoScale) } })} /><NumberField label="サンプル" value={background.scene.renderer.gtaoSamples ?? 16} onChange={(gtaoSamples) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, gtaoSamples: Math.max(1, Math.min(32, Math.floor(gtaoSamples))) } })} /></div></>}
+          <label className="checkbox-field"><input type="checkbox" checked={background.scene.renderer.depthOfFieldEnabled ?? false} onChange={(event) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, depthOfFieldEnabled: event.target.checked, ...(event.target.checked ? { postProcessing: true } : {}) } })} /> {t("被写界深度")}</label>
+          {background.scene.renderer.depthOfFieldEnabled && <><div className="field-grid"><NumberField label="焦点距離" value={background.scene.renderer.depthOfFieldFocusDistance ?? 10} onChange={(depthOfFieldFocusDistance) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, depthOfFieldFocusDistance: Math.max(0, depthOfFieldFocusDistance) } })} /><NumberField label="焦点幅" value={background.scene.renderer.depthOfFieldFocalLength ?? 1} onChange={(depthOfFieldFocalLength) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, depthOfFieldFocalLength: Math.max(0.001, depthOfFieldFocalLength) } })} /></div><NumberField label="ボケ量" value={background.scene.renderer.depthOfFieldBokehScale ?? 1} onChange={(depthOfFieldBokehScale) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, depthOfFieldBokehScale: Math.max(0, depthOfFieldBokehScale) } })} /></>}
+          <label className="checkbox-field"><input type="checkbox" checked={background.scene.renderer.motionBlurEnabled ?? false} onChange={(event) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, motionBlurEnabled: event.target.checked, ...(event.target.checked ? { postProcessing: true } : {}) } })} /> Motion Blur</label>
+          {background.scene.renderer.motionBlurEnabled && <NumberField label="Motionサンプル" value={background.scene.renderer.motionBlurSamples ?? 12} onChange={(motionBlurSamples) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, motionBlurSamples: Math.max(2, Math.min(32, Math.floor(motionBlurSamples))) } })} />}
           <label className="checkbox-field"><input type="checkbox" checked={background.scene.background.fogEnabled} onChange={(event) => controller.updateSceneSettings({ background: { ...background.scene.background, fogEnabled: event.target.checked } })} /> Fog</label>
           <label className="color-field"><span>{t("Fog色")}</span><input type="color" value={`#${background.scene.background.fogColor.toString(16).padStart(6, "0")}`} onChange={(event) => controller.updateSceneSettings({ background: { ...background.scene.background, fogColor: Number.parseInt(event.target.value.slice(1), 16) } })} /></label>
           <div className="field-grid"><NumberField label="Fog Near" value={background.scene.background.fogNear} onChange={(fogNear) => controller.updateSceneSettings({ background: { ...background.scene.background, fogNear } })} /><NumberField label="Fog Far" value={background.scene.background.fogFar} onChange={(fogFar) => controller.updateSceneSettings({ background: { ...background.scene.background, fogFar } })} /></div>
@@ -402,7 +473,7 @@ export function InspectorPanel() {
       </div>}
       {selected.kind === "object" && asset?.kind === "model" && <div className="inspector-section object-inspector">
         <div className="section-title"><span>{t("glTFモデル")}</span><small>THREE.GLTF</small></div>
-        <div className="section-body"><div className="metadata-row"><span>{t("アセット")}</span><strong>{asset.name}</strong></div><div className="metadata-row"><span>{t("アニメーション")}</span><strong>{t("タイムライン同期")}</strong></div><small>{t("埋め込みPBR材質・スキン・モーフ・アニメーションを保持して描画します。")}</small></div>
+        <div className="section-body"><div className="metadata-row"><span>{t("アセット")}</span><strong>{asset.name}</strong></div><ModelAnimationRigEditor clip={selected} asset={asset} /></div>
       </div>}
       {selected.particleSystem && <div className="inspector-section object-inspector">
         <div className="section-title"><span>{t("GPUパーティクル")}</span><small>TSL COMPUTE</small></div>
@@ -514,7 +585,7 @@ function ClipPropertyActionBody({ action, clip, allClips }: { action: ClipProper
     case "sceneGraph": return <>
       <label className="select-field"><span>{t("親オブジェクト")}</span><select value={clip.parentId ?? ""} onChange={(event) => controller.updateClip(clip.id, { parentId: event.target.value || undefined })}><option value="">Scene root</option>{allClips.filter((item) => item.id !== clip.id && (item.kind === "title" || item.kind === "object")).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
       <NumberField label="レイヤー" value={clip.layer ?? 0} onChange={(layer) => controller.updateClip(clip.id, { layer: Math.max(0, Math.min(31, Math.floor(layer))) })} />
-      {assets.find((asset) => asset.id === clip.assetId)?.animationNames?.length ? <label className="select-field"><span>{t("glTFアニメーション")}</span><select value={clip.modelAnimation ?? assets.find((asset) => asset.id === clip.assetId)?.animationNames?.[0]} onChange={(event) => controller.updateClip(clip.id, { modelAnimation: event.target.value })}>{assets.find((asset) => asset.id === clip.assetId)?.animationNames?.map((name) => <option value={name} key={name}>{name}</option>)}</select></label> : null}
+      {!clip.modelAnimationLayers && assets.find((asset) => asset.id === clip.assetId)?.animationNames?.length ? <label className="select-field"><span>{t("glTFアニメーション")}</span><select value={clip.modelAnimation ?? assets.find((asset) => asset.id === clip.assetId)?.animationNames?.[0]} onChange={(event) => controller.updateClip(clip.id, { modelAnimation: event.target.value })}>{assets.find((asset) => asset.id === clip.assetId)?.animationNames?.map((name) => <option value={name} key={name}>{name}</option>)}</select></label> : null}
     </>;
     case "keyframes": return <>
       <label className="select-field"><span>{t("プロパティ")}</span><select disabled={!activeKeyframeProperty} value={activeKeyframeProperty ?? ""} onChange={(event) => setKeyframeProperty(event.target.value as KeyframeProperty)}>{animatedProperties.length ? animatedProperties.map(([property, label]) => <option value={property} key={property}>{translateCompositeLabel(label, t)}</option>) : <option value="">{t("先に効果を追加してください")}</option>}</select></label>

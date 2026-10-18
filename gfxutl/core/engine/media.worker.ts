@@ -9,7 +9,7 @@ import { clone as cloneSkinned } from "three/addons/utils/SkeletonUtils.js";
 import { ALL_FORMATS, AudioSample, AudioSampleSink, AudioSampleSource, BufferTarget, CanvasSource, Input, Mp4OutputFormat, Output, VideoSampleSink, WebMOutputFormat } from "mediabunny";
 import type { AudioProcessingSpec, CameraHandleKind, ClipEffect, ClipKeyframe, EngineRequest, EngineResponse, FilterRegion, MediaFileSource, PreviewPickResult, PreviewView, RenderClip, RenderFilter, SceneKeyframe, SceneObjectSpec, SceneSettings, TimelinePatch, TimelineSnapshot, TransformHandleKind } from "../protocol/engine-protocol";
 import { RamPreviewCache } from "./ram-preview-cache";
-import { createRenderPipeline, shadowTypeFrom, ThreeRendererCore, toneMappingFrom } from "./three-renderer-core";
+import { createRenderPipeline, renderPipelineSettingsSignature, shadowTypeFrom, ThreeRendererCore, toneMappingFrom } from "./three-renderer-core";
 import { ThreeSceneCore } from "./three-scene-core";
 import { registerLocalFont, registerLocalFontVariation } from "./three-geometry-factory";
 import { MediaBuffer } from "./media-buffer";
@@ -77,7 +77,7 @@ let lastMediaBufferStatus = "";
 let sceneSettings: SceneSettings = {
   background: { color: 0xffffff, alpha: 1, fogEnabled: false, fogColor: 0xffffff, fogNear: 5, fogFar: 30, environmentIntensity: 1, environmentRotation: 0, backgroundBlurriness: 0 },
   camera: { id: "camera-1", name: "Camera 1", projection: "orthographic", position: [0, 0, 10], target: [0, 0, 0], near: 0.01, far: 1_000, fov: 50, zoom: 1, orthographicHeight: 9 },
-  renderer: { previewScale: 0.75, toneMapping: "aces", exposure: 1, outputBuffer: "uint8", antialias: true, samples: 2, shadows: true, shadowType: "pcf", transparentBackground: false, postProcessing: false, fxaa: false, bloomStrength: 0, bloomRadius: 0.25, bloomThreshold: 0.8 },
+  renderer: { previewScale: 0.75, toneMapping: "aces", exposure: 1, outputBuffer: "uint8", antialias: true, samples: 2, shadows: true, shadowType: "pcf", transparentBackground: false, postProcessing: false, fxaa: false, bloomStrength: 0, bloomRadius: 0.25, bloomThreshold: 0.8, gtaoEnabled: false, gtaoRadius: 0.25, gtaoThickness: 1, gtaoScale: 1, gtaoSamples: 16, depthOfFieldEnabled: false, depthOfFieldFocusDistance: 10, depthOfFieldFocalLength: 1, depthOfFieldBokehScale: 1, motionBlurEnabled: false, motionBlurSamples: 12 },
   lights: [
     { id: "ambient", kind: "ambient", color: 0xffffff, intensity: 1.2, position: [0, 0, 0] },
     { id: "key", kind: "directional", color: 0xffffff, intensity: 2.5, position: [4, 6, 8], target: [0, 0, 0], castShadow: true },
@@ -120,15 +120,26 @@ interface ImageRuntime {
 interface ModelRuntime {
   scene: THREE.Group;
   animations: THREE.AnimationClip[];
+  boneNames: string[];
   duration: number;
+}
+
+interface ModelBoneRuntime {
+  bone: THREE.Bone;
+  position: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+  scale: THREE.Vector3;
 }
 
 interface ModelSurface {
   assetId: string;
   root: THREE.Group;
+  model: THREE.Group;
   mixer?: THREE.AnimationMixer;
-  animationName?: string;
+  actions: Map<string, THREE.AnimationAction>;
+  animationSignature: string;
   duration: number;
+  bones: Map<string, ModelBoneRuntime>;
   objects: THREE.Object3D[];
   materials: Array<THREE.Material & { color?: THREE.Color }>;
   deformGeometries: ModelDeformGeometry[];
@@ -947,6 +958,7 @@ function removeModelSurface(id: string) {
 
 function disposeModelSurface(id: string, surface: ModelSurface) {
   surface.mixer?.stopAllAction();
+  surface.mixer?.uncacheRoot(surface.model);
   surface.materials.forEach((material) => material.dispose());
   surface.deformGeometries.forEach(({ geometry }) => geometry.dispose());
   surface.root.removeFromParent();
@@ -967,9 +979,15 @@ function ensureModelSurface(clip: RenderClip, runtime: ModelRuntime) {
     const objects: THREE.Object3D[] = [];
     const materials: Array<THREE.Material & { color?: THREE.Color }> = [];
     const deformGeometries: ModelDeformGeometry[] = [];
+    const bones = new Map<string, ModelBoneRuntime>();
     // THREE-OPT: flatten the cloned model once; frame updates no longer traverse its scene graph.
     model.traverse((object) => {
       objects.push(object);
+      if ((object as THREE.Bone).isBone) {
+        const bone = object as THREE.Bone;
+        const path = modelBonePath(bone, model);
+        bones.set(path, { bone, position: bone.position.clone(), quaternion: bone.quaternion.clone(), scale: bone.scale.clone() });
+      }
       const mesh = object as THREE.Mesh;
       if (!mesh.isMesh) return;
       mesh.castShadow = true;
@@ -1001,10 +1019,8 @@ function ensureModelSurface(clip: RenderClip, runtime: ModelRuntime) {
     root.add(model);
     graphics?.scene.add(root);
     timelineRoots.set(clip.id, root);
-    const selectedAnimation = runtime.animations.find((animation) => animation.name === clip.modelAnimation) ?? runtime.animations[0];
-    const mixer = selectedAnimation ? new THREE.AnimationMixer(model) : undefined;
-    if (selectedAnimation) mixer?.clipAction(selectedAnimation).play();
-    return { assetId, root, mixer, animationName: selectedAnimation?.name, duration: selectedAnimation?.duration ?? runtime.duration, objects, materials, deformGeometries, deformSignature: "" };
+    const mixer = runtime.animations.length ? new THREE.AnimationMixer(model) : undefined;
+    return { assetId, root, model, mixer, actions: new Map(), animationSignature: "", duration: runtime.duration, bones, objects, materials, deformGeometries, deformSignature: "" };
   }, (value) => disposeModelSurface(clip.id, value));
   modelSurfaces.set(clip.id, surface);
   void graphics?.precompile();
@@ -1145,22 +1161,100 @@ function updateModelSurfaces(time: number, frame: RenderFrameIndex) {
     const runtime = modelRuntimes.get(clip.assetId);
     if (!runtime) continue;
     const surface = ensureModelSurface(clip, runtime);
-    const requestedAnimation = runtime.animations.find((animation) => animation.name === clip.modelAnimation) ?? runtime.animations[0];
-    if (surface.mixer && requestedAnimation && surface.animationName !== requestedAnimation.name) {
-      surface.mixer.stopAllAction();
-      surface.mixer.clipAction(requestedAnimation).reset().play();
-      surface.animationName = requestedAnimation.name;
-      surface.duration = requestedAnimation.duration;
-    }
     surface.root.visible = clip.visible;
     applyModelTransform(surface, clip);
-    if (surface.mixer) {
-      const animationTime = clip.offset + (time - clip.start) * THREE.MathUtils.clamp(clip.speed / 100, 0.01, 10);
-      surface.mixer.setTime(surface.duration > 0 ? animationTime % surface.duration : animationTime);
-    }
+    const animationTime = clip.offset + (time - clip.start) * THREE.MathUtils.clamp(clip.speed / 100, 0.01, 10);
+    evaluateModelAnimation(surface, clip, runtime, animationTime);
+    applyModelBonePoses(surface, clip);
     active++;
   }
   activeModelObjectCount = active;
+}
+
+function modelAnimationLayers(clip: RenderClip, runtime: ModelRuntime) {
+  if (clip.modelAnimationLayers) return clip.modelAnimationLayers;
+  const animation = runtime.animations.find((item) => item.name === clip.modelAnimation) ?? runtime.animations[0];
+  return animation ? [{ id: "legacy", animation: animation.name, enabled: true, weight: 1, timeScale: 1, offset: 0, loop: "repeat" as const, additive: false }] : [];
+}
+
+function evaluateModelAnimation(surface: ModelSurface, clip: RenderClip, runtime: ModelRuntime, time: number) {
+  for (const rest of surface.bones.values()) {
+    rest.bone.position.copy(rest.position);
+    rest.bone.quaternion.copy(rest.quaternion);
+    rest.bone.scale.copy(rest.scale);
+  }
+  if (!surface.mixer) return;
+  const layers = modelAnimationLayers(clip, runtime);
+  const signature = JSON.stringify(layers.map(({ id, animation, enabled, loop, additive }) => [id, animation, enabled, loop, additive]));
+  if (signature !== surface.animationSignature) {
+    for (const action of surface.actions.values()) {
+      action.stop();
+      surface.mixer.uncacheAction(action.getClip(), surface.model);
+    }
+    surface.actions.clear();
+    for (const layer of layers) {
+      if (!layer.enabled) continue;
+      const source = runtime.animations.find((animation) => animation.name === layer.animation);
+      if (!source) continue;
+      const animation = layer.additive ? THREE.AnimationUtils.makeClipAdditive(source.clone()) : source;
+      const action = surface.mixer.clipAction(animation).reset().play();
+      action.clampWhenFinished = layer.loop === "once";
+      action.setLoop(layer.loop === "once" ? THREE.LoopOnce : layer.loop === "pingpong" ? THREE.LoopPingPong : THREE.LoopRepeat, Infinity);
+      surface.actions.set(layer.id, action);
+    }
+    surface.animationSignature = signature;
+  }
+  for (const layer of layers) {
+    const action = surface.actions.get(layer.id);
+    if (!action) continue;
+    const duration = Math.max(0, action.getClip().duration);
+    action.enabled = layer.enabled && layer.weight > 0;
+    action.setEffectiveWeight(THREE.MathUtils.clamp(layer.weight, 0, 1));
+    action.time = modelAnimationLayerTime((time + layer.offset) * layer.timeScale, duration, layer.loop);
+  }
+  surface.mixer.update(0);
+}
+
+function modelAnimationLayerTime(time: number, duration: number, loop: "once" | "repeat" | "pingpong") {
+  if (duration <= 0) return Math.max(0, time);
+  if (loop === "once") return THREE.MathUtils.clamp(time, 0, duration);
+  const cycle = Math.floor(time / duration);
+  const wrapped = ((time % duration) + duration) % duration;
+  return loop === "pingpong" && Math.abs(cycle) % 2 === 1 ? duration - wrapped : wrapped;
+}
+
+const bonePoseEuler = new THREE.Euler();
+const bonePoseQuaternion = new THREE.Quaternion();
+const bonePoseVector = new THREE.Vector3();
+
+function applyModelBonePoses(surface: ModelSurface, clip: RenderClip) {
+  for (const [path, pose] of Object.entries(clip.modelBonePoses ?? {})) {
+    const target = surface.bones.get(path);
+    if (!target) continue;
+    target.bone.position.add(bonePoseVector.set(...pose.position));
+    bonePoseEuler.set(THREE.MathUtils.degToRad(pose.rotation[0]), THREE.MathUtils.degToRad(pose.rotation[1]), THREE.MathUtils.degToRad(pose.rotation[2]));
+    target.bone.quaternion.multiply(bonePoseQuaternion.setFromEuler(bonePoseEuler));
+    target.bone.scale.multiply(bonePoseVector.set(...pose.scale));
+  }
+}
+
+function modelBonePath(bone: THREE.Bone, root: THREE.Object3D) {
+  const parts: string[] = [];
+  for (let current: THREE.Object3D | null = bone; current && current !== root; current = current.parent) {
+    const label = current.name || current.type;
+    const siblings = current.parent?.children.filter((item) => (item.name || item.type) === label) ?? [current];
+    const suffix = siblings.length > 1 ? ` [${siblings.indexOf(current) + 1}]` : "";
+    parts.unshift(`${label}${suffix}`);
+  }
+  return parts.join("/") || bone.name || bone.type;
+}
+
+function collectModelBoneNames(root: THREE.Object3D) {
+  const names: string[] = [];
+  root.traverse((object) => {
+    if ((object as THREE.Bone).isBone) names.push(modelBonePath(object as THREE.Bone, root));
+  });
+  return names;
 }
 
 function parkTimelineRoot(root: THREE.Object3D) {
@@ -1457,6 +1551,8 @@ function evaluateClipAtTime(clip: RenderClip, timelineTime: number) {
     effects: structuredClone(clip.effects),
     masks: structuredClone(clip.masks),
     particleSystem: clip.particleSystem ? { ...clip.particleSystem } : undefined,
+    modelAnimationLayers: clip.modelAnimationLayers ? structuredClone(clip.modelAnimationLayers) : undefined,
+    modelBonePoses: clip.modelBonePoses ? structuredClone(clip.modelBonePoses) : undefined,
     sceneObject: clip.sceneObject ? structuredClone(clip.sceneObject) : undefined,
   };
   const localTime = THREE.MathUtils.clamp(timelineTime - clip.start, 0, clip.duration);
@@ -1641,6 +1737,18 @@ function setAnimatedClipProperty(clip: RenderClip & Record<string, unknown>, pro
   if (property.startsWith("particleSystem.")) {
     const key = property.slice("particleSystem.".length);
     if (clip.particleSystem) (clip.particleSystem as unknown as Record<string, number>)[key] = value;
+    return;
+  }
+  if (property.startsWith("animation.")) {
+    const [, layerId, key] = property.split(".");
+    const layer = clip.modelAnimationLayers?.find((item) => item.id === layerId);
+    if (layer && (key === "weight" || key === "timeScale" || key === "offset")) layer[key] = value;
+    return;
+  }
+  if (property.startsWith("bone.")) {
+    const [, encodedPath, channel, axis] = property.split(".");
+    const pose = encodedPath ? clip.modelBonePoses?.[decodeURIComponent(encodedPath)] : undefined;
+    if (pose && (channel === "position" || channel === "rotation" || channel === "scale") && axis !== undefined) pose[channel][Number(axis) as 0 | 1 | 2] = value;
     return;
   }
   if (property.startsWith("effect.")) {
@@ -2327,10 +2435,10 @@ async function hydrateModel(assetId: string) {
       scene.scale.setScalar(normalization);
       scene.updateMatrixWorld(true);
     }
-    return { scene, animations: gltf.animations, duration: gltf.animations.reduce((maximum, animation) => Math.max(maximum, animation.duration), 0) };
+    return { scene, animations: gltf.animations, boneNames: collectModelBoneNames(scene), duration: gltf.animations.reduce((maximum, animation) => Math.max(maximum, animation.duration), 0) };
   }, disposeModelRuntime);
   modelRuntimes.set(assetId, runtime);
-  return { duration: runtime.duration || 5, codec: "glTF 2.0", animationNames: runtime.animations.map((animation, index) => animation.name || `Animation ${index + 1}`), sourceProfile: mediaBuffer.open(assetId).profile };
+  return { duration: runtime.duration || 5, codec: "glTF 2.0", animationNames: runtime.animations.map((animation, index) => animation.name || `Animation ${index + 1}`), boneNames: runtime.boneNames, sourceProfile: mediaBuffer.open(assetId).profile };
 }
 
 async function inspectModel(message: Extract<EngineRequest, { type: "inspect-model" }>) {
@@ -2617,7 +2725,7 @@ async function exportVideo(message: Extract<EngineRequest, { type: "export" }>) 
   let exportPipeline = initialSettings.renderer.postProcessing
     ? createRenderPipeline(exportRenderer, graphics.scene, exportCamera, initialSettings)
     : null;
-  let pipelineSignature = JSON.stringify([initialSettings.camera.projection, initialSettings.renderer.postProcessing, initialSettings.renderer.fxaa, initialSettings.renderer.bloomStrength, initialSettings.renderer.bloomRadius, initialSettings.renderer.bloomThreshold]);
+  let pipelineSignature = renderPipelineSettingsSignature(initialSettings);
 
   const target = new BufferTarget();
   const format = message.settings.format === "mp4"
@@ -2653,7 +2761,7 @@ async function exportVideo(message: Extract<EngineRequest, { type: "export" }>) 
         && ((exportCamera instanceof THREE.PerspectiveCamera) !== (frameSettings.camera.projection === "perspective"));
       if (projectionChanged) exportCamera = graphics.createCameraForSize(exportWidth, exportHeight);
       applyExportFrameSettings(exportRenderer, exportCamera, frameSettings, exportWidth, exportHeight);
-      const nextPipelineSignature = JSON.stringify([frameSettings.camera.projection, frameSettings.renderer.postProcessing, frameSettings.renderer.fxaa, frameSettings.renderer.bloomStrength, frameSettings.renderer.bloomRadius, frameSettings.renderer.bloomThreshold]);
+      const nextPipelineSignature = renderPipelineSettingsSignature(frameSettings);
       if (nextPipelineSignature !== pipelineSignature) {
         exportPipeline?.dispose();
         exportPipeline = frameSettings.renderer.postProcessing ? createRenderPipeline(exportRenderer, graphics.scene, exportCamera, frameSettings) : null;

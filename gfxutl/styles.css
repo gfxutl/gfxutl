@@ -759,6 +759,9 @@ svg { width: 16px; height: 16px; }
 .scene-keyframe-row > .ui-button { position: absolute; top: 4px; right: 3px; }
 .keyframe-list { display: grid; gap: 6px; margin-top: 8px; }
 .effect-item { padding: 6px; border: 1px solid #303338; border-radius: 4px; background: #131619; }
+.model-animation-layers, .rig-pose-editor { display: grid; gap: 7px; }
+.model-animation-layers { margin-bottom: 9px; }
+.rig-pose-editor { padding: 7px; border: 1px solid #292d31; border-radius: 4px; background: #0d0f11; }
 .bezier-editor { display: grid; grid-template-columns: 72px 1fr; gap: 7px; margin-top: 6px; padding: 6px; border: 1px solid #2b2e32; border-radius: 4px; background: #0d0f11; }
 .bezier-editor svg { width: 72px; height: 68px; overflow: visible; }
 .bezier-grid { fill: none; stroke: #292d31; stroke-width: .7; }

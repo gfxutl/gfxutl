@@ -43,8 +43,10 @@ File System Access API、Local Font Access API、WebGPU、WebCodecs、OffscreenC
 
 - Three.js `WebGPURenderer` を使用し、WebGPU非対応環境ではWebGL 2へフォールバック
 - 動画と静止画をNode Materialで描画し、クロップ、マスク、色調、透明度などをGPU上で合成
+- RenderPipelineによるBloom、GTAO、被写界深度、Motion Blur、FXAAをプレビュー・静止画・動画書き出しへ共通適用
 - Box、Capsule、Circle、Cone、Cylinder、各Polyhedron、Plane、Ring、Sphere、Torus、TorusKnot、Lathe、Shape、Extrude、Tube、Edges、Wireframe、任意BufferGeometryに対応
 - glTF、HDR、EXR、ローカルフォント、Canvasベースの2D Text、押し出し形状の3D Text、PBRマテリアル、ライト、カメラ、環境設定に対応
+- glTFアニメーションの多層ブレンド、再生速度・オフセット・ループ・加算合成、およびボーン単位のローカル姿勢編集とキーフレームに対応
 - プレビュー上でオブジェクトを直接選択・移動・リサイズ・回転
 - 左上固定の総合プレビューと、選択したタイムラインオブジェクトだけを描画する個別タブ
 - プレビューCanvasを別ウィンドウへ移動し、同じRenderer Workerへ再接続可能

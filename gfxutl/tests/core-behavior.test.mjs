@@ -193,6 +193,29 @@ test("timeline transitions are identical at clip boundaries and overlap in the m
   assert.equal(clipTransitionGain(clip, 10), 0);
 });
 
+test("timeline draw hierarchy traverses visual rows and filters from top to bottom", async () => {
+  const { orderedTimelineFilters, orderedVisualClips } = await importTypeScript("../core/interface/timeline-draw-order.ts");
+  const clips = [
+    { id: "bottom", kind: "video", y: 240, positionZ: 0 },
+    { id: "top", kind: "video", y: 20, positionZ: 0 },
+    { id: "middle", kind: "title", y: 120, positionZ: 0 },
+    { id: "filter-bottom", kind: "filter", y: 180 },
+    { id: "filter-top", kind: "filter", y: 40 },
+    { id: "group", kind: "group", y: 0 },
+  ];
+  assert.deepEqual(orderedVisualClips(clips).map((clip) => clip.id), ["top", "middle", "bottom"]);
+  assert.deepEqual(orderedTimelineFilters(clips).map((clip) => clip.id), ["filter-top", "filter-bottom"]);
+});
+
+test("an explicit stack order overrides the timeline row default", async () => {
+  const { orderedVisualClips } = await importTypeScript("../core/interface/timeline-draw-order.ts");
+  const clips = [
+    { id: "bottom", kind: "video", y: 240, stackOrder: 0 },
+    { id: "top", kind: "video", y: 20, stackOrder: 1 },
+  ];
+  assert.deepEqual(orderedVisualClips(clips).map((clip) => clip.id), ["bottom", "top"]);
+});
+
 test("camera cuts select the latest camera at or before the playhead", async () => {
   const { cameraForTime } = await importTypeScript("../core/interface/sequencer-state.ts");
   const a = { id: "a" };

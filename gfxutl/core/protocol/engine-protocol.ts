@@ -213,6 +213,8 @@ export type KeyframeProperty =
   | "instanceCount" | "instanceSpacing"
   | `material.${"color" | "emissive" | "emissiveIntensity" | "roughness" | "metalness" | "clearcoat" | "clearcoatRoughness" | "transmission" | "thickness" | "ior" | "sheen" | "shininess" | "opacity" | "alphaTest" | "pointSize"}`
   | `particleSystem.${"count" | "size" | "spread" | "speed" | "color"}`
+  | `animation.${string}.${"weight" | "timeScale" | "offset"}`
+  | `bone.${string}.${"position" | "rotation" | "scale"}.${0 | 1 | 2}`
   | `colorGrading.${Exclude<keyof ColorGradingSpec, "enabled">}`
   | `mask.${string}.${"x" | "y" | "width" | "height" | "feather" | "opacity"}`
   | `effect.${string}.${string}`;
@@ -240,6 +242,26 @@ export interface ParticleSystemSpec {
   spread: number;
   speed: number;
   color: number;
+}
+
+export interface ModelAnimationLayerSpec {
+  id: string;
+  animation: string;
+  enabled: boolean;
+  weight: number;
+  timeScale: number;
+  offset: number;
+  loop: "once" | "repeat" | "pingpong";
+  additive: boolean;
+}
+
+export interface ModelBonePoseSpec {
+  /** Local-space translation added after animation evaluation. */
+  position: [number, number, number];
+  /** Local-space Euler rotation offset in degrees. */
+  rotation: [number, number, number];
+  /** Local-space scale multiplier. */
+  scale: [number, number, number];
 }
 
 export interface CameraSettings {
@@ -276,6 +298,17 @@ export interface RendererSettings {
   bloomStrength: number;
   bloomRadius: number;
   bloomThreshold: number;
+  gtaoEnabled?: boolean;
+  gtaoRadius?: number;
+  gtaoThickness?: number;
+  gtaoScale?: number;
+  gtaoSamples?: number;
+  depthOfFieldEnabled?: boolean;
+  depthOfFieldFocusDistance?: number;
+  depthOfFieldFocalLength?: number;
+  depthOfFieldBokehScale?: number;
+  motionBlurEnabled?: boolean;
+  motionBlurSamples?: number;
 }
 
 export interface BackgroundSettings {
@@ -381,6 +414,8 @@ export interface RenderClip {
   keyframes: ClipKeyframe[];
   particleSystem?: ParticleSystemSpec;
   modelAnimation?: string;
+  modelAnimationLayers?: ModelAnimationLayerSpec[];
+  modelBonePoses?: Record<string, ModelBonePoseSpec>;
   instanceCount: number;
   instanceSpacing: number;
   sceneObject?: SceneObjectSpec;
@@ -495,6 +530,7 @@ export type EngineResponse =
       height?: number;
       codec?: string;
       animationNames?: string[];
+      boneNames?: string[];
       hasAudio?: boolean;
       sourceProfile?: SourceIoProfile;
     }

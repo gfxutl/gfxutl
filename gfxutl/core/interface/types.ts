@@ -10,8 +10,8 @@ export interface ClipPropertyAction {
   kind: ClipPropertyActionKind;
 }
 
-import type { AudioProcessingSpec, ClipEffect, ClipKeyframe, ClipMask, ColorGradingSpec, ExportSettings, GeometrySpec, SceneMaterialSpec, SceneSettings, SourceIoProfile } from "../protocol/engine-protocol";
-export type { AudioProcessingSpec, BackgroundSettings, BlendMode, CameraHandleKind, CameraHandleTransform, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ColorGradingSpec, EngineRequest, EngineResponse, ExportSettings, FilterRegion, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ParticleSystemSpec, PreviewPickResult, PreviewView, RendererSettings, RendererStats, RenderClip, RenderFilter, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, SceneSettingsPatch, SourceIoProfile, TimelinePatch, TimelineSnapshot, ToneMappingKind, TransformHandleKind } from "../protocol/engine-protocol";
+import type { AudioProcessingSpec, ClipEffect, ClipKeyframe, ClipMask, ColorGradingSpec, ExportSettings, GeometrySpec, ModelAnimationLayerSpec, ModelBonePoseSpec, SceneMaterialSpec, SceneSettings, SourceIoProfile } from "../protocol/engine-protocol";
+export type { AudioProcessingSpec, BackgroundSettings, BlendMode, CameraHandleKind, CameraHandleTransform, CameraSettings, ClipEffect, ClipEffectKind, ClipKeyframe, ClipMask, ColorGradingSpec, EngineRequest, EngineResponse, ExportSettings, FilterRegion, GeometryKind, GeometrySpec, KeyframeProperty, LightKind, LightSpec, MaterialKind, ModelAnimationLayerSpec, ModelBonePoseSpec, ParticleSystemSpec, PreviewPickResult, PreviewView, RendererSettings, RendererStats, RenderClip, RenderFilter, SceneKeyframe, SceneMaterialSpec, SceneObjectSpec, SceneSettings, SceneSettingsPatch, SourceIoProfile, TimelinePatch, TimelineSnapshot, ToneMappingKind, TransformHandleKind } from "../protocol/engine-protocol";
 
 export interface MediaAsset {
   id: string;
@@ -23,6 +23,7 @@ export interface MediaAsset {
   height?: number;
   codec?: string;
   animationNames?: string[];
+  boneNames?: string[];
   hasAudio?: boolean;
   sourceProfile?: SourceIoProfile;
   waveformPeaks?: number[];
@@ -91,6 +92,8 @@ export interface TimelineClip {
   primitive?: "mesh" | "points" | "line" | "sprite";
   particleSystem?: import("../protocol/engine-protocol").ParticleSystemSpec;
   modelAnimation?: string;
+  modelAnimationLayers?: ModelAnimationLayerSpec[];
+  modelBonePoses?: Record<string, ModelBonePoseSpec>;
   text?: string;
   /** Legacy titles without this field are 3D text. */
   textMode?: "2d" | "3d";
