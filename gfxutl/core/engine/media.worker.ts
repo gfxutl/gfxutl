@@ -20,6 +20,8 @@ import { matchPreviewLayerMask } from "./editor-layers";
 import { classifyFilterRegion, createFilterRegionNodeCache } from "./filter-region-nodes";
 import { isNeutralClipEffect, isNeutralColorGrading } from "./effect-optimization";
 import { cameraForTime, clipTransitionGain } from "../interface/sequencer-state";
+import { AsyncMessageLane } from "./async-message-lane";
+import { accumulateAudioWaveformPeaks, audioWaveformPeakCount } from "../interface/audio-waveform";
 
 const worker = self as unknown as DedicatedWorkerGlobalScope;
 const canceledExports = new Set<string>();
@@ -177,6 +179,8 @@ interface RenderFrameIndex {
 }
 
 const mediaRuntimes = new Map<string, MediaRuntime>();
+const thumbnailMediaRuntimes = new Map<string, MediaRuntime>();
+const waveformMediaRuntimes = new Map<string, MediaRuntime>();
 const imageRuntimes = new Map<string, ImageRuntime>();
 const modelRuntimes = new Map<string, ModelRuntime>();
 const videoSurfaces = new Map<string, VideoSurface>();
@@ -270,6 +274,7 @@ function cacheStatus(immediate = false) {
 }
 
 async function initialize(message: Extract<EngineRequest, { type: "init" }>) {
+  if (message.mediaBufferMaxBytes) mediaBuffer.setMaxBytes(message.mediaBufferMaxBytes);
   if (message.previewCache) {
     ramPreviewEnabled = message.previewCache.enabled;
     cache.setMaxBytes(Math.max(1, message.previewCache.maxBytes));
@@ -1883,6 +1888,8 @@ function detachAssetInstances(assetId: string) {
   evictTimelineThumbnails(assetId);
   audioWaveformCache.delete(assetId);
   mediaRuntimes.delete(assetId);
+  thumbnailMediaRuntimes.delete(assetId);
+  waveformMediaRuntimes.delete(assetId);
   for (const [clipId, surface] of videoSurfaces) if (surface.assetId === assetId) removeVideoSurface(clipId);
 
   for (const [clipId, surface] of imageSurfaces) if (surface.assetId === assetId) removeImageSurface(clipId);
@@ -1962,6 +1969,59 @@ async function hydrateMedia(assetId: string) {
   };
 }
 
+async function getThumbnailMediaRuntime(assetId: string) {
+  const existing = thumbnailMediaRuntimes.get(assetId);
+  if (existing) return existing;
+  const runtime = await mediaBuffer.instantiate<MediaRuntime>(assetId, "mediabunny-thumbnail-input", async (workerSource) => {
+    const input = new Input({ formats: ALL_FORMATS, source: workerSource.mediaSource });
+    try {
+      if (!(await input.canRead())) throw new Error("未対応のメディア形式です");
+      const video = await input.getPrimaryVideoTrack();
+      if (!video) throw new Error("タイムライン用サムネイルを生成できる映像がありません");
+      const duration = await input.getDurationFromMetadata() ?? await input.computeDuration();
+      return {
+        input,
+        videoSink: new VideoSampleSink(video),
+        duration,
+        width: await video.getDisplayWidth(),
+        height: await video.getDisplayHeight(),
+        codec: await video.getCodec() ?? undefined,
+        hasAudio: false,
+      };
+    } catch (error) {
+      input.dispose();
+      throw error;
+    }
+  }, (value) => value.input.dispose());
+  thumbnailMediaRuntimes.set(assetId, runtime);
+  return runtime;
+}
+
+async function getWaveformMediaRuntime(assetId: string) {
+  const existing = waveformMediaRuntimes.get(assetId);
+  if (existing) return existing;
+  const runtime = await mediaBuffer.instantiate<MediaRuntime>(assetId, "mediabunny-waveform-input", async (workerSource) => {
+    const input = new Input({ formats: ALL_FORMATS, source: workerSource.mediaSource });
+    try {
+      if (!(await input.canRead())) throw new Error("未対応のメディア形式です");
+      const audio = await input.getPrimaryAudioTrack();
+      if (!audio) throw new Error("音声波形を生成できるトラックがありません");
+      return {
+        input,
+        audioSink: new AudioSampleSink(audio),
+        duration: await input.getDurationFromMetadata() ?? await input.computeDuration(),
+        codec: await audio.getCodec() ?? undefined,
+        hasAudio: true,
+      };
+    } catch (error) {
+      input.dispose();
+      throw error;
+    }
+  }, (value) => value.input.dispose());
+  waveformMediaRuntimes.set(assetId, runtime);
+  return runtime;
+}
+
 async function inspectMedia(message: Extract<EngineRequest, { type: "inspect-media" }>) {
   bufferedAssets.set(message.assetId, { kind: "media", source: message.source });
   await mediaBuffer.load(message.assetId, message.source, message.file);
@@ -1997,7 +2057,7 @@ async function decodeAudioPreview(message: Extract<EngineRequest, { type: "decod
 
 async function createMediaThumbnail(message: Extract<EngineRequest, { type: "media-thumbnail" }>) {
   if (message.timeline) {
-    const blob = await getTimelineThumbnailBlob(message.assetId, message.time, message.timeline.width, message.timeline.height);
+    const blob = await getTimelineThumbnailBlob(message.assetId, message.time, message.timeline.width, message.timeline.height, true);
     const bitmap = await createImageBitmap(blob);
     send({ type: "media-thumbnail", requestId: message.requestId, bitmap }, [bitmap]);
     return;
@@ -2026,22 +2086,23 @@ async function createMediaThumbnail(message: Extract<EngineRequest, { type: "med
       send({ type: "media-thumbnail", requestId: message.requestId, peaks: cached });
       return;
     }
-    const peakCount = 48;
-    const timestamps = Array.from({ length: peakCount }, (_, index) => runtime.duration * (index + 0.5) / peakCount);
-    const peaks: number[] = [];
-    for await (const sample of runtime.audioSink.samplesAtTimestamps(timestamps)) {
-      if (!sample) { peaks.push(0); continue; }
+    const waveformRuntime = await getWaveformMediaRuntime(message.assetId);
+    if (!waveformRuntime.audioSink) throw new Error("音声波形を生成できるトラックがありません");
+    const peakCount = audioWaveformPeakCount(waveformRuntime.duration);
+    const peaks = Array.from({ length: peakCount }, () => 0);
+    let decodedFrames = 0;
+    for await (const sample of waveformRuntime.audioSink.samples()) {
       try {
-        const data = new Float32Array(sample.allocationSize({ planeIndex: 0, format: "f32-planar" }) / Float32Array.BYTES_PER_ELEMENT);
-        sample.copyTo(data, { planeIndex: 0, format: "f32-planar" });
-        let peak = 0;
-        for (const value of data) peak = Math.max(peak, Math.abs(value));
-        peaks.push(peak);
+        if (!sample.numberOfFrames) continue;
+        const data = new Float32Array(sample.allocationSize({ planeIndex: 0, format: "f32" }) / Float32Array.BYTES_PER_ELEMENT);
+        sample.copyTo(data, { planeIndex: 0, format: "f32" });
+        decodedFrames += sample.numberOfFrames;
+        accumulateAudioWaveformPeaks(peaks, waveformRuntime.duration, data, sample.numberOfFrames, sample.numberOfChannels, sample.sampleRate, sample.timestamp);
       } finally {
         sample.close();
       }
     }
-    if (!peaks.length) throw new Error("音声波形を取得できませんでした");
+    if (!decodedFrames) throw new Error("音声波形を取得できませんでした");
     audioWaveformCache.set(message.assetId, peaks);
     send({ type: "media-thumbnail", requestId: message.requestId, peaks });
     return;
@@ -2049,9 +2110,9 @@ async function createMediaThumbnail(message: Extract<EngineRequest, { type: "med
   throw new Error("サムネイルを生成できるトラックがありません");
 }
 
-async function getTimelineThumbnailBlob(assetId: string, requestedTime: number, requestedWidth: number, requestedHeight: number) {
+async function getTimelineThumbnailBlob(assetId: string, requestedTime: number, requestedWidth: number, requestedHeight: number, dedicatedVideoRuntime = false) {
   const image = imageRuntimes.get(assetId);
-  const runtime = mediaRuntimes.get(assetId);
+  const runtime = image ? undefined : dedicatedVideoRuntime ? await getThumbnailMediaRuntime(assetId) : mediaRuntimes.get(assetId);
   if (!image && !runtime?.videoSink) throw new Error("タイムライン用サムネイルを生成できる映像がありません");
   const time = image ? 0 : Math.max(0, Math.min(requestedTime, Math.max(0, (runtime?.duration ?? 0) - 0.001)));
   const width = Math.max(1, Math.min(512, Math.round(requestedWidth)));
@@ -2890,6 +2951,8 @@ async function handleMessage(message: EngineRequest) {
 
 const messageQueue: EngineRequest[] = [];
 let drainingMessages = false;
+const timelineThumbnailLane = new AsyncMessageLane<Extract<EngineRequest, { type: "media-thumbnail" }>>((message) => handleMessage(message));
+const audioWaveformLane = new AsyncMessageLane<Extract<EngineRequest, { type: "media-thumbnail" }>>((message) => handleMessage(message));
 
 async function drainMessages() {
   drainingMessages = true;
@@ -2899,9 +2962,23 @@ async function drainMessages() {
 }
 
 function enqueueMessage(message: EngineRequest) {
+  if (message.type === "export-cancel") {
+    canceledExports.add(message.requestId);
+    return;
+  }
   if (message.type === "cancel-request") {
     const index = messageQueue.findIndex((queued) => "requestId" in queued && queued.requestId === message.requestId);
     if (index >= 0) messageQueue.splice(index, 1);
+    timelineThumbnailLane.remove((queued) => queued.requestId === message.requestId);
+    audioWaveformLane.remove((queued) => queued.requestId === message.requestId);
+    return;
+  }
+  if (message.type === "media-thumbnail" && message.timeline) {
+    timelineThumbnailLane.enqueue(message);
+    return;
+  }
+  if (message.type === "media-thumbnail" && mediaRuntimes.get(message.assetId)?.audioSink && !mediaRuntimes.get(message.assetId)?.videoSink) {
+    audioWaveformLane.enqueue(message);
     return;
   }
   if (message.type === "decode-audio-preview") {

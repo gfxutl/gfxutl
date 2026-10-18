@@ -26,6 +26,7 @@ export interface MediaAsset {
   hasAudio?: boolean;
   sourceProfile?: SourceIoProfile;
   waveformPeaks?: number[];
+  waveformVersion?: number;
   lastModified?: number;
   /** Path relative to the media explorer root. Used to reconnect tree entries. */
   sourcePath?: string;

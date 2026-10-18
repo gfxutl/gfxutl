@@ -4,9 +4,9 @@ import {
   Pause16Regular as Pause,
   Play16Regular as Play,
 } from "@fluentui/react-icons";
-import { useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { resolveAudioProcessing } from "../core/interface/audio-processing";
-import { useEditor, type AudioProcessingSpec, type MediaAsset, type TimelineClip } from "../core/interface";
+import { AUDIO_WAVEFORM_VERSION, clipWaveformPeaks, useEditor, type AudioProcessingSpec, type MediaAsset, type TimelineClip } from "../core/interface";
 import { useI18n } from "../core/i18n";
 
 export function AudioWaveformEditor({ clip, asset }: { clip: TimelineClip; asset?: MediaAsset }) {
@@ -15,7 +15,14 @@ export function AudioWaveformEditor({ clip, asset }: { clip: TimelineClip; asset
   const processing = resolveAudioProcessing(clip.audioProcessing);
   const [selection, setSelection] = useState<[number, number]>([0, Math.min(clip.duration, 1)]);
   const dragAnchor = useRef<number | null>(null);
-  const peaks = useMemo(() => downsamplePeaks(asset?.waveformPeaks ?? [], 260), [asset?.waveformPeaks]);
+  const sourcePeaks = asset?.waveformVersion === AUDIO_WAVEFORM_VERSION ? asset.waveformPeaks : undefined;
+  const peaks = useMemo(() => asset && sourcePeaks?.length
+    ? clipWaveformPeaks(sourcePeaks, asset.duration, clip, 260)
+    : [], [asset, clip.duration, clip.offset, clip.speed, sourcePeaks]);
+  useEffect(() => {
+    if (!asset || asset.kind !== "audio" || sourcePeaks?.length || (asset.fileStatus && asset.fileStatus !== "ready")) return;
+    void controller.getMediaThumbnail(asset.id).catch(() => undefined);
+  }, [asset, controller, sourcePeaks]);
   const localTime = Math.max(0, Math.min(clip.duration, state.currentTime - clip.start));
   const playhead = clip.duration > 0 ? localTime / clip.duration * 1_000 : 0;
   const selectionStart = Math.min(...selection);
@@ -58,7 +65,7 @@ export function AudioWaveformEditor({ clip, asset }: { clip: TimelineClip; asset
         {peaks.length ? peaks.map((peak, index) => {
           const x = index / peaks.length * 1_000;
           const height = Math.max(2, peak * 108);
-          return <rect key={index} x={x} y={120 - height} width={Math.max(1.4, 880 / peaks.length)} height={height * 2} rx="1" fill={`url(#wave-${clip.id})`} />;
+          return <rect key={index} x={x} y={120 - height} width={1_000 / peaks.length} height={height * 2} rx="1" fill={`url(#wave-${clip.id})`} />;
         }) : <text x="500" y="125" textAnchor="middle">{t("波形を解析中…")}</text>}
         <rect className="wave-selection" x={selectionX} y="0" width={selectionWidth} height="240" />
         {processing.fadeIn > 0 && <path className="wave-envelope" d={`M 0 120 L ${Math.min(1000, processing.fadeIn / clip.duration * 1000)} 16`} />}
@@ -111,15 +118,6 @@ function AudioModule({ title, badge, children }: { title: string; badge: string;
 function AudioKnob({ label, value, min, max, step, unit, onChange }: { label: string; value: number; min: number; max: number; step: number; unit: string; onChange: (value: number) => void }) {
   const ratio = Math.max(0, Math.min(1, (value - min) / Math.max(0.0001, max - min)));
   return <label className="audio-knob"><span className="audio-knob-dial" style={{ "--knob-angle": `${-135 + ratio * 270}deg` } as CSSProperties}><i /></span><span>{label}</span><input aria-label={label} type="range" value={value} min={min} max={max} step={step} onChange={(event) => onChange(Number(event.target.value))} /><output>{formatValue(value)}{unit}</output></label>;
-}
-
-function downsamplePeaks(values: number[], limit: number) {
-  if (values.length <= limit) return values;
-  return Array.from({ length: limit }, (_, index) => {
-    const start = Math.floor(index * values.length / limit);
-    const end = Math.max(start + 1, Math.floor((index + 1) * values.length / limit));
-    return Math.max(...values.slice(start, end));
-  });
 }
 
 function formatTime(seconds: number) {

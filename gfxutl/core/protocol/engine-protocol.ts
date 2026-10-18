@@ -450,7 +450,7 @@ export interface MediaReadGraph {
 }
 
 export type EngineRequest =
-  | { type: "init"; canvas: OffscreenCanvas; port: MessagePort; width: number; height: number; dpr: number; previewCache?: { enabled: boolean; maxBytes: number } }
+  | { type: "init"; canvas: OffscreenCanvas; port: MessagePort; width: number; height: number; dpr: number; previewCache?: { enabled: boolean; maxBytes: number }; mediaBufferMaxBytes?: number }
   | { type: "attach-canvas"; canvas: OffscreenCanvas; width: number; height: number; dpr: number }
   | { type: "resize"; width: number; height: number; dpr: number }
   | { type: "render"; sequence: number; time: number; cache: boolean; mode: "realtime" | "playback"; fps: number; previewView: PreviewView; focusClipId?: string; sceneSettingsPatch?: SceneSettingsPatch }

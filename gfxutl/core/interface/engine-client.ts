@@ -1,9 +1,12 @@
 import type { CameraHandleKind, CameraHandleTransform, EngineRequest, EngineResponse, ExportSettings, MediaFileSource, MediaReadGraph, PreviewPickResult, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, SceneSettingsPatch, TimelinePatch, TimelineSnapshot } from "../protocol/engine-protocol";
 import type { RendererPluginBundle, RendererPluginInfo } from "../plugins/plugin-types";
 import type { FontVariationSettings } from "../fonts/font-variation";
+import { collectExportAssetIds } from "./export-resources";
 
 type MediaInfo = Extract<EngineResponse, { type: "media-info" }>;
 type ExportResult = { buffer: ArrayBuffer; mimeType: string };
+type RegisteredMediaFile = { file: File; kind: "video" | "audio" | "image" | "model" };
+type ExportWorkerSession = { requestId: string; worker: Worker; port: MessagePort; cancel: () => void };
 export type AudioPreviewChunk = { timestamp: number; duration: number; sampleRate: number; channels: ArrayBuffer[] };
 export type MediaThumbnail = { bitmap?: ImageBitmap; frame?: VideoFrame; peaks?: number[] };
 
@@ -14,6 +17,7 @@ export class EngineClient {
   private pending = new Map<string, { resolve: (value: MediaInfo) => void; reject: (reason: Error) => void; timer: number }>();
   private pendingExports = new Map<string, { resolve: (value: ExportResult) => void; reject: (reason: Error) => void }>();
   private activeExportRequestId?: string;
+  private activeExportSession?: ExportWorkerSession;
   private pendingAudio = new Map<string, { resolve: (value: AudioPreviewChunk[]) => void; reject: (reason: Error) => void }>();
   private pendingThumbnails = new Map<string, { resolve: (value: MediaThumbnail) => void; reject: (reason: Error) => void; timer: number; cleanupAbort?: () => void }>();
   private pendingThumbnailKeys = new Map<string, string>();
@@ -30,7 +34,11 @@ export class EngineClient {
   private lastSceneSettings: SceneSettings | null = null;
   private lastResize = "";
   private initialPreviewCache: { enabled: boolean; maxBytes: number } | undefined;
-  private mediaFiles = new Map<string, { file: File; kind: "video" | "audio" | "image" | "model" }>();
+  private mediaFiles = new Map<string, RegisteredMediaFile>();
+  private exportFontBuffers = new Map<string, ArrayBuffer>();
+  private exportFontVariations = new Map<string, { sourceFontId: string; variations: FontVariationSettings }>();
+  private exportPlugins = new Map<string, RendererPluginBundle>();
+  private exportGeometries = new Map<string, SceneObjectSpec>();
   private mediaBufferLoads = new Set<string>();
   private requestedMediaAssets = new Set<string>();
   private mediaGraphRevision = 0;
@@ -355,13 +363,22 @@ export class EngineClient {
 
   loadRendererPlugin(plugin: RendererPluginBundle) {
     const requestId = crypto.randomUUID();
-    return new Promise<RendererPluginInfo>((resolve, reject) => {
+    const request = new Promise<RendererPluginInfo>((resolve, reject) => {
       this.pendingPlugins.set(requestId, { resolve, reject });
       this.post({ type: "plugin-load", requestId, plugin });
+    });
+    return request.then((loaded) => {
+      if (loaded.status === "active") this.exportPlugins.set(plugin.id, plugin);
+      else this.exportPlugins.delete(plugin.id);
+      return loaded;
+    }, (error) => {
+      this.exportPlugins.delete(plugin.id);
+      throw error;
     });
   }
 
   unloadRendererPlugin(pluginId: string) {
+    this.exportPlugins.delete(pluginId);
     this.post({ type: "plugin-unload", pluginId });
   }
 
@@ -381,14 +398,103 @@ export class EngineClient {
   exportVideo(settings: ExportSettings, duration: number, clips: RenderClip[], sceneSettings: SceneSettings, audioChannels: "stereo" | "mono") {
     const requestId = crypto.randomUUID();
     this.activeExportRequestId = requestId;
-    return new Promise<ExportResult>((resolve, reject) => {
-      this.pendingExports.set(requestId, { resolve, reject });
-      this.post({ type: "export", requestId, settings, duration, clips, sceneSettings, audioChannels });
-    });
+    return this.runVideoExportWorker(requestId, settings, duration, clips, sceneSettings, audioChannels);
   }
 
   cancelExport() {
-    if (this.activeExportRequestId) this.post({ type: "export-cancel", requestId: this.activeExportRequestId });
+    const session = this.activeExportSession;
+    if (session && session.requestId === this.activeExportRequestId) session.cancel();
+  }
+
+  private runVideoExportWorker(requestId: string, settings: ExportSettings, duration: number, clips: RenderClip[], sceneSettings: SceneSettings, audioChannels: "stereo" | "mono") {
+    const assetIds = collectExportAssetIds(clips, sceneSettings, this.exportGeometries.values());
+    const mediaRegistrations = assetIds.flatMap((assetId) => {
+      const registration = this.mediaFiles.get(assetId);
+      return registration ? [{ assetId, registration }] : [];
+    });
+    const mediaBufferMaxBytes = Math.max(128 * 1024 * 1024, mediaRegistrations.reduce((total, entry) => total + entry.registration.file.size, 0));
+    return new Promise<ExportResult>((resolve, reject) => {
+      let worker: Worker;
+      try {
+        worker = this.workerFactory();
+      } catch (error) {
+        if (this.activeExportRequestId === requestId) this.activeExportRequestId = undefined;
+        reject(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      const channel = new MessageChannel();
+      const port = channel.port1;
+      const session: ExportWorkerSession = { requestId, worker, port, cancel: () => undefined };
+      this.activeExportSession = session;
+      let started = false;
+      let settled = false;
+      const cleanup = () => {
+        if (this.activeExportSession === session) this.activeExportSession = undefined;
+        if (this.activeExportRequestId === requestId) this.activeExportRequestId = undefined;
+        port.close();
+        worker.terminate();
+      };
+      const succeed = (result: ExportResult) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(result);
+      };
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      session.cancel = () => fail(new DOMException("Export canceled", "AbortError"));
+      const start = () => {
+        if (started || settled) return;
+        started = true;
+        try {
+          for (const { assetId, registration } of mediaRegistrations) {
+            const type = registration.kind === "image" ? "inspect-image" : registration.kind === "model" ? "inspect-model" : "inspect-media";
+            port.postMessage({ type, requestId: crypto.randomUUID(), assetId, source: mediaFileSource(registration.file), file: registration.file } satisfies EngineRequest);
+          }
+          for (const [fontId, retainedBuffer] of this.exportFontBuffers) {
+            const buffer = retainedBuffer.slice(0);
+            port.postMessage({ type: "font-register", fontId, buffer } satisfies EngineRequest, [buffer]);
+          }
+          for (const [fontId, variation] of this.exportFontVariations) {
+            port.postMessage({ type: "font-variation-register", fontId, sourceFontId: variation.sourceFontId, variations: variation.variations } satisfies EngineRequest);
+          }
+          for (const object of this.exportGeometries.values()) port.postMessage({ type: "geometry-upsert", object } satisfies EngineRequest);
+          for (const plugin of this.exportPlugins.values()) port.postMessage({ type: "plugin-load", requestId: crypto.randomUUID(), plugin } satisfies EngineRequest);
+          port.postMessage({ type: "export", requestId, settings, duration, clips, sceneSettings, audioChannels } satisfies EngineRequest);
+        } catch (error) {
+          fail(error instanceof Error ? error : new Error(String(error)));
+        }
+      };
+      port.onmessage = (event: MessageEvent<EngineResponse>) => {
+        const message = event.data;
+        if (message.type === "ready") start();
+        else if (message.type === "export-progress" && message.requestId === requestId) this.onMessage(message);
+        else if (message.type === "export-complete" && message.requestId === requestId) succeed(message);
+        else if (message.type === "export-canceled" && message.requestId === requestId) fail(new DOMException("Export canceled", "AbortError"));
+        else if (message.type === "plugin-state" && message.plugin.status === "error") fail(new Error(message.plugin.error || `${message.plugin.name}: プラグインを読み込めませんでした`));
+        else if (message.type === "error") fail(new Error(message.message));
+      };
+      port.start();
+      worker.onerror = (event) => {
+        event.preventDefault();
+        fail(new Error(event.message || "書き出しWorkerの初期化に失敗しました"));
+      };
+      try {
+        const canvas = new OffscreenCanvas(2, 2);
+        const message: Extract<EngineRequest, { type: "init" }> = {
+          type: "init", canvas, port: channel.port2, width: 2, height: 2, dpr: 1,
+          previewCache: { enabled: false, maxBytes: 1 },
+          mediaBufferMaxBytes,
+        };
+        worker.postMessage(message, [canvas, channel.port2]);
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
   }
 
   exportStill(width: number, height: number, time: number, clips: RenderClip[], sceneSettings: SceneSettings) {
@@ -407,10 +513,16 @@ export class EngineClient {
     this.post({ type: "preview-cache-settings", enabled, maxBytes });
   }
   clearCache() { this.post({ type: "clear-cache" }); }
-  upsertGeometry(object: SceneObjectSpec) { this.post({ type: "geometry-upsert", object }); }
-  removeGeometry(id: string) { this.post({ type: "geometry-remove", id }); }
-  registerFont(fontId: string, buffer: ArrayBuffer) { this.post({ type: "font-register", fontId, buffer }, [buffer]); }
-  registerFontVariation(fontId: string, sourceFontId: string, variations: FontVariationSettings) { this.post({ type: "font-variation-register", fontId, sourceFontId, variations }); }
+  upsertGeometry(object: SceneObjectSpec) { this.exportGeometries.set(object.id, object); this.post({ type: "geometry-upsert", object }); }
+  removeGeometry(id: string) { this.exportGeometries.delete(id); this.post({ type: "geometry-remove", id }); }
+  registerFont(fontId: string, buffer: ArrayBuffer) {
+    this.exportFontBuffers.set(fontId, buffer.slice(0));
+    this.post({ type: "font-register", fontId, buffer }, [buffer]);
+  }
+  registerFontVariation(fontId: string, sourceFontId: string, variations: FontVariationSettings) {
+    this.exportFontVariations.set(fontId, { sourceFontId, variations: { ...variations } });
+    this.post({ type: "font-variation-register", fontId, sourceFontId, variations });
+  }
 }
 
 function abortablePromise<T>(promise: Promise<T>, signal: AbortSignal) {

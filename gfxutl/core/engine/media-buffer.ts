@@ -44,7 +44,12 @@ export class MediaBuffer {
   private requestedAssetIds: string[] = [];
   private skippedAssetIds: string[] = [];
 
-  constructor(readonly maxBytes = MEDIA_BUFFER_MAX_BYTES, private readonly onEvict?: (assetId: string) => void) {}
+  constructor(public maxBytes = MEDIA_BUFFER_MAX_BYTES, private readonly onEvict?: (assetId: string) => void) {}
+
+  setMaxBytes(maxBytes: number) {
+    this.maxBytes = Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Math.floor(maxBytes)));
+    return this.reconcile();
+  }
 
   get usedBytes() {
     let total = 0;

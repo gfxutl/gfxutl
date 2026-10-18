@@ -18,6 +18,7 @@ import { clipTransitionGain } from "./sequencer-state";
 import { convertLocalFontWithFacetype, facetypeCharacterSet, readFontVariationAxes } from "../fonts/facetype";
 import { loadGoogleFontCatalog, loadGoogleFontData } from "../fonts/google-fonts";
 import { fontVariationCss, fontVariationId, fontVariationKey, normalizeFontVariations, type FontVariationAxis, type FontVariationSettings } from "../fonts/font-variation";
+import { AUDIO_WAVEFORM_VERSION } from "./audio-waveform";
 import type { FontData } from "three/addons/loaders/FontLoader.js";
 
 type Listener = () => void;
@@ -617,7 +618,7 @@ export class EditorController {
       this.registerAvailableFile(asset.id, file);
       const changed = asset.size !== file.size || asset.lastModified !== file.lastModified;
       const info: Partial<MediaAsset> = { size: file.size, lastModified: file.lastModified };
-      if (changed) Object.assign(info, await this.registerRuntimeFile(asset, file), { waveformPeaks: undefined });
+      if (changed) Object.assign(info, await this.registerRuntimeFile(asset, file), { waveformPeaks: undefined, waveformVersion: undefined });
       this.updateRuntime({ assets: this.state.assets.map((item) => item.id === assetId ? { ...item, ...info, fileStatus: "ready" } : item) });
       if (this.assetRestorePriority(assetId) !== Number.MAX_SAFE_INTEGER) this.renderPreview(true);
       return true;
@@ -651,8 +652,8 @@ export class EditorController {
       const pending: MediaAsset = { ...asset, handle, size: file.size, lastModified: file.lastModified, fileStatus: "loading" };
       this.update({ assets: this.state.assets.map((item) => item.id === assetId ? pending : item) });
       const info = await this.registerRuntimeFile(pending, file);
-      const waveformPeaks = asset.kind === "audio" && asset.size === file.size && asset.lastModified === file.lastModified ? asset.waveformPeaks : undefined;
-      const ready: MediaAsset = { ...pending, ...info, waveformPeaks, fileStatus: "ready" };
+      const retainWaveform = asset.kind === "audio" && asset.size === file.size && asset.lastModified === file.lastModified && asset.waveformVersion === AUDIO_WAVEFORM_VERSION;
+      const ready: MediaAsset = { ...pending, ...info, waveformPeaks: retainWaveform ? asset.waveformPeaks : undefined, waveformVersion: retainWaveform ? asset.waveformVersion : undefined, fileStatus: "ready" };
       this.update({ assets: this.state.assets.map((item) => item.id === assetId ? ready : item) });
       if (handle) {
         const { assets: _assets, clips: _clips, ...project } = this.currentProjectDocument();
@@ -1528,13 +1529,13 @@ export class EditorController {
 
   getMediaThumbnail = async (assetId: string, time = 0, timeline?: { width: number; height: number }, signal?: AbortSignal) => {
     const cachedAsset = this.state.assets.find((item) => item.id === assetId);
-    if (!timeline && cachedAsset?.kind === "audio" && cachedAsset.waveformPeaks?.length) return { peaks: cachedAsset.waveformPeaks };
+    if (!timeline && cachedAsset?.kind === "audio" && cachedAsset.waveformVersion === AUDIO_WAVEFORM_VERSION && cachedAsset.waveformPeaks?.length) return { peaks: cachedAsset.waveformPeaks };
     await this.ensureAssetRuntime(assetId);
     const thumbnail = await this.engine.getMediaThumbnail(assetId, time, timeline, signal);
     if (thumbnail.peaks?.length) {
       const asset = this.state.assets.find((item) => item.id === assetId);
       if (asset && asset.waveformPeaks !== thumbnail.peaks) {
-        this.updateRuntime({ assets: this.state.assets.map((item) => item.id === assetId ? { ...item, waveformPeaks: thumbnail.peaks } : item) });
+        this.updateRuntime({ assets: this.state.assets.map((item) => item.id === assetId ? { ...item, waveformPeaks: thumbnail.peaks, waveformVersion: AUDIO_WAVEFORM_VERSION } : item) });
         this.schedulePersistence();
       }
     }
@@ -2648,8 +2649,8 @@ export class EditorController {
       const info = await this.registerRuntimeFile(asset, file);
       // Waveforms are requested by the first visible thumbnail and persisted
       // afterwards; they are not part of the file-import critical path.
-      const waveformPeaks = kind === "audio" && existing?.size === file.size && existing.lastModified === file.lastModified ? existing.waveformPeaks : undefined;
-      const readyAsset = { ...asset, ...info, waveformPeaks, fileStatus: "ready" as const };
+      const retainWaveform = kind === "audio" && existing?.size === file.size && existing.lastModified === file.lastModified && existing.waveformVersion === AUDIO_WAVEFORM_VERSION;
+      const readyAsset = { ...asset, ...info, waveformPeaks: retainWaveform ? existing.waveformPeaks : undefined, waveformVersion: retainWaveform ? existing.waveformVersion : undefined, fileStatus: "ready" as const };
       this.update({ assets: this.state.assets.map((item) => item.id === id ? readyAsset : item) });
       this.renderPreview(true);
       if (handle) {

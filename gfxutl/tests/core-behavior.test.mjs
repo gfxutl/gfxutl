@@ -116,6 +116,36 @@ test("variable font coordinates are normalized, clamped, and keyed deterministic
   assert.equal(fontVariationWeight({ opsz: 18 }), undefined);
 });
 
+test("audio waveform peaks follow trim, duration, speed, and include the clip end", async () => {
+  const { AUDIO_WAVEFORM_VERSION, accumulateAudioWaveformPeaks, audioWaveformPeakCount, clipWaveformPeaks } = await importTypeScript("../core/interface/audio-waveform.ts");
+  assert.equal(AUDIO_WAVEFORM_VERSION, 2);
+  assert.equal(audioWaveformPeakCount(1), 256);
+  assert.equal(audioWaveformPeakCount(200), 8_192);
+
+  const source = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  assert.deepEqual(
+    clipWaveformPeaks(source, 10, { offset: 2, duration: 2, speed: 100 }, 2),
+    [2, 3],
+  );
+  assert.deepEqual(
+    clipWaveformPeaks(source, 10, { offset: 2, duration: 2, speed: 200 }, 2),
+    [3, 5],
+  );
+  assert.deepEqual(
+    clipWaveformPeaks(source, 10, { offset: 8, duration: 2, speed: 100 }, 4),
+    [8, 8, 9, 9],
+  );
+
+  const decoded = [0, 0, 0, 0];
+  accumulateAudioWaveformPeaks(decoded, 1, new Float32Array([
+    0.1, -0.8,
+    0.2, 0.3,
+    -0.4, 0.1,
+    0.25, -0.9,
+  ]), 4, 2, 4, 0);
+  [0.8, 0.3, 0.4, 0.9].forEach((expected, index) => assert.ok(Math.abs(decoded[index] - expected) < 1e-6));
+});
+
 test("clip action order is retained after applicability filtering", async () => {
   const { resolveClipPropertyActions } = await importTypeScript("../core/interface/clip-actions.ts");
   const clip = {
@@ -224,6 +254,43 @@ test("timeline Shift-drag locks movement to its dominant axis", async () => {
   assert.deepEqual(constrainTimelineDrag(3, -9, vertical), { deltaX: 0, deltaY: -9 });
   assert.equal(resolveTimelineDragAxis(30, 1, vertical, true), "vertical");
   assert.equal(resolveTimelineDragAxis(30, 1, vertical, false), null);
+});
+
+test("the timeline thumbnail lane remains serial and can cancel pending requests", async () => {
+  const { AsyncMessageLane } = await importTypeScript("../core/engine/async-message-lane.ts");
+  const handled = [];
+  const releases = [];
+  const lane = new AsyncMessageLane(async (message) => {
+    handled.push(`start:${message}`);
+    await new Promise((resolve) => releases.push(resolve));
+    handled.push(`end:${message}`);
+  });
+
+  lane.enqueue("a");
+  lane.enqueue("b");
+  lane.enqueue("c");
+  assert.equal(lane.remove((message) => message === "b"), 1);
+  await Promise.resolve();
+  assert.deepEqual(handled, ["start:a"]);
+  releases.shift()();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(handled, ["start:a", "end:a", "start:c"]);
+  releases.shift()();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(handled, ["start:a", "end:a", "start:c", "end:c"]);
+});
+
+test("video export collects clip, material, background, and environment assets", async () => {
+  const { collectExportAssetIds } = await importTypeScript("../core/interface/export-resources.ts");
+  const sceneSettings = {
+    background: { backgroundAssetId: "background", environmentAssetId: "environment" },
+  };
+  const clips = [
+    { assetId: "video", sceneObject: { material: { mapAssetId: "albedo", normalMapAssetId: "normal" } } },
+    { assetId: "video", sceneObject: { material: { emissiveMapAssetId: "emissive" } } },
+  ];
+  const objects = [{ material: { roughnessMapAssetId: "roughness" } }];
+  assert.deepEqual(collectExportAssetIds(clips, sceneSettings, objects), ["background", "environment", "video", "albedo", "normal", "emissive", "roughness"]);
 });
 
 test("Ctrl+Meta+number resolves preview tabs in their visible order", async () => {
