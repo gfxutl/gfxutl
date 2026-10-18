@@ -1,6 +1,6 @@
 import { Camera16Regular as Camera, Dismiss16Regular as X, Eye16Regular as Inspector, MicRecord16Regular as MicRecord, Open16Regular as ExternalLink, TextFont16Regular as TextFont } from "@fluentui/react-icons";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
-import { shallowEqual, useEditor } from "../core/interface";
+import { shallowEqual, textLetterSpacingDistance, useEditor } from "../core/interface";
 import type { CameraHandleKind, TimelineClip, TransformHandleKind } from "../core/interface";
 import type { MediaAsset } from "../core/interface";
 import { resolvePreviewResize } from "../core/interface/preview-resize";
@@ -637,7 +637,10 @@ function previewBounds(clip: TimelineClip, asset?: MediaAsset, filterSize = { wi
   } else if (clip.kind === "title") {
     const size = clip.fontSize ?? 1.2;
     const lines = (clip.text ?? clip.name).split("\n");
-    width = Math.max(0.35, Math.max(...lines.map((line) => [...line].length), 1) * size * 0.62);
+    width = Math.max(0.35, ...lines.map((line) => {
+      const characterCount = [...line].length;
+      return characterCount * size * 0.62 + Math.max(0, characterCount - 1) * textLetterSpacingDistance(size, clip.letterSpacing);
+    }));
     height = Math.max(size, lines.length * size * 1.25);
   } else if (clip.kind === "object") {
     const args = clip.geometry?.args ?? [];

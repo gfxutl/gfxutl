@@ -1075,6 +1075,7 @@ export class EditorController {
         ? {
             id: `${clip.id}:text2d`, kind: "text2d" as const, text: clip.text ?? clip.name,
             fontId: timelineFontId(clip), fontFamily: clip.fontFamily, fontVariations: clip.fontVariations, size: clip.fontSize ?? 1.2,
+            letterSpacing: clip.letterSpacing ?? 0,
             color: clip.textColor ?? 0x202020, outlineColor: clip.textOutlineColor ?? 0xffffff,
             outlineWidth: clip.textOutlineWidth ?? 0,
             rasterPixelsPerUnit: previewPixelsPerWorldUnit * Math.max(visual.scaleX, visual.scaleY),
@@ -1082,6 +1083,7 @@ export class EditorController {
         : {
             id: `${clip.id}:text`, kind: "text" as const, text: clip.text ?? clip.name,
             fontId: clip.fontId, fontFamily: clip.fontFamily, fontVariations: clip.fontVariations, size: clip.fontSize ?? 1.2, depth: clip.textDepth ?? 0.12,
+            letterSpacing: clip.letterSpacing ?? 0,
             curveSegments: 8, bevelEnabled: false,
           }
       : clip.geometry;
@@ -1838,7 +1840,7 @@ export class EditorController {
     if (this.state.settings.autoKeyEnabled) {
       const localTime = Math.max(0, Math.min(current.duration, this.state.currentTime - current.start));
       const tolerance = 0.5 / this.state.fps;
-      const autoKeyProperties = new Set(["positionX", "positionY", "positionZ", "scale", "scaleX", "scaleY", "rotation", "rotationX", "rotationY", "opacity", "cropLeft", "cropRight", "cropTop", "cropBottom", "volume", "pan", "speed", "fontSize", "textDepth", "textOutlineWidth", "instanceCount", "instanceSpacing"]);
+      const autoKeyProperties = new Set(["positionX", "positionY", "positionZ", "scale", "scaleX", "scaleY", "rotation", "rotationX", "rotationY", "opacity", "cropLeft", "cropRight", "cropTop", "cropBottom", "volume", "pan", "speed", "fontSize", "letterSpacing", "textDepth", "textOutlineWidth", "instanceCount", "instanceSpacing"]);
       const numeric = Object.entries(patch).filter(([key, value]) => autoKeyProperties.has(key) && typeof value === "number") as Array<[KeyframeProperty, number]>;
       if (numeric.length) {
         const keyframes = [...(current.keyframes ?? [])];
@@ -2007,7 +2009,7 @@ export class EditorController {
       y: Math.max(0, placement?.timelineY ?? 32), duration: 5, offset: 0,
       positionX: (placement?.positionX ?? 0) + stagger.x, positionY: (placement?.positionY ?? 0) + stagger.y,
       positionZ: 0,
-      scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: 0, rotationY: 0, opacity: 100, fontSize: 1.2,
+      scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: 0, rotationY: 0, opacity: 100, fontSize: 1.2, letterSpacing: 0,
       textDepth: is2D ? undefined : 0.12, textColor: 0x202020, textOutlineColor: 0xffffff,
       textOutlineWidth: is2D ? 0 : 0.02, fontFamily: is2D ? "sans-serif" : "Helvetiker",
     };

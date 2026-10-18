@@ -49,6 +49,8 @@ export interface GeometrySpec {
   fontFamily?: string;
   fontVariations?: FontVariationSettings;
   size?: number;
+  /** Additional distance between glyphs, as a percentage of size. */
+  letterSpacing?: number;
   depth?: number;
   color?: number;
   outlineColor?: number;
@@ -207,7 +209,7 @@ export type KeyframeProperty =
   | "rotation" | "rotationX" | "rotationY" | "opacity"
   | "cropLeft" | "cropRight" | "cropTop" | "cropBottom"
   | "volume" | "pan" | "speed"
-  | "fontSize" | "textDepth" | "textOutlineWidth"
+  | "fontSize" | "letterSpacing" | "textDepth" | "textOutlineWidth"
   | "instanceCount" | "instanceSpacing"
   | `material.${"color" | "emissive" | "emissiveIntensity" | "roughness" | "metalness" | "clearcoat" | "clearcoatRoughness" | "transmission" | "thickness" | "ior" | "sheen" | "shininess" | "opacity" | "alphaTest" | "pointSize"}`
   | `particleSystem.${"count" | "size" | "spread" | "speed" | "color"}`

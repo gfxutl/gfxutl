@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import type { GeometrySpec } from "../../protocol/engine-protocol";
 import { fontVariationWeight, type FontVariationSettings } from "../../fonts/font-variation";
+import { textLetterSpacingDistance } from "../../interface/text-spacing";
 import { BuiltInObject } from "./built-in-object";
 
 const FONT_PIXELS = 128;
@@ -34,6 +35,32 @@ function canvasFont(fontPixels: number, fontId?: string, fontFamily?: string, va
   return `${weight ?? "normal"} ${fontPixels}px "${family}", sans-serif`;
 }
 
+function measuredLineWidth(context: CanvasContext, line: string, letterSpacingPixels: number) {
+  const text = line || " ";
+  return Math.max(1, context.measureText(text).width + Math.max(0, [...text].length - 1) * letterSpacingPixels);
+}
+
+function drawLine(context: CanvasContext, line: string, x: number, y: number, letterSpacingPixels: number, outlinePixels: number) {
+  const text = line || " ";
+  if (Math.abs(letterSpacingPixels) < 0.001) {
+    if (outlinePixels > 0) context.strokeText(text, x, y);
+    context.fillText(text, x, y);
+    return;
+  }
+  const characters = [...text];
+  const width = measuredLineWidth(context, text, letterSpacingPixels);
+  context.save();
+  context.textAlign = "left";
+  let prefix = "";
+  characters.forEach((character, index) => {
+    const characterX = x - width / 2 + context.measureText(prefix).width + index * letterSpacingPixels;
+    if (outlinePixels > 0) context.strokeText(character, characterX, y);
+    context.fillText(character, characterX, y);
+    prefix += character;
+  });
+  context.restore();
+}
+
 /**
  * Rasterizes text with Canvas 2D and maps that transparent bitmap onto a plane.
  * The texture lives with the cached geometry so identical 2D titles share it.
@@ -43,17 +70,19 @@ function createCanvasTextGeometry(spec: GeometrySpec) {
   const lines = text.split("\n");
   const size = Math.max(0.001, spec.size ?? 1.2);
   const fontPixels = Math.max(16, Math.ceil(spec.rasterPixelsPerUnit === undefined ? FONT_PIXELS : size * spec.rasterPixelsPerUnit));
+  const idealLetterSpacingPixels = textLetterSpacingDistance(fontPixels, spec.letterSpacing);
   const idealOutlinePixels = Math.max(0, (spec.outlineWidth ?? 0) / size * fontPixels);
   const idealPadding = Math.max(2, Math.ceil(idealOutlinePixels + fontPixels * 0.08));
   const probe = createCanvas(1, 1);
   const probeContext = contextFor(probe);
   probeContext.font = canvasFont(fontPixels, spec.fontId, spec.fontFamily, spec.fontVariations);
-  const contentWidth = Math.max(1, ...lines.map((line) => probeContext.measureText(line || " ").width));
+  const contentWidth = Math.max(1, ...lines.map((line) => measuredLineWidth(probeContext, line, idealLetterSpacingPixels)));
   const idealLinePixels = fontPixels * LINE_HEIGHT;
   const idealWidth = contentWidth + idealPadding * 2;
   const idealHeight = lines.length * idealLinePixels + idealPadding * 2;
   const rasterScale = Math.min(1, MAX_CANVAS_SIDE / idealWidth, MAX_CANVAS_SIDE / idealHeight);
   const outlinePixels = idealOutlinePixels * rasterScale;
+  const letterSpacingPixels = idealLetterSpacingPixels * rasterScale;
   const padding = idealPadding * rasterScale;
   const linePixels = idealLinePixels * rasterScale;
   const width = Math.max(1, Math.ceil(idealWidth * rasterScale));
@@ -72,8 +101,7 @@ function createCanvasTextGeometry(spec: GeometrySpec) {
   lines.forEach((line, index) => {
     const x = width / 2;
     const y = padding + linePixels * (index + 0.5);
-    if (outlinePixels > 0) context.strokeText(line || " ", x, y);
-    context.fillText(line || " ", x, y);
+    drawLine(context, line, x, y, letterSpacingPixels, outlinePixels);
   });
 
   const texture = new THREE.CanvasTexture(canvas as HTMLCanvasElement);
@@ -85,7 +113,7 @@ function createCanvasTextGeometry(spec: GeometrySpec) {
 
   const geometry = new THREE.PlaneGeometry(idealWidth / fontPixels * size, idealHeight / fontPixels * size, 32, 16);
   Object.defineProperty(geometry, "type", { value: "GfxCanvasTextGeometry", configurable: true });
-  geometry.userData.gfxCanvasText = { text, width, height, lineCount: lines.length, rasterScale, fontPixels, rasterPixelsPerUnit: spec.rasterPixelsPerUnit, fontFamily: spec.fontFamily ?? "sans-serif" };
+  geometry.userData.gfxCanvasText = { text, width, height, lineCount: lines.length, rasterScale, fontPixels, letterSpacing: spec.letterSpacing ?? 0, rasterPixelsPerUnit: spec.rasterPixelsPerUnit, fontFamily: spec.fontFamily ?? "sans-serif" };
   geometry.userData.gfxCanvasTextTexture = texture;
   geometry.addEventListener("dispose", () => texture.dispose());
   return geometry;

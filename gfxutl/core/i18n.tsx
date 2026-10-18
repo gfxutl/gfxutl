@@ -637,6 +637,7 @@ const EN: Record<string, string> = {
   "クロップ 上": "Crop top",
   "クロップ 下": "Crop bottom",
   "文字サイズ": "Font size",
+  "文字間隔": "Letter spacing",
   "輪郭の太さ": "Outline width",
   "文字の奥行き": "Text depth",
   "インスタンス数": "Instance count",

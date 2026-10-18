@@ -13,7 +13,7 @@ import {
   Options16Regular as SlidersHorizontal,
 } from "@fluentui/react-icons";
 import { useEffect, useRef, useState } from "react";
-import { shallowEqual, useEditor } from "../core/interface";
+import { MAX_TEXT_LETTER_SPACING, MIN_TEXT_LETTER_SPACING, clampTextLetterSpacing, shallowEqual, useEditor } from "../core/interface";
 import type { ClipEffect, ClipEffectKind, ClipMask, ClipPropertyAction, ClipPropertyActionKind, ColorGradingSpec, GeometryKind, GeometrySpec, KeyframeProperty, MaterialKind, MediaAsset, SceneKeyframe, SceneSettings, TimelineClip } from "../core/interface";
 import { applicableClipActionKinds, CLIP_ACTION_LABELS, resolveClipPropertyActions, resolveColorGrading } from "../core/interface/clip-actions";
 import { COMPOSITION_SIZE_PRESETS } from "../core/interface/composition-size";
@@ -52,7 +52,7 @@ function keyframeProperties(clip: TimelineClip): Array<[KeyframeProperty, string
     for (const [key, label] of labels) properties.push([`colorGrading.${key}`, label]);
   }
   if (clip.kind === "title") {
-    properties.push(["fontSize", "文字サイズ"], ["textOutlineWidth", "輪郭の太さ"]);
+    properties.push(["fontSize", "文字サイズ"], ["letterSpacing", "文字間隔"], ["textOutlineWidth", "輪郭の太さ"]);
     if (clip.textMode !== "2d") properties.push(["textDepth", "文字の奥行き"]);
   }
   if (clip.kind === "object") {
@@ -77,7 +77,7 @@ function keyframeValue(clip: TimelineClip, property: KeyframeProperty) {
     const [, id, key] = property.split(".");
     return Number(clip.masks?.find((mask) => mask.id === id)?.[key as keyof ClipMask] ?? 0);
   }
-  const defaults: Record<string, number> = { positionX: 0, positionY: 0, positionZ: 0, scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: 0, rotationY: 0, opacity: 100, volume: 0, pan: 0, speed: 100, fontSize: 1.2, textDepth: 0.12, textOutlineWidth: 0.02, instanceCount: 1, instanceSpacing: 2.5 };
+  const defaults: Record<string, number> = { positionX: 0, positionY: 0, positionZ: 0, scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: 0, rotationY: 0, opacity: 100, volume: 0, pan: 0, speed: 100, fontSize: 1.2, letterSpacing: 0, textDepth: 0.12, textOutlineWidth: 0.02, instanceCount: 1, instanceSpacing: 2.5 };
   return Number((clip as unknown as Record<string, unknown>)[property] ?? defaults[property] ?? 0);
 }
 
@@ -393,6 +393,7 @@ export function InspectorPanel() {
             onChange={(fontId) => void controller.setTextFont(selected.id, fontId)}
             onVariationsChange={(variations) => void controller.setTextFontVariations(selected.id, variations)}
           />
+          <label className="range-field"><span>{t("文字間隔")}</span><Slider aria-label={t("文字間隔")} value={clampTextLetterSpacing(selected.letterSpacing ?? 0)} min={MIN_TEXT_LETTER_SPACING} max={MAX_TEXT_LETTER_SPACING} step={1} onChange={(event) => controller.updateClip(selected.id, { letterSpacing: clampTextLetterSpacing(Number(event.target.value)) })} /><output>{clampTextLetterSpacing(selected.letterSpacing ?? 0)}%</output></label>
           <div className="field-grid"><NumberField label="サイズ" value={selected.fontSize ?? 1.2} onChange={(value) => controller.updateClip(selected.id, { fontSize: Math.max(0.01, value) })} />{selected.textMode !== "2d" && <NumberField label="奥行き" value={selected.textDepth ?? 0.12} onChange={(value) => controller.updateClip(selected.id, { textDepth: Math.max(0, value) })} />}</div>
           <label className="color-field"><span>{t("色")}</span><input aria-label={t("テキスト色")} type="color" value={`#${(selected.textColor ?? 0x202020).toString(16).padStart(6, "0")}`} onChange={(event) => controller.updateClip(selected.id, { textColor: Number.parseInt(event.target.value.slice(1), 16) })} /></label>
           <div className="text-decoration-title">{t("枠線")}</div>

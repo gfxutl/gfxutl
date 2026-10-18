@@ -1513,6 +1513,7 @@ function evaluateClipAtTime(clip: RenderClip, timelineTime: number) {
   if (evaluated.sceneObject?.geometry) {
     const geometry = evaluated.sceneObject.geometry;
     if (properties.has("fontSize")) geometry.size = animatedNumber(evaluated, "fontSize", geometry.size ?? 1.2);
+    if (properties.has("letterSpacing")) geometry.letterSpacing = animatedNumber(evaluated, "letterSpacing", geometry.letterSpacing ?? 0);
     if (properties.has("textDepth")) geometry.depth = animatedNumber(evaluated, "textDepth", geometry.depth ?? 0.12);
     if (properties.has("textOutlineWidth")) {
       const width = animatedNumber(evaluated, "textOutlineWidth", geometry.outlineWidth ?? evaluated.sceneObject.material?.outlineWidth ?? 0.02);

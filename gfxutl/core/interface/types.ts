@@ -98,6 +98,8 @@ export interface TimelineClip {
   fontFamily?: string;
   fontVariations?: FontVariationSettings;
   fontSize?: number;
+  /** Additional distance between glyphs, as a percentage of fontSize. */
+  letterSpacing?: number;
   textDepth?: number;
   textColor?: number;
   textOutlineColor?: number;

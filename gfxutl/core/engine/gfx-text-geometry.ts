@@ -3,6 +3,7 @@ import type * as OpenType from "opentype.js";
 import helvetikerData from "three.regular.helvetiker";
 import type { GeometrySpec } from "../protocol/engine-protocol";
 import { fontVariationId, normalizeFontVariations, type FontVariationSettings } from "../fonts/font-variation";
+import { textLetterSpacingDistance } from "../interface/text-spacing";
 
 type GlyphCommand =
   | { type: "M" | "L"; x: number; y: number }
@@ -283,6 +284,7 @@ export class GfxTextGeometry extends THREE.BufferGeometry {
     Object.defineProperty(this, "type", { value: "GfxTextGeometry", configurable: true });
     const text = spec.text || "Text";
     const size = Math.max(0.001, spec.size ?? 1.2);
+    const letterSpacing = textLetterSpacingDistance(size, spec.letterSpacing);
     const depth = Math.max(0, spec.depth ?? 0.12);
     const segments = Math.max(1, Math.floor(spec.curveSegments ?? 8));
     const stagger = Math.max(0, spec.glyphStagger ?? 0.04);
@@ -309,7 +311,7 @@ export class GfxTextGeometry extends THREE.BufferGeometry {
         return;
       }
       const glyph = source.glyph(character);
-      if (previous) penX += source.kerning(previous, glyph) * scale;
+      if (previous) penX += source.kerning(previous, glyph) * scale + letterSpacing;
       const advance = glyph.advance * scale;
       const origin = new THREE.Vector2(penX + advance / 2, penY);
       const vertexStart = buffers.positions.length / 3;

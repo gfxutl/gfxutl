@@ -116,6 +116,14 @@ test("variable font coordinates are normalized, clamped, and keyed deterministic
   assert.equal(fontVariationWeight({ opsz: 18 }), undefined);
 });
 
+test("text letter spacing uses a clamped percentage of font size", async () => {
+  const { clampTextLetterSpacing, textLetterSpacingDistance } = await importTypeScript("../core/interface/text-spacing.ts");
+  assert.equal(clampTextLetterSpacing(-150), -100);
+  assert.equal(clampTextLetterSpacing(450), 300);
+  assert.equal(textLetterSpacingDistance(2, 25), 0.5);
+  assert.equal(textLetterSpacingDistance(1.2, -50), -0.6);
+});
+
 test("audio waveform peaks follow trim, duration, speed, and include the clip end", async () => {
   const { AUDIO_WAVEFORM_VERSION, accumulateAudioWaveformPeaks, audioWaveformPeakCount, clipWaveformPeaks } = await importTypeScript("../core/interface/audio-waveform.ts");
   assert.equal(AUDIO_WAVEFORM_VERSION, 2);
