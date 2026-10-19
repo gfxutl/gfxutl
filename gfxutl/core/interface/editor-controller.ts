@@ -209,7 +209,7 @@ export class EditorController {
   private audioVoices = new Map<string, PreviewAudioVoice>();
   private audioPreviewToken = 0;
   private activeAudioSignature = "";
-  private explorerFiles = new Map<string, { file?: File; handle?: FileSystemFileHandle }>();
+  private explorerFiles = new Map<string, { file?: File; handle?: FileSystemFileHandle; loadFile?: () => Promise<File> }>();
   private runtimeFiles = new Map<string, File>();
   private runtimeAssetLoads = new Map<string, Promise<void>>();
   private runtimeReadyAssetIds = new Set<string>();
@@ -2678,8 +2678,8 @@ export class EditorController {
     }
   };
 
-  stageExplorerFile = (sourcePath: string, file?: File, handle?: FileSystemFileHandle) => {
-    this.explorerFiles.set(sourcePath, { file, handle });
+  stageExplorerFile = (sourcePath: string, file?: File, handle?: FileSystemFileHandle, loadFile?: () => Promise<File>) => {
+    this.explorerFiles.set(sourcePath, { file, handle, loadFile });
   };
 
   loadTextureImageFile = async (assetId?: string, sourcePath?: string) => {
@@ -2688,11 +2688,10 @@ export class EditorController {
       const asset = this.state.assets.find((item) => item.id === assetId);
       if (!asset || asset.kind !== "image") return undefined;
       file = this.runtimeFiles.get(assetId)
-        ?? (asset.sourcePath ? this.explorerFiles.get(asset.sourcePath)?.file : undefined)
+        ?? (asset.sourcePath ? await this.loadExplorerFile(asset.sourcePath) : undefined)
         ?? await asset.handle?.getFile();
     } else if (sourcePath) {
-      const source = this.explorerFiles.get(sourcePath);
-      file = source?.file ?? await source?.handle?.getFile();
+      file = await this.loadExplorerFile(sourcePath);
     }
     if (!file || !isTextureImageFile(file)) return undefined;
     return file;
@@ -2703,12 +2702,22 @@ export class EditorController {
     let assetId = existing?.fileStatus === "ready" ? existing.id : null;
     if (!assetId) {
       const source = this.explorerFiles.get(sourcePath);
-      const file = source?.file ?? await source?.handle?.getFile();
+      const file = await this.loadExplorerFile(sourcePath);
       if (!file) return;
       assetId = await this.importMediaFile(file, source?.handle, sourcePath);
     }
     if (assetId) this.addAssetToTimeline(assetId, start, y);
   };
+
+  private async loadExplorerFile(sourcePath: string) {
+    const source = this.explorerFiles.get(sourcePath);
+    if (!source) return undefined;
+    let file = source.file;
+    if (!file && source.handle) file = await source.handle.getFile();
+    if (!file && source.loadFile) file = await source.loadFile();
+    if (file && !source.file) source.file = file;
+    return file;
+  }
 
   private openWithInput(accept: string) {
     return new Promise<File>((resolve, reject) => {

@@ -4,6 +4,7 @@ import {
   ArrowSync16Regular as RefreshCw,
   ChevronDown16Regular as ChevronDown,
   ChevronRight16Regular as ChevronRight,
+  Cloud16Regular as Cloud,
   Cube16Regular as Box,
   Dismiss16Regular as X,
   Document16Regular as File,
@@ -23,7 +24,8 @@ import {
   TextBulletListTree16Regular as ListTree,
   VideoClip16Regular as FileVideo,
 } from "@fluentui/react-icons";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { createPortal } from "react-dom";
 import type { Output, VideoSampleSource } from "mediabunny";
 import { shallowEqual, useEditor } from "../core/interface";
 import type { MediaAsset } from "../core/interface";
@@ -32,6 +34,7 @@ import { Button } from "./ui/button";
 import { Tooltip } from "./ui/tooltip";
 import { useI18n } from "../core/i18n";
 import { openAudioRecordingTab, SAVE_AUDIO_RECORDING_EVENT, type SaveAudioRecordingDetail } from "../core/interface/recording-events";
+import { S3MediaSource, type S3ConnectionSettings } from "../core/interface/s3-media-source";
 
 const ExportPanel = lazy(() => import("./export-panel").then((module) => ({ default: module.ExportPanel })));
 const SettingsPanel = lazy(() => import("./settings-panel").then((module) => ({ default: module.SettingsPanel })));
@@ -44,6 +47,8 @@ type ExplorerNode = {
   kind: "directory" | "file";
   handle?: FileSystemDirectoryHandle | FileSystemFileHandle;
   file?: File;
+  loadFile?: () => Promise<File>;
+  loadChildren?: () => Promise<ExplorerNode[]>;
   children?: ExplorerNode[];
   expanded?: boolean;
   loading?: boolean;
@@ -146,8 +151,7 @@ function ExplorerImageThumbnail({ node }: { node: ExplorerNode }) {
     let objectUrl: string | null = null;
     void (async () => {
       try {
-        const handle = node.handle?.kind === "file" ? node.handle : undefined;
-        const file = node.file ?? await handle?.getFile();
+        const file = await readExplorerFile(node);
         if (!file || cancelled) return;
         objectUrl = URL.createObjectURL(file);
         if (!cancelled) setUrl(objectUrl);
@@ -157,7 +161,7 @@ function ExplorerImageThumbnail({ node }: { node: ExplorerNode }) {
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [node.file, node.handle, node.path, visible]);
+  }, [node.file, node.handle, node.loadFile, node.path, visible]);
 
   return <span ref={hostRef} className="explorer-image-thumbnail-host">{url
     ? <img className="explorer-image-thumbnail" src={url} alt={`${node.name} ${t("プレビュー")}`} loading="lazy" decoding="async" draggable={false} />
@@ -185,7 +189,7 @@ function ExplorerVideoThumbnail({ node, playing }: { node: ExplorerNode; playing
     void (async () => {
       try {
         const handle = node.handle?.kind === "file" ? node.handle : undefined;
-        const file = node.file ?? await handle?.getFile();
+        const file = await readExplorerFile(node);
         if (!file || cancelled) return;
         previewId = `explorer-preview:${node.path}:${file.size}:${file.lastModified}`;
         const info = await controller.prepareMediaPreview(file, previewId, handle);
@@ -210,7 +214,7 @@ function ExplorerVideoThumbnail({ node, playing }: { node: ExplorerNode; playing
       cancelled = true;
       controller.releaseMediaPreview(previewId);
     };
-  }, [controller, node.file, node.handle, node.name, node.path, visible]);
+  }, [controller, node.file, node.handle, node.loadFile, node.name, node.path, visible]);
 
   return <span ref={hostRef} className="explorer-video-thumbnail">
     {previewAsset ? <MediaThumbnail asset={previewAsset} playing={playing} /> : <FileVideo />}
@@ -233,11 +237,14 @@ export function MediaPanel() {
   const [root, setRoot] = useState<ExplorerNode | null>(null);
   const [currentDirectoryId, setCurrentDirectoryId] = useState<string | null>(null);
   const [directoryError, setDirectoryError] = useState<string | null>(null);
+  const [directoryMenuOpen, setDirectoryMenuOpen] = useState(false);
+  const [s3DialogOpen, setS3DialogOpen] = useState(false);
   const [gridLimit, setGridLimit] = useState(120);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [recordMenuOpen, setRecordMenuOpen] = useState(false);
   const [screenStarting, setScreenStarting] = useState(false);
   const [screenRecording, setScreenRecording] = useState(false);
+  const directoryMenuRef = useRef<HTMLSpanElement>(null);
   const createMenuRef = useRef<HTMLSpanElement>(null);
   const recordMenuRef = useRef<HTMLDivElement>(null);
   const stopScreenRecordingRef = useRef<(() => Promise<void>) | null>(null);
@@ -262,7 +269,7 @@ export function MediaPanel() {
     return () => { cancelled = true; };
   }, []);
 
-  const openDirectory = async () => {
+  const openLocalDirectory = async () => {
     setDirectoryError(null);
     try {
       if (window.showDirectoryPicker) {
@@ -285,16 +292,31 @@ export function MediaPanel() {
     }
   };
 
+  const openS3Directory = async (settings: S3ConnectionSettings) => {
+    setDirectoryError(null);
+    const source = new S3MediaSource(settings);
+    const nextRoot = createS3RootNode(source);
+    nextRoot.loading = true;
+    const children = await readExplorerDirectory(nextRoot);
+    nextRoot.children = children;
+    nextRoot.loading = false;
+    setRoot(nextRoot);
+    setCurrentDirectoryId(nextRoot.id);
+    await clearMediaDirectory().catch(() => undefined);
+  };
+
   const refreshDirectory = async () => {
     if (!root) return;
     const directory = findNode(root, currentDirectoryId) ?? root;
-    if (!directory.handle || directory.handle.kind !== "directory") return;
+    if (!canLoadDirectory(directory)) return;
     setRoot((current) => current ? updateNode(current, directory.id, (item) => ({ ...item, loading: true })) : current);
     try {
-      const children = await readDirectory(directory.handle, directory.path);
+      const children = await readExplorerDirectory(directory);
       setRoot((current) => current ? updateNode(current, directory.id, (item) => ({ ...item, children, expanded: true, loading: false, accessRequired: false })) : current);
-    } catch {
-      setRoot((current) => current ? updateNode(current, directory.id, (item) => ({ ...item, loading: false, accessRequired: true })) : current);
+      setDirectoryError(null);
+    } catch (cause) {
+      setRoot((current) => current ? updateNode(current, directory.id, (item) => ({ ...item, loading: false, accessRequired: item.handle?.kind === "directory" })) : current);
+      setDirectoryError(cause instanceof Error ? cause.message : t("フォルダを開けませんでした"));
     }
   };
 
@@ -315,13 +337,15 @@ export function MediaPanel() {
       setRoot((current) => current ? updateNode(current, node.id, (item) => ({ ...item, expanded: !item.expanded, accessRequired: false })) : current);
       return;
     }
-    if (!node.handle || node.handle.kind !== "directory") return;
+    if (!canLoadDirectory(node)) return;
     setRoot((current) => current ? updateNode(current, node.id, (item) => ({ ...item, expanded: true, loading: true })) : current);
     try {
-      const children = await readDirectory(node.handle, node.path);
+      const children = await readExplorerDirectory(node);
       setRoot((current) => current ? updateNode(current, node.id, (item) => ({ ...item, children, expanded: true, loading: false, accessRequired: false })) : current);
-    } catch {
-      setRoot((current) => current ? updateNode(current, node.id, (item) => ({ ...item, loading: false, accessRequired: true })) : current);
+      setDirectoryError(null);
+    } catch (cause) {
+      setRoot((current) => current ? updateNode(current, node.id, (item) => ({ ...item, loading: false, accessRequired: item.handle?.kind === "directory" })) : current);
+      setDirectoryError(cause instanceof Error ? cause.message : t("フォルダを開けませんでした"));
     }
   };
 
@@ -332,8 +356,9 @@ export function MediaPanel() {
     importingPaths.current.add(node.path);
     try {
       const handle = node.handle?.kind === "file" ? node.handle : undefined;
-      const file = node.file ?? await handle?.getFile();
+      const file = await readExplorerFile(node);
       if (!file) return null;
+      controller.stageExplorerFile(node.path, file, handle, node.loadFile);
       return await controller.importMediaFile(file, handle, node.path);
     } finally {
       importingPaths.current.delete(node.path);
@@ -344,7 +369,7 @@ export function MediaPanel() {
     if (!isGfxText(node.name)) return;
     try {
       const handle = node.handle?.kind === "file" ? node.handle : undefined;
-      const file = node.file ?? await handle?.getFile();
+      const file = await readExplorerFile(node);
       if (!file) return;
       const { openGfxTextEditor, parseGfxTextDocument } = await import("../core/interface/gfxtext-document");
       openGfxTextEditor({ id: node.path, name: node.name, path: node.path, handle, document: parseGfxTextDocument(await file.text()) });
@@ -359,13 +384,15 @@ export function MediaPanel() {
       const permission = await requestDirectoryPermission(node.handle);
       if (permission !== "granted") return;
     }
-    if (!node.children && node.handle?.kind === "directory") {
+    if (!node.children && canLoadDirectory(node)) {
       setRoot((current) => current ? updateNode(current, node.id, (item) => ({ ...item, loading: true })) : current);
       try {
-        const children = await readDirectory(node.handle, node.path);
+        const children = await readExplorerDirectory(node);
         setRoot((current) => current ? updateNode(current, node.id, (item) => ({ ...item, children, loading: false, accessRequired: false })) : current);
-      } catch {
-        setRoot((current) => current ? updateNode(current, node.id, (item) => ({ ...item, loading: false, accessRequired: true })) : current);
+        setDirectoryError(null);
+      } catch (cause) {
+        setRoot((current) => current ? updateNode(current, node.id, (item) => ({ ...item, loading: false, accessRequired: item.handle?.kind === "directory" })) : current);
+        setDirectoryError(cause instanceof Error ? cause.message : t("フォルダを開けませんでした"));
         return;
       }
     }
@@ -513,6 +540,20 @@ export function MediaPanel() {
   };
 
   useEffect(() => {
+    if (!directoryMenuOpen) return;
+    const close = (event: PointerEvent) => {
+      if (!directoryMenuRef.current?.contains(event.target as Node)) setDirectoryMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setDirectoryMenuOpen(false); };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [directoryMenuOpen]);
+
+  useEffect(() => {
     if (!createMenuOpen) return;
     const close = (event: PointerEvent) => {
       if (!createMenuRef.current?.contains(event.target as Node)) setCreateMenuOpen(false);
@@ -581,15 +622,21 @@ export function MediaPanel() {
     </div>
     {state.leftPanelTab === "plugins" ? <Suspense fallback={null}><PluginPanel /></Suspense> : state.leftPanelTab === "export" ? <Suspense fallback={null}><ExportPanel /></Suspense> : state.leftPanelTab === "settings" ? <Suspense fallback={null}><SettingsPanel /></Suspense> : <div className="media-explorer">
       <div className="media-toolbar">
-        <Button size="icon" onClick={() => void openDirectory()} aria-label={t("フォルダーを開く")} title={t("メディアフォルダを開く")}><FolderOpen /></Button>
+        <span className="directory-menu-wrap" ref={directoryMenuRef}>
+          <Button size="icon" onClick={() => { setCreateMenuOpen(false); setRecordMenuOpen(false); setDirectoryMenuOpen((open) => !open); }} aria-label={t("ディレクトリの参照元を選択")} title={t("メディアフォルダを開く")} aria-haspopup="menu" aria-expanded={directoryMenuOpen}><FolderOpen /></Button>
+          {directoryMenuOpen && <div className="directory-menu" role="menu" aria-label={t("ディレクトリの参照元") }>
+            <button type="button" role="menuitem" onClick={() => { setDirectoryMenuOpen(false); void openLocalDirectory(); }}><HardDrive /><span><strong>{t("ローカルを参照")}</strong><small>{t("端末上のフォルダを開く")}</small></span></button>
+            <button type="button" role="menuitem" onClick={() => { setDirectoryMenuOpen(false); setS3DialogOpen(true); }}><Cloud /><span><strong>{t("S3互換ストレージを参照")}</strong><small>{t("署名付きS3 APIで接続")}</small></span></button>
+          </div>}
+        </span>
         <span className={`ui-tooltip create-menu-wrap ${createMenuOpen ? "open" : ""}`} data-tooltip={t("ファイルを作成")} ref={createMenuRef}>
-          <Button size="icon" variant="ghost" onClick={() => { setRecordMenuOpen(false); setCreateMenuOpen((open) => !open); }} aria-label={t("ファイルを作成")} aria-haspopup="menu" aria-expanded={createMenuOpen}><FileAdd /></Button>
+          <Button size="icon" variant="ghost" onClick={() => { setDirectoryMenuOpen(false); setRecordMenuOpen(false); setCreateMenuOpen((open) => !open); }} aria-label={t("ファイルを作成")} aria-haspopup="menu" aria-expanded={createMenuOpen}><FileAdd /></Button>
           {createMenuOpen && <div className="create-menu" role="menu" aria-label={t("作成するファイル")}>
             <button type="button" role="menuitem" onClick={() => void createTextDocument()}><TextFont /><span><strong>{t("テキストを作成")}</strong><small>.gfxtext.json · 3D Text</small></span></button>
           </div>}
         </span>
         <div className="record-menu-wrap" ref={recordMenuRef}>
-          <Tooltip label={t(screenRecording ? "画面録画を停止" : "収録")}><Button size="icon" variant="ghost" className={`record-button ${screenRecording ? "recording" : ""}`} disabled={screenStarting} onClick={() => { setCreateMenuOpen(false); if (screenRecording) stopScreenRecording(); else setRecordMenuOpen((open) => !open); }} aria-label={t(screenRecording ? "画面録画を停止" : "収録")} aria-haspopup={screenRecording ? undefined : "menu"} aria-expanded={screenRecording ? undefined : recordMenuOpen}>{screenRecording ? <Stop /> : <span className="record-dot" />}</Button></Tooltip>
+          <Tooltip label={t(screenRecording ? "画面録画を停止" : "収録")}><Button size="icon" variant="ghost" className={`record-button ${screenRecording ? "recording" : ""}`} disabled={screenStarting} onClick={() => { setDirectoryMenuOpen(false); setCreateMenuOpen(false); if (screenRecording) stopScreenRecording(); else setRecordMenuOpen((open) => !open); }} aria-label={t(screenRecording ? "画面録画を停止" : "収録")} aria-haspopup={screenRecording ? undefined : "menu"} aria-expanded={screenRecording ? undefined : recordMenuOpen}>{screenRecording ? <Stop /> : <span className="record-dot" />}</Button></Tooltip>
           {recordMenuOpen && !screenRecording && <div className="record-menu" role="menu" aria-label={t("収録方法")}>
             <button type="button" role="menuitem" onClick={() => void startScreenRecording()}><Desktop /><span><strong>{t("画面録画する")}</strong><small>{t("画面またはウィンドウをWebMで収録")}</small></span></button>
             <button type="button" role="menuitem" onClick={() => { setRecordMenuOpen(false); openAudioRecordingTab(); }}><Mic /><span><strong>{t("録音する")}</strong><small>{t("プレビューでマイク音声を収録")}</small></span></button>
@@ -600,9 +647,9 @@ export function MediaPanel() {
         {root && <><Tooltip label={t("フォルダを更新")}><Button size="icon" variant="ghost" onClick={() => void refreshDirectory()} aria-label={t("フォルダを更新")}><RotateCcw /></Button></Tooltip><Tooltip label={t("フォルダーを閉じる")}><Button size="icon" variant="ghost" onClick={() => void closeDirectory()} aria-label={t("フォルダーを閉じる")}><X /></Button></Tooltip></>}
       </div>
       <label className="search-box"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("フォルダ内を検索")} /></label>
-      {view === "tree" ? <div className="explorer-location"><HardDrive /><span>{root?.name ?? t("メディアフォルダ未選択")}</span><small>{state.assets.length}</small></div> : <div className="explorer-location explorer-breadcrumbs">
+      {view === "tree" ? <div className="explorer-location">{root?.path.startsWith("s3://") ? <Cloud /> : <HardDrive />}<span>{root?.name ?? t("メディアフォルダ未選択")}</span><small>{state.assets.length}</small></div> : <div className="explorer-location explorer-breadcrumbs">
         <button aria-label={t("上のフォルダへ")} disabled={directoryTrail.length <= 1} onClick={() => setCurrentDirectoryId(directoryTrail.at(-2)?.id ?? root?.id ?? null)}><ArrowLeft /></button>
-        <HardDrive />{directoryTrail.map((node, index) => <button key={node.id} className={index === directoryTrail.length - 1 ? "current" : ""} onClick={() => setCurrentDirectoryId(node.id)}>{node.name}</button>)}
+        {root?.path.startsWith("s3://") ? <Cloud /> : <HardDrive />}{directoryTrail.map((node, index) => <button key={node.id} className={index === directoryTrail.length - 1 ? "current" : ""} onClick={() => setCurrentDirectoryId(node.id)}>{node.name}</button>)}
         <small>{gridChildren.length}</small>
       </div>}
       {view === "tree" ? <div className="media-tree" role="tree" aria-label={t("メディアエクスプローラー")}>
@@ -618,14 +665,68 @@ export function MediaPanel() {
       </div>}
       {selectedAsset && <div className="media-selection-preview"><MediaThumbnail asset={selectedAsset} playing={state.playing} /><div className="media-selection-meta"><input key={selectedAsset.id} aria-label={t("素材名")} defaultValue={selectedAsset.name} onBlur={(event) => controller.renameAsset(selectedAsset.id, event.target.value)} /><span>{selectedAsset.sourcePath ?? t("単体ファイル")}</span><small>{selectedAsset.width ? `${selectedAsset.width} × ${selectedAsset.height}` : formatBytes(selectedAsset.size)}</small></div>{selectedAsset.fileStatus !== "ready" && <Button size="icon" variant="ghost" aria-label={t("素材を再接続")} title={t("素材を再接続")} onClick={() => void controller.relinkAsset(selectedAsset.id)}><RefreshCw /></Button>}<Button size="icon" variant="ghost" aria-label={t("素材を削除")} title={t("素材と使用中のクリップを削除")} onClick={() => controller.removeAsset(selectedAsset.id)}><X /></Button></div>}
     </div>}
+    {s3DialogOpen && createPortal(<S3ConnectionDialog onCancel={() => setS3DialogOpen(false)} onConnect={openS3Directory} />, document.body)}
   </section>;
+}
+
+function S3ConnectionDialog({ onCancel, onConnect }: { onCancel: () => void; onConnect: (settings: S3ConnectionSettings) => Promise<void> }) {
+  const { t } = useI18n();
+  const [endpoint, setEndpoint] = useState("");
+  const [region, setRegion] = useState("us-east-1");
+  const [bucket, setBucket] = useState("");
+  const [prefix, setPrefix] = useState("");
+  const [accessKeyId, setAccessKeyId] = useState("");
+  const [secretAccessKey, setSecretAccessKey] = useState("");
+  const [sessionToken, setSessionToken] = useState("");
+  const [pathStyle, setPathStyle] = useState(true);
+  const [connecting, setConnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape" && !connecting) onCancel(); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [connecting, onCancel]);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setConnecting(true);
+    setError(null);
+    try {
+      await onConnect({ endpoint, region, bucket, prefix, accessKeyId, secretAccessKey, sessionToken: sessionToken || undefined, pathStyle });
+      onCancel();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("S3互換ストレージへ接続できませんでした"));
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  return <div className="s3-dialog-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget && !connecting) onCancel(); }}>
+    <form className="s3-connection-dialog" role="dialog" aria-modal="true" aria-labelledby="s3-dialog-title" onSubmit={(event) => void submit(event)}>
+      <div className="s3-dialog-heading"><Cloud /><div><strong id="s3-dialog-title">{t("S3互換ストレージへ接続")}</strong><small>AWS Signature Version 4 · aws4fetch</small></div></div>
+      <label><span>{t("エンドポイントURL")}</span><input autoFocus required type="url" inputMode="url" placeholder="https://s3.example.com" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} /></label>
+      <div className="s3-field-grid">
+        <label><span>{t("リージョン")}</span><input required value={region} placeholder="us-east-1" onChange={(event) => setRegion(event.target.value)} /></label>
+        <label><span>{t("バケット")}</span><input required value={bucket} placeholder="media" onChange={(event) => setBucket(event.target.value)} /></label>
+      </div>
+      <label><span>{t("プレフィックス（任意）")}</span><input value={prefix} placeholder="videos/project-a/" onChange={(event) => setPrefix(event.target.value)} /></label>
+      <label><span>Access Key ID</span><input required autoComplete="off" value={accessKeyId} onChange={(event) => setAccessKeyId(event.target.value)} /></label>
+      <label><span>Secret Access Key</span><input required type="password" autoComplete="new-password" value={secretAccessKey} onChange={(event) => setSecretAccessKey(event.target.value)} /></label>
+      <label><span>{t("Session Token（任意）")}</span><input type="password" autoComplete="off" value={sessionToken} onChange={(event) => setSessionToken(event.target.value)} /></label>
+      <label className="s3-checkbox"><input type="checkbox" checked={pathStyle} onChange={(event) => setPathStyle(event.target.checked)} /><span>{t("パス形式URLを使用")}</span></label>
+      <p className="s3-security-note">{t("認証情報はこのセッションのメモリ内だけで使用し、プロジェクトには保存しません。接続先でCORSの許可が必要です。")}</p>
+      {error && <div className="s3-dialog-error" role="alert">{error}</div>}
+      <div className="s3-dialog-actions"><Button size="sm" variant="ghost" disabled={connecting} onClick={onCancel}>{t("キャンセル")}</Button><Button size="sm" type="submit" disabled={connecting}>{connecting ? t("接続中") : t("接続")}</Button></div>
+    </form>
+  </div>;
 }
 
 function ExplorerGridCard({ node, asset, selectedAssetId, playing, onOpenDirectory, onImport, onOpenGfxText, onStage, onSelect }: {
   node: ExplorerNode; asset?: MediaAsset; selectedAssetId: string | null; playing: boolean;
   onOpenDirectory: (node: ExplorerNode) => Promise<void>; onImport: (node: ExplorerNode) => Promise<string | null>;
   onOpenGfxText: (node: ExplorerNode) => Promise<void>;
-  onStage: (path: string, file?: File, handle?: FileSystemFileHandle) => void; onSelect: (id: string | null) => void;
+  onStage: (path: string, file?: File, handle?: FileSystemFileHandle, loadFile?: () => Promise<File>) => void; onSelect: (id: string | null) => void;
 }) {
   const { t } = useI18n();
   if (node.kind === "directory") {
@@ -645,14 +746,14 @@ function ExplorerGridCard({ node, asset, selectedAssetId, playing, onOpenDirecto
       <button data-asset-id={asset?.id} className={`explorer-grid-card media-card ${asset?.id === selectedAssetId ? "selected" : ""} ${supported || gfxText ? "" : "unsupported"}`} draggable={supported} disabled={!supported && !gfxText} aria-label={node.name} title={gfxText ? t("ダブルクリックで3D Textを編集") : supported ? node.path : t("未対応のファイル形式")} onClick={() => { if (!gfxText && asset?.fileStatus === "ready") onSelect(asset.id); else if (!gfxText) void onImport(node); }} onDoubleClick={() => { if (gfxText) void onOpenGfxText(node); }} onKeyDown={(event) => { if (gfxText && event.key === "Enter") void onOpenGfxText(node); }} onDragStart={(event) => {
       if (asset?.fileStatus === "ready") { setAssetDragData(event.dataTransfer, asset.id); return; }
       const handle = node.handle?.kind === "file" ? node.handle : undefined;
-      onStage(node.path, node.file, handle);
+      onStage(node.path, node.file, handle, node.loadFile);
       setExplorerDragData(event.dataTransfer, node.path);
     }}>
       <span className="grid-card-visual">{asset
         ? <MediaThumbnail asset={asset} playing={playing} />
-        : isBrowserPreviewImage(node.name)
+        : isBrowserPreviewImage(node.name) && !node.loadFile
           ? <ExplorerImageThumbnail node={node} />
-          : isBrowserPreviewVideo(node.name)
+          : isBrowserPreviewVideo(node.name) && !node.loadFile
             ? <ExplorerVideoThumbnail node={node} playing={playing} />
             : <FileKindIcon name={node.name} />}</span>
       <span className="grid-card-name">{node.name}</span>
@@ -680,7 +781,7 @@ function ExplorerRow({ node, depth, forceExpanded, assetsByPath, selectedAssetId
   node: ExplorerNode; depth: number; forceExpanded: boolean; assetsByPath: Map<string, MediaAsset>; selectedAssetId: string | null;
   onToggle: (node: ExplorerNode) => void; onImport: (node: ExplorerNode) => Promise<string | null>;
   onOpenGfxText: (node: ExplorerNode) => Promise<void>;
-  onStage: (path: string, file?: File, handle?: FileSystemFileHandle) => void; onSelect: (id: string | null) => void;
+  onStage: (path: string, file?: File, handle?: FileSystemFileHandle, loadFile?: () => Promise<File>) => void; onSelect: (id: string | null) => void;
 }) {
   const { t } = useI18n();
   if (node.kind === "directory") {
@@ -701,7 +802,7 @@ function ExplorerRow({ node, depth, forceExpanded, assetsByPath, selectedAssetId
   return <button data-explorer-path={node.path} data-asset-id={asset?.id} role="treeitem" className={`media-tree-row file-row media-card ${asset?.id === selectedAssetId ? "selected" : ""} ${supported || gfxText ? "" : "unsupported"}`} style={{ paddingLeft: 25 + depth * 15 }} draggable={supported} aria-label={node.name} title={gfxText ? t("ダブルクリックで3D Textを編集") : supported ? node.path : t("未対応のファイル形式")} onClick={() => { if (!gfxText && asset?.fileStatus === "ready") onSelect(asset.id); else if (!gfxText) void onImport(node); }} onDoubleClick={() => { if (gfxText) void onOpenGfxText(node); }} onKeyDown={(event) => { if (gfxText && event.key === "Enter") void onOpenGfxText(node); }} onDragStart={(event) => {
     if (asset?.fileStatus === "ready") { setAssetDragData(event.dataTransfer, asset.id); return; }
     const handle = node.handle?.kind === "file" ? node.handle : undefined;
-    onStage(node.path, node.file, handle);
+    onStage(node.path, node.file, handle, node.loadFile);
     setExplorerDragData(event.dataTransfer, node.path);
   }}>
     <FileKindIcon name={node.name} asset={asset} /><span>{node.name}</span><small className={asset?.fileStatus && asset.fileStatus !== "ready" ? "media-file-status" : ""}>{gfxText ? "3D TEXT" : asset?.fileStatus === "loading" ? t("読込中") : asset?.fileStatus === "permission-required" || asset?.fileStatus === "missing" ? t("再接続") : asset?.width ? `${asset.width} × ${asset.height}` : extensionLabel(node.name)}</small>
@@ -734,6 +835,61 @@ async function readDirectory(handle: FileSystemDirectoryHandle, parentPath: stri
     if (onBatch && entries.length % 100 === 0) onBatch(sortNodes([...entries]));
   }
   return sortNodes(entries);
+}
+
+async function readExplorerFile(node: ExplorerNode) {
+  if (node.file) return node.file;
+  if (node.handle?.kind === "file") return node.handle.getFile();
+  return node.loadFile?.();
+}
+
+function canLoadDirectory(node: ExplorerNode) {
+  return node.kind === "directory" && (node.handle?.kind === "directory" || Boolean(node.loadChildren));
+}
+
+function readExplorerDirectory(node: ExplorerNode) {
+  if (node.handle?.kind === "directory") return readDirectory(node.handle, node.path);
+  if (node.loadChildren) return node.loadChildren();
+  return Promise.resolve(node.children ?? []);
+}
+
+function createS3RootNode(source: S3MediaSource): ExplorerNode {
+  const prefixName = source.prefix.split("/").filter(Boolean).at(-1);
+  const path = source.sourcePath(source.prefix);
+  return {
+    id: `root:${path}`,
+    name: prefixName ?? source.bucket,
+    path,
+    kind: "directory",
+    expanded: true,
+    loadChildren: () => readS3Directory(source, source.prefix),
+  };
+}
+
+async function readS3Directory(source: S3MediaSource, prefix: string): Promise<ExplorerNode[]> {
+  const listing = await source.list(prefix);
+  const directories = listing.prefixes.map((childPrefix): ExplorerNode => {
+    const path = source.sourcePath(childPrefix);
+    return {
+      id: path,
+      name: childPrefix.slice(prefix.length).replace(/\/$/, "") || childPrefix.replace(/\/$/, "").split("/").at(-1) || source.bucket,
+      path,
+      kind: "directory",
+      expanded: false,
+      loadChildren: () => readS3Directory(source, childPrefix),
+    };
+  });
+  const objects = listing.objects.map((object): ExplorerNode => {
+    const path = source.sourcePath(object.key);
+    return {
+      id: path,
+      name: object.key.split("/").at(-1) || object.key,
+      path,
+      kind: "file",
+      loadFile: () => source.getFile(object.key, object.lastModified),
+    };
+  });
+  return sortNodes([...directories, ...objects]);
 }
 
 function GridLoadMore({ onVisible }: { onVisible: () => void }) {

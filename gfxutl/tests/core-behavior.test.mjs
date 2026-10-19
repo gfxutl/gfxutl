@@ -360,3 +360,23 @@ test("Ctrl+Meta+number resolves preview tabs in their visible order", async () =
   assert.equal(shortcut("1", { metaKey: false }), null);
   assert.equal(shortcut("1", { ctrlKey: false }), null);
 });
+
+test("S3 addresses normalize prefixes and support path and virtual-host styles", async () => {
+  const { normalizeS3Endpoint, normalizeS3Prefix, s3ObjectUrl } = await importTypeScript("../core/interface/s3-address.ts");
+  const endpoint = normalizeS3Endpoint(" https://user:secret@storage.example.test/api?discard=1#fragment ");
+  assert.equal(endpoint.href, "https://storage.example.test/api/");
+  assert.equal(normalizeS3Prefix("/projects/demo"), "projects/demo/");
+  assert.equal(normalizeS3Prefix(""), "");
+  assert.equal(
+    s3ObjectUrl(endpoint, "media bucket", "素材/demo #1.mp4", true).href,
+    "https://storage.example.test/api/media%20bucket/%E7%B4%A0%E6%9D%90/demo%20%231.mp4",
+  );
+  assert.equal(
+    s3ObjectUrl(new URL("https://storage.example.test/"), "media", "folder/image.png", false).href,
+    "https://media.storage.example.test/folder/image.png",
+  );
+  assert.equal(
+    s3ObjectUrl(new URL("https://storage.example.test/"), "media", "folder//image.png", true).href,
+    "https://storage.example.test/media/folder//image.png",
+  );
+});

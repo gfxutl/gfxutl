@@ -77,6 +77,7 @@ File System Access API、Local Font Access API、WebGPU、WebCodecs、OffscreenC
 
 - MP4、MOV、WebM、MKV、WAV、MP3、AAC、FLAC、PNG、JPEG、WebP、HDR、EXR、GLBをメディアブラウザへ読み込み
 - File System Access API対応環境ではディレクトリをツリー／グリッド表示し、ハンドルを保持したまま再接続
+- S3互換ストレージをエンドポイント、リージョン、バケット、Access Key ID、Secret Access Key、任意のSession Tokenで接続し、プレフィックス以下を遅延表示。署名には`aws4fetch`を使用し、認証情報はメモリ内だけに保持
 - 動画サムネイル、音声波形、実ファイルのコーデック・解像度・サイズ・読み取り統計を表示
 - 音声オブジェクト選択時は中央ペインを波形エディタへ切り替え、範囲選択、スクラブ、ゲイン、パン、フェード、ハイ／ローカット、3バンドEQ、コンプレッサー、リバーブ、フィードバックディレイを非破壊編集
 - MP4／WebM、映像・音声コーデック、解像度、FPS、ビットレート、上限を固定しない出力範囲、ステレオ／モノラルを設定して書き出し

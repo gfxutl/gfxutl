@@ -115,20 +115,21 @@ svg { width: 16px; height: 16px; }
 .media-toolbar .media-view-toggle svg { width: 10px; height: 10px; color: #686d72; }
 .media-toolbar .media-view-toggle i { position: relative; width: 15px; height: 8px; flex: none; border-radius: 5px; background: #3a3e43; }
 .media-toolbar .media-view-toggle i::after { content: ""; position: absolute; top: 1px; left: 1px; width: 6px; height: 6px; border-radius: 50%; background: #d8dadc; transition: transform .14s ease; }
-.record-menu-wrap, .create-menu-wrap { position: relative; display: flex; }
+.record-menu-wrap, .create-menu-wrap, .directory-menu-wrap { position: relative; display: flex; }
 .create-menu-wrap.open::after { display: none; }
 .record-button .record-dot { width: 12px; height: 12px; border-radius: 50%; background: #ed3f43; box-shadow: 0 0 0 1px #ff757966, 0 0 8px #d3232a33; }
 .record-button:hover .record-dot { background: #ff5054; }
 .record-button.recording { color: #fff; background: #a42429; border-color: #d7484e; animation: recording-button-pulse 1.8s ease-in-out infinite; }
 .record-button.recording:hover { background: #bd2c32; }
 @keyframes recording-button-pulse { 50% { box-shadow: 0 0 0 3px #e13e441c; } }
-.record-menu, .create-menu { position: absolute; z-index: 70; top: calc(100% + 6px); left: 0; width: 214px; padding: 4px; border: 1px solid #383c41; border-radius: 6px; background: #1b1e21; box-shadow: 0 12px 32px #000b; }
-.record-menu > button, .create-menu > button { width: 100%; min-height: 45px; display: flex; align-items: center; gap: 9px; padding: 6px 8px; border: 0; border-radius: 4px; background: transparent; color: #d7d9da; text-align: left; cursor: pointer; }
-.record-menu > button:hover, .record-menu > button:focus-visible, .create-menu > button:hover, .create-menu > button:focus-visible { outline: none; background: #292d31; }
-.record-menu > button > svg, .create-menu > button > svg { flex: none; color: #aeb3b6; }
-.record-menu > button > span, .create-menu > button > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.record-menu strong, .create-menu strong { font-size: 10px; font-weight: 600; }
-.record-menu small, .create-menu small { color: #777d81; font-size: 8px; }
+.record-menu, .create-menu, .directory-menu { position: absolute; z-index: 70; top: calc(100% + 6px); left: 0; width: 214px; padding: 4px; border: 1px solid #383c41; border-radius: 6px; background: #1b1e21; box-shadow: 0 12px 32px #000b; }
+.directory-menu { width: 236px; }
+.record-menu > button, .create-menu > button, .directory-menu > button { width: 100%; min-height: 45px; display: flex; align-items: center; gap: 9px; padding: 6px 8px; border: 0; border-radius: 4px; background: transparent; color: #d7d9da; text-align: left; cursor: pointer; }
+.record-menu > button:hover, .record-menu > button:focus-visible, .create-menu > button:hover, .create-menu > button:focus-visible, .directory-menu > button:hover, .directory-menu > button:focus-visible { outline: none; background: #292d31; }
+.record-menu > button > svg, .create-menu > button > svg, .directory-menu > button > svg { flex: none; color: #aeb3b6; }
+.record-menu > button > span, .create-menu > button > span, .directory-menu > button > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.record-menu strong, .create-menu strong, .directory-menu strong { font-size: 10px; font-weight: 600; }
+.record-menu small, .create-menu small, .directory-menu small { color: #777d81; font-size: 8px; }
 .media-toolbar .media-view-toggle[aria-checked="true"] i::after { transform: translateX(7px); }
 .media-toolbar .media-view-toggle[aria-checked="false"] svg:first-child,
 .media-toolbar .media-view-toggle[aria-checked="true"] svg:last-child { color: #f0f1f2; }
@@ -253,6 +254,25 @@ svg { width: 16px; height: 16px; }
 .media-selection-preview strong { color: #d0d2d4; font-size: 9px; font-weight: 500; }
 .media-selection-preview span { color: #666b70; font-size: 7px; }
 .media-selection-preview small { color: #7d8287; font: 7px "IBM Plex Mono", monospace; }
+
+/* S3-compatible media connection */
+.s3-dialog-backdrop { position: fixed; z-index: 400; inset: 0; display: grid; place-items: center; padding: 20px; background: #050607bf; backdrop-filter: blur(3px); }
+.s3-connection-dialog { width: min(480px, calc(100vw - 40px)); max-height: calc(100vh - 40px); overflow-y: auto; display: flex; flex-direction: column; gap: 11px; padding: 18px; border: 1px solid #41464b; border-radius: 8px; background: #181b1e; box-shadow: 0 24px 70px #000d; color: #d7d9da; }
+.s3-dialog-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 3px; }
+.s3-dialog-heading > svg { width: 22px; height: 22px; color: #8faebd; }
+.s3-dialog-heading > div { display: flex; flex-direction: column; gap: 2px; }
+.s3-dialog-heading strong { font-size: 13px; font-weight: 600; }
+.s3-dialog-heading small { color: #737a80; font: 8px "IBM Plex Mono", monospace; }
+.s3-connection-dialog > label, .s3-field-grid label { display: flex; flex-direction: column; gap: 5px; color: #9ca1a5; font-size: 9px; }
+.s3-connection-dialog input { width: 100%; height: 30px; padding: 0 8px; border: 1px solid #34393e; border-radius: 4px; outline: 0; background: #0e1012; color: #e1e3e4; font: 10px "IBM Plex Mono", monospace; }
+.s3-connection-dialog input:focus { border-color: #668ca0; box-shadow: 0 0 0 2px #4d7f9929; }
+.s3-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.s3-connection-dialog .s3-checkbox { flex-direction: row; align-items: center; gap: 7px; color: #b5b9bc; cursor: pointer; }
+.s3-connection-dialog .s3-checkbox input { width: 14px; height: 14px; margin: 0; accent-color: #769aad; }
+.s3-security-note { margin: 0; padding: 8px 9px; border: 1px solid #343a3e; border-radius: 4px; background: #131619; color: #858c91; font-size: 8px; line-height: 1.6; }
+.s3-dialog-error { padding: 8px 9px; border: 1px solid #70463d; border-radius: 4px; background: #2c1d1a; color: #d59a88; font-size: 9px; line-height: 1.5; }
+.s3-dialog-actions { display: flex; justify-content: flex-end; gap: 7px; padding-top: 2px; }
+@media (max-width: 520px) { .s3-field-grid { grid-template-columns: 1fr; } }
 
 /* Editor settings */
 .settings-panel { height: calc(100% - var(--pane-tab-h)); overflow-y: auto; padding: 12px 10px 18px; background: #111315; }
