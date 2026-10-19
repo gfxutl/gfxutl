@@ -528,6 +528,26 @@ svg { width: 16px; height: 16px; }
 .filter-resize-w { left: 0; top: 50%; transform: translate(-50%, -50%); cursor: ew-resize; }
 .filter-rotation-handle { left: 50%; top: 12px; transform: translateX(-50%); background: #b981da; cursor: grab; }
 .filter-rotation-handle:active { cursor: grabbing; }
+.preview-stage.preview-cropping { cursor: default; }
+.preview-crop-toolbar { position: absolute; z-index: 12; top: 8px; left: 50%; min-width: 260px; height: 31px; display: flex; align-items: center; gap: 7px; padding: 0 5px 0 8px; border: 1px solid #555b60; border-radius: 5px; background: #171a1deb; color: #e5e7e8; box-shadow: 0 6px 20px #0009; backdrop-filter: blur(8px); transform: translateX(-50%); }
+.preview-crop-toolbar > svg { flex: none; width: 13px; height: 13px; color: #d8bb72; }
+.preview-crop-toolbar > span { font-size: 9px; font-weight: 600; white-space: nowrap; }
+.preview-crop-toolbar > small { flex: 1; color: #92989d; font: 8px "IBM Plex Mono", monospace; white-space: nowrap; }
+.preview-crop-toolbar > button { height: 21px; padding: 0 6px; border: 1px solid #3b4045; border-radius: 3px; background: #25292d; color: #cdd0d2; font-size: 8px; cursor: pointer; }
+.preview-crop-toolbar > button:hover { border-color: #646b71; background: #34393e; color: #fff; }
+.preview-crop-overlay { position: absolute; z-index: 10; box-sizing: border-box; border: 1px solid #f0c66d; background: transparent; box-shadow: 0 0 0 9999px #050607a8, inset 0 0 0 1px #0008; touch-action: none; }
+.preview-crop-overlay::before, .preview-crop-overlay::after { content: ""; position: absolute; pointer-events: none; opacity: .32; }
+.preview-crop-overlay::before { top: 33.333%; bottom: 33.333%; left: 0; right: 0; border-block: 1px solid #fff; }
+.preview-crop-overlay::after { left: 33.333%; right: 33.333%; top: 0; bottom: 0; border-inline: 1px solid #fff; }
+.preview-crop-handle { position: absolute; z-index: 2; display: block; width: 10px; height: 10px; border: 1px solid #2b2313; border-radius: 2px; background: #f0c66d; box-shadow: 0 1px 4px #000b; }
+.preview-crop-nw { left: 0; top: 0; transform: translate(-50%, -50%); cursor: nwse-resize; }
+.preview-crop-n { left: 50%; top: 0; transform: translate(-50%, -50%); cursor: ns-resize; }
+.preview-crop-ne { right: 0; top: 0; transform: translate(50%, -50%); cursor: nesw-resize; }
+.preview-crop-e { right: 0; top: 50%; transform: translate(50%, -50%); cursor: ew-resize; }
+.preview-crop-se { right: 0; bottom: 0; transform: translate(50%, 50%); cursor: nwse-resize; }
+.preview-crop-s { left: 50%; bottom: 0; transform: translate(-50%, 50%); cursor: ns-resize; }
+.preview-crop-sw { left: 0; bottom: 0; transform: translate(-50%, 50%); cursor: nesw-resize; }
+.preview-crop-w { left: 0; top: 50%; transform: translate(-50%, -50%); cursor: ew-resize; }
 /* Inspector */
 .inspector-panel { z-index: 5; top: var(--title-h); bottom: calc(var(--status-h) + var(--timeline-h)); right: 0; width: var(--right-w); display: flex; flex-direction: column; border-width: 0 0 1px; overflow: hidden; background: #121416; }
 .inspector-tabs { z-index: 4; flex: none; height: var(--pane-tab-h); display: flex; border-bottom: 1px solid var(--line); padding: 0 10px; gap: 17px; background: #121416; }
@@ -956,6 +976,7 @@ svg { width: 16px; height: 16px; }
 .context-menu-submenu-panel { position: absolute; z-index: 1; top: -4px; left: calc(100% - 1px); display: none; width: 216px; padding: 4px; border: 1px solid #393d41; border-radius: 6px; background: #17191cfa; box-shadow: 0 16px 44px #000b; backdrop-filter: blur(14px); }
 .context-menu-submenu:hover > .context-menu-submenu-panel, .context-menu-submenu:focus-within > .context-menu-submenu-panel { display: block; }
 .editor-context-menu.submenu-opens-left .context-menu-submenu-panel { right: calc(100% - 1px); left: auto; }
+.editor-context-menu .context-menu-geometry-panel { top: var(--geometry-menu-top, -96px); max-height: calc(100vh - 16px); overflow-y: auto; scrollbar-width: thin; }
 .editor-context-menu .context-menu-chevron { width: 9px; color: #73777c; }
 
 /* Status and overlays */

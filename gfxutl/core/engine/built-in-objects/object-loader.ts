@@ -14,6 +14,7 @@ const objectImporters: Record<GeometryKind, ObjectImporter> = {
   cylinder: async () => await import("./cylinder-object"),
   dodecahedron: async () => await import("./dodecahedron-object"),
   icosahedron: async () => await import("./icosahedron-object"),
+  instancedBuffer: async () => await import("./instanced-buffer-object"),
   octahedron: async () => await import("./octahedron-object"),
   plane: async () => await import("./plane-object"),
   ring: async () => await import("./ring-object"),

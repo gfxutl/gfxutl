@@ -19,7 +19,7 @@ export type GeometryKind =
   | "box" | "capsule" | "circle" | "cone" | "cylinder"
   | "dodecahedron" | "icosahedron" | "octahedron" | "plane"
   | "ring" | "sphere" | "tetrahedron" | "torus" | "torusKnot"
-  | "lathe" | "shape" | "extrude" | "tube" | "polyhedron"
+  | "lathe" | "shape" | "extrude" | "tube" | "polyhedron" | "instancedBuffer"
   | "edges" | "wireframe" | "buffer" | "text" | "text2d";
 
 export type MaterialKind = "basic" | "lambert" | "phong" | "standard" | "physical" | "toon" | "normal";

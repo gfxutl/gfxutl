@@ -14,7 +14,8 @@ import {
 } from "@fluentui/react-icons";
 import { useEffect, useRef, useState } from "react";
 import { MAX_TEXT_LETTER_SPACING, MIN_TEXT_LETTER_SPACING, clampTextLetterSpacing, shallowEqual, useEditor } from "../core/interface";
-import type { ClipEffect, ClipEffectKind, ClipMask, ClipPropertyAction, ClipPropertyActionKind, ColorGradingSpec, GeometryKind, GeometrySpec, KeyframeProperty, MaterialKind, MediaAsset, SceneKeyframe, SceneSettings, TimelineClip } from "../core/interface";
+import type { ClipEffect, ClipEffectKind, ClipMask, ClipPropertyAction, ClipPropertyActionKind, ColorGradingSpec, KeyframeProperty, MaterialKind, MediaAsset, SceneKeyframe, SceneSettings, TimelineClip } from "../core/interface";
+import { defaultThreeGeometry, THREE_GEOMETRY_CATALOG, type ThreeGeometryKind } from "../core/protocol/three-geometry-catalog";
 import { applicableClipActionKinds, CLIP_ACTION_LABELS, resolveClipPropertyActions, resolveColorGrading } from "../core/interface/clip-actions";
 import { COMPOSITION_SIZE_PRESETS } from "../core/interface/composition-size";
 import { Button } from "./ui/button";
@@ -22,7 +23,7 @@ import { Slider } from "./ui/slider";
 import { FontPicker } from "./font-picker";
 import { useI18n } from "../core/i18n";
 
-const GEOMETRY_OPTIONS: GeometryKind[] = ["box", "capsule", "circle", "cone", "cylinder", "dodecahedron", "icosahedron", "octahedron", "plane", "ring", "sphere", "tetrahedron", "torus", "torusKnot", "lathe", "shape", "extrude", "tube", "polyhedron", "edges", "wireframe", "buffer"];
+const GEOMETRY_OPTIONS = THREE_GEOMETRY_CATALOG;
 const THREE_RAD_TO_DEG = 180 / Math.PI;
 const BASE_KEYFRAME_PROPERTIES: Array<[KeyframeProperty, string]> = [["positionX", "位置 X"], ["positionY", "位置 Y"], ["positionZ", "位置 Z"], ["scale", "スケール"], ["scaleX", "横幅"], ["scaleY", "高さ"], ["rotation", "回転 Z"], ["rotationX", "回転 X"], ["rotationY", "回転 Y"], ["opacity", "不透明度"]];
 
@@ -96,14 +97,6 @@ function keyframeValue(clip: TimelineClip, property: KeyframeProperty) {
   }
   const defaults: Record<string, number> = { positionX: 0, positionY: 0, positionZ: 0, scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: 0, rotationY: 0, opacity: 100, volume: 0, pan: 0, speed: 100, fontSize: 1.2, letterSpacing: 0, textDepth: 0.12, textOutlineWidth: 0.02, instanceCount: 1, instanceSpacing: 2.5 };
   return Number((clip as unknown as Record<string, unknown>)[property] ?? defaults[property] ?? 0);
-}
-
-function defaultGeometry(id: string, kind: GeometryKind): GeometrySpec {
-  if (kind === "shape") return { id, kind, points2D: [[-1.5, -1], [1.5, -1], [1.5, 1], [-1.5, 1]] };
-  if (kind === "buffer") return { id, kind, vertices: [-1, -1, 0, 1, -1, 0, 0, 1, 0], indices: [0, 1, 2] };
-  if (kind === "polyhedron") return { id, kind, vertices: [1, 1, 1, -1, -1, 1, -1, 1, -1, 1, -1, -1], indices: [2, 1, 0, 0, 3, 2, 1, 3, 0, 2, 3, 1] };
-  if (kind === "edges" || kind === "wireframe") return { id, kind, source: { kind: "box" as const } };
-  return { id, kind };
 }
 
 function isVisualClip(clip: TimelineClip) {
@@ -383,7 +376,6 @@ export function InspectorPanel() {
           <div className="field-grid transform-position-grid">{([0, 1, 2] as const).map((axis) => <NumberField key={axis} label={["X", "Y", "Z"][axis]} value={background.scene.camera.target[axis]} onChange={(value) => { const target = [...background.scene.camera.target] as [number, number, number]; target[axis] = value; controller.updateSceneSettings({ camera: { ...background.scene.camera, target } }); }} />)}</div>
           <label className="select-field"><span>{t("トーンマップ")}</span><select aria-label={t("トーンマッピング")} value={background.scene.renderer.toneMapping} onChange={(event) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, toneMapping: event.target.value as typeof background.scene.renderer.toneMapping } })}><option value="none">{t("なし")}</option><option value="linear">Linear</option><option value="reinhard">Reinhard</option><option value="cineon">Cineon</option><option value="aces">ACES</option><option value="agx">AgX</option><option value="neutral">Neutral</option></select></label>
           <NumberField label="露出" value={background.scene.renderer.exposure} onChange={(exposure) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, exposure } })} />
-          <label className="select-field"><span>{t("プレビュー解像度")}</span><select aria-label={t("プレビュー解像度")} value={background.scene.renderer.previewScale ?? 1} onChange={(event) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, previewScale: Number(event.target.value) } })}><option value={0.5}>{t("50%（高速）")}</option><option value={0.75}>{t("75%（推奨）")}</option><option value={1}>100%</option></select></label>
           <label className="select-field"><span>{t("出力バッファ")}</span><select value={background.scene.renderer.outputBuffer} onChange={(event) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, outputBuffer: event.target.value as "uint8" | "float16" } })}><option value="uint8">8-bit</option><option value="float16">16-bit float (HDR)</option></select></label>
           <label className="checkbox-field"><input type="checkbox" checked={background.scene.renderer.antialias} onChange={(event) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, antialias: event.target.checked } })} /> MSAA</label>
           <NumberField label="MSAAサンプル" value={background.scene.renderer.samples} onChange={(samples) => controller.updateSceneSettings({ renderer: { ...background.scene.renderer, samples: Math.max(0, Math.min(4, Math.floor(samples))) } })} />
@@ -487,7 +479,7 @@ export function InspectorPanel() {
       {selected.kind === "object" && asset?.kind !== "model" && !selected.particleSystem && <div className="inspector-section object-inspector">
         <div className="section-title"><span>{t("3Dオブジェクト")}</span><small>THREE.PBR</small></div>
         <div className="section-body">
-          <label className="select-field"><span>{t("形状")}</span><select aria-label={t("ジオメトリ種類")} value={selected.geometry?.kind ?? "box"} onChange={(event) => controller.updateClip(selected.id, { geometry: defaultGeometry(selected.geometry?.id ?? `${selected.id}:geometry`, event.target.value as GeometryKind) })}>{GEOMETRY_OPTIONS.map((kind) => <option value={kind} key={kind}>{kind}</option>)}</select></label>
+          <label className="select-field"><span>{t("形状")}</span><select aria-label={t("ジオメトリ種類")} value={selected.geometry?.kind ?? "box"} onChange={(event) => controller.updateClip(selected.id, { geometry: defaultThreeGeometry(selected.geometry?.id ?? `${selected.id}:geometry`, event.target.value as ThreeGeometryKind) })}>{GEOMETRY_OPTIONS.map(({ kind, className }) => <option value={kind} key={kind}>{className}</option>)}</select></label>
           {selected.geometry?.kind === "shape" && <ShapePathEditor points={selected.geometry.points2D ?? []} onChange={(points2D) => controller.updateClip(selected.id, { geometry: { ...selected.geometry!, points2D } })} />}
           <label className="select-field"><span>{t("描画方式")}</span><select value={selected.primitive ?? "mesh"} onChange={(event) => controller.updateClip(selected.id, { primitive: event.target.value as NonNullable<typeof selected.primitive> })}><option value="mesh">Mesh</option><option value="points">Points</option><option value="line">LineSegments</option><option value="sprite">Sprite</option></select></label>
           <label className="select-field"><span>{t("材質")}</span><select aria-label={t("マテリアル種類")} value={selected.material?.kind ?? "standard"} onChange={(event) => controller.updateClip(selected.id, { material: { ...selected.material, kind: event.target.value as MaterialKind } })}>{["basic", "lambert", "phong", "standard", "physical", "toon", "normal"].map((kind) => <option value={kind} key={kind}>{kind}</option>)}</select></label>

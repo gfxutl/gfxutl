@@ -20,6 +20,8 @@ import { loadGoogleFontCatalog, loadGoogleFontData } from "../fonts/google-fonts
 import { fontVariationCss, fontVariationId, fontVariationKey, normalizeFontVariations, type FontVariationAxis, type FontVariationSettings } from "../fonts/font-variation";
 import { AUDIO_WAVEFORM_VERSION } from "./audio-waveform";
 import { orderedTimelineFilters, orderedVisualClips } from "./timeline-draw-order";
+import { defaultThreeGeometry, isThreeGeometryKind, threeGeometryClassName } from "../protocol/three-geometry-catalog";
+import { nativePreviewPixelRatio } from "../protocol/preview-resolution";
 import type { FontData } from "three/addons/loaders/FontLoader.js";
 
 type Listener = () => void;
@@ -34,7 +36,7 @@ const defaultSceneSettings: SceneSettings = {
   camera: { id: "camera-1", name: "Camera 1", projection: "orthographic", position: [0, 0, 10], target: [0, 0, 0], near: 0.01, far: 1_000, fov: 50, zoom: 1, orthographicHeight: 9 },
   cameras: [{ id: "camera-1", name: "Camera 1", projection: "orthographic", position: [0, 0, 10], target: [0, 0, 0], near: 0.01, far: 1_000, fov: 50, zoom: 1, orthographicHeight: 9 }],
   cameraCuts: [],
-  renderer: { previewScale: 0.75, toneMapping: "aces", exposure: 1, outputBuffer: "uint8", antialias: true, samples: 2, shadows: true, shadowType: "pcf", transparentBackground: false, postProcessing: false, fxaa: false, bloomStrength: 0, bloomRadius: 0.25, bloomThreshold: 0.8, gtaoEnabled: false, gtaoRadius: 0.25, gtaoThickness: 1, gtaoScale: 1, gtaoSamples: 16, depthOfFieldEnabled: false, depthOfFieldFocusDistance: 10, depthOfFieldFocalLength: 1, depthOfFieldBokehScale: 1, motionBlurEnabled: false, motionBlurSamples: 12 },
+  renderer: { previewScale: 1, toneMapping: "aces", exposure: 1, outputBuffer: "uint8", antialias: true, samples: 2, shadows: true, shadowType: "pcf", transparentBackground: false, postProcessing: false, fxaa: false, bloomStrength: 0, bloomRadius: 0.25, bloomThreshold: 0.8, gtaoEnabled: false, gtaoRadius: 0.25, gtaoThickness: 1, gtaoScale: 1, gtaoSamples: 16, depthOfFieldEnabled: false, depthOfFieldFocusDistance: 10, depthOfFieldFocalLength: 1, depthOfFieldBokehScale: 1, motionBlurEnabled: false, motionBlurSamples: 12 },
   lights: [
     { id: "ambient", kind: "ambient", color: 0xffffff, intensity: 1.2, position: [0, 0, 0] },
     { id: "key", kind: "directional", color: 0xffffff, intensity: 2.5, position: [4, 6, 8], target: [0, 0, 0], castShadow: true },
@@ -93,6 +95,7 @@ const initialState: EditorState = {
   selectedCameraKeyframeIds: [],
   previewClipTabs: [],
   activePreviewClipId: null,
+  previewCropClipId: null,
   activePreviewView: "camera",
   selectedAssetId: null,
   backgroundSelected: true,
@@ -524,6 +527,7 @@ export class EditorController {
         selectedCameraKeyframeIds: [],
         previewClipTabs: [],
         activePreviewClipId: null,
+        previewCropClipId: null,
         activePreviewView: "camera",
         selectedAssetId: null,
         backgroundSelected: true,
@@ -567,6 +571,7 @@ export class EditorController {
       selectedCameraKeyframeIds: [],
       previewClipTabs: [],
       activePreviewClipId: null,
+      previewCropClipId: null,
       activePreviewView: "camera",
       selectedAssetId: null,
       backgroundSelected: true,
@@ -927,13 +932,9 @@ export class EditorController {
     });
   }
 
-  private previewDpr() {
-    // Inspector renders at the device's native backing resolution. Camera
-    // previews apply their own scale and fill-rate cap inside the renderer.
-    return window.devicePixelRatio || 1;
-  }
+  private previewDpr() { return nativePreviewPixelRatio(window.devicePixelRatio); }
 
-  connectPreview(canvas: HTMLCanvasElement, width: number, height: number) {
+  connectPreview(canvas: HTMLCanvasElement, width: number, height: number, dpr = this.previewDpr()) {
     if (this.previewCanvases.has(canvas)) return;
     this.previewCanvases.add(canvas);
     if (!("transferControlToOffscreen" in canvas)) {
@@ -941,16 +942,16 @@ export class EditorController {
       return;
     }
     const offscreen = canvas.transferControlToOffscreen();
-    if (this.canvasReady) this.engine.attachCanvas(offscreen, width, height, this.previewDpr());
+    if (this.canvasReady) this.engine.attachCanvas(offscreen, width, height, nativePreviewPixelRatio(dpr));
     else {
       this.canvasReady = true;
-      this.engine.init(offscreen, width, height, this.previewDpr());
+      this.engine.init(offscreen, width, height, nativePreviewPixelRatio(dpr));
     }
     this.renderPreview(true);
   }
 
-  resizePreview(width: number, height: number) {
-    if (this.canvasReady) this.engine.resize(width, height, this.previewDpr());
+  resizePreview(width: number, height: number, dpr = this.previewDpr()) {
+    if (this.canvasReady) this.engine.resize(width, height, nativePreviewPixelRatio(dpr));
   }
 
   renderPreview(cache = false) {
@@ -1478,6 +1479,55 @@ export class EditorController {
   };
   openContextMenu = (menu: ContextMenuState) => this.update({ contextMenu: menu });
   closeContextMenu = () => this.update({ contextMenu: null });
+  startPreviewCrop = (id: string) => {
+    const clip = this.state.clips.find((item) => item.id === id);
+    const asset = clip?.assetId ? this.state.assets.find((item) => item.id === clip.assetId) : undefined;
+    if (!clip || clip.kind !== "video" || clip.locked || !asset?.width || !asset.height || (asset.kind !== "video" && asset.kind !== "image")) return;
+    const actions = resolveClipPropertyActions(clip);
+    const needsCropAction = !actions.some((action) => action.kind === "crop");
+    const nextClip = needsCropAction ? {
+      ...clip,
+      ...resetPatchForClipAction("crop"),
+      propertyActions: [...actions, { id: crypto.randomUUID(), kind: "crop" as const }],
+    } : clip;
+    this.update({
+      ...(needsCropAction ? { clips: this.state.clips.map((item) => item.id === id ? nextClip : item) } : {}),
+      selectedClipId: id,
+      selectedClipIds: [id],
+      selectedCameraKeyframeIds: [],
+      selectedAssetId: clip.assetId ?? null,
+      backgroundSelected: false,
+      previewClipTabs: this.state.previewClipTabs.includes(id) ? this.state.previewClipTabs : [...this.state.previewClipTabs, id],
+      activePreviewClipId: id,
+      previewCropClipId: id,
+      contextMenu: null,
+    });
+    if (needsCropAction) {
+      this.invalidatePreviewCache();
+      this.schedulePersistence();
+    }
+    this.renderPreview(false);
+  };
+  finishPreviewCrop = () => {
+    this.update({ previewCropClipId: null });
+    this.finishPreviewInteraction();
+  };
+  resetPreviewCrop = (id: string) => {
+    const clip = this.state.clips.find((item) => item.id === id);
+    if (!clip || clip.locked) return;
+    const cropProperties = new Set<KeyframeProperty>(["cropLeft", "cropRight", "cropTop", "cropBottom"]);
+    this.update({
+      clips: this.state.clips.map((item) => item.id === id ? {
+        ...item,
+        cropLeft: 0,
+        cropRight: 0,
+        cropTop: 0,
+        cropBottom: 0,
+        keyframes: item.keyframes?.filter((keyframe) => !cropProperties.has(keyframe.property)),
+      } : item),
+    });
+    this.finishPreviewInteraction();
+  };
   setLeftPanelTab = (tab: EditorState["leftPanelTab"]) => this.update({ leftPanelTab: tab });
   renameProject = (projectName: string) => this.update({ projectName });
   updateSequenceSettings = (patch: { fps?: number; duration?: number }) => {
@@ -1935,6 +1985,7 @@ export class EditorController {
       selectedAssetId: clips.find((clip) => clip.id === selectedClipId)?.assetId ?? null,
       previewClipTabs: this.state.previewClipTabs.filter((clipId) => !ids.has(clipId)),
       activePreviewClipId: this.state.activePreviewClipId && ids.has(this.state.activePreviewClipId) ? null : this.state.activePreviewClipId,
+      previewCropClipId: this.state.previewCropClipId && ids.has(this.state.previewCropClipId) ? null : this.state.previewCropClipId,
     });
     this.invalidatePreviewCache();
     this.schedulePersistence();
@@ -2114,16 +2165,16 @@ export class EditorController {
     const id = crypto.randomUUID();
     const start = this.snapTime(placement?.time ?? this.state.currentTime);
     const stagger = this.objectStagger(start, placement?.positionX ?? 0, placement?.positionY ?? 0);
-    const names: Partial<Record<GeometryKind, string>> = { box: t("立方体"), sphere: t("球体"), plane: t("平面"), torus: t("トーラス"), shape: t("シェイプ") };
-    const args: Partial<Record<GeometryKind, number[]>> = { box: [2, 2, 0.5], sphere: [1.25, 32, 20], plane: [2.5, 2.5], torus: [1, 0.32, 16, 48] };
+    const geometry = isThreeGeometryKind(kind) ? defaultThreeGeometry(`${id}:geometry`, kind) : { id: `${id}:geometry`, kind };
+    const name = isThreeGeometryKind(kind) ? threeGeometryClassName(kind) : kind;
     const clip: TimelineClip = {
-      id, name: names[kind] ?? kind, kind: "object", color: "#4f83a8", start,
+      id, name, kind: "object", color: "#4f83a8", start,
       y: Math.max(0, placement?.timelineY ?? 92), duration: 5, offset: 0,
       positionX: (placement?.positionX ?? 0) + stagger.x, positionY: (placement?.positionY ?? 0) + stagger.y,
       positionZ: 0,
       scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: kind === "shape" ? 0 : 18, rotationY: kind === "shape" ? 0 : -24, opacity: 100, textColor: 0x3d73a0,
       material: { kind: kind === "shape" ? "basic" : "standard", color: 0x3d73a0, roughness: 0.55, metalness: 0.08, side: "double" }, castShadow: kind !== "shape", receiveShadow: kind !== "shape",
-      geometry: { id: `${id}:geometry`, kind, args: args[kind], ...(kind === "shape" ? { points2D: [[-1.5, -1], [1.5, -1], [1.5, 1], [-1.5, 1]] as Array<[number, number]> } : {}) },
+      geometry,
     };
     this.insertObjectClip(clip);
   };

@@ -22,6 +22,7 @@ import { isNeutralClipEffect, isNeutralColorGrading } from "./effect-optimizatio
 import { cameraForTime, clipTransitionGain } from "../interface/sequencer-state";
 import { AsyncMessageLane } from "./async-message-lane";
 import { accumulateAudioWaveformPeaks, audioWaveformPeakCount } from "../interface/audio-waveform";
+import { croppedPlaneGeometry } from "../protocol/preview-crop";
 
 const worker = self as unknown as DedicatedWorkerGlobalScope;
 const canceledExports = new Set<string>();
@@ -77,7 +78,7 @@ let lastMediaBufferStatus = "";
 let sceneSettings: SceneSettings = {
   background: { color: 0xffffff, alpha: 1, fogEnabled: false, fogColor: 0xffffff, fogNear: 5, fogFar: 30, environmentIntensity: 1, environmentRotation: 0, backgroundBlurriness: 0 },
   camera: { id: "camera-1", name: "Camera 1", projection: "orthographic", position: [0, 0, 10], target: [0, 0, 0], near: 0.01, far: 1_000, fov: 50, zoom: 1, orthographicHeight: 9 },
-  renderer: { previewScale: 0.75, toneMapping: "aces", exposure: 1, outputBuffer: "uint8", antialias: true, samples: 2, shadows: true, shadowType: "pcf", transparentBackground: false, postProcessing: false, fxaa: false, bloomStrength: 0, bloomRadius: 0.25, bloomThreshold: 0.8, gtaoEnabled: false, gtaoRadius: 0.25, gtaoThickness: 1, gtaoScale: 1, gtaoSamples: 16, depthOfFieldEnabled: false, depthOfFieldFocusDistance: 10, depthOfFieldFocalLength: 1, depthOfFieldBokehScale: 1, motionBlurEnabled: false, motionBlurSamples: 12 },
+  renderer: { previewScale: 1, toneMapping: "aces", exposure: 1, outputBuffer: "uint8", antialias: true, samples: 2, shadows: true, shadowType: "pcf", transparentBackground: false, postProcessing: false, fxaa: false, bloomStrength: 0, bloomRadius: 0.25, bloomThreshold: 0.8, gtaoEnabled: false, gtaoRadius: 0.25, gtaoThickness: 1, gtaoScale: 1, gtaoSamples: 16, depthOfFieldEnabled: false, depthOfFieldFocusDistance: 10, depthOfFieldFocalLength: 1, depthOfFieldBokehScale: 1, motionBlurEnabled: false, motionBlurSamples: 12 },
   lights: [
     { id: "ambient", kind: "ambient", color: 0xffffff, intensity: 1.2, position: [0, 0, 0] },
     { id: "key", kind: "directional", color: 0xffffff, intensity: 2.5, position: [4, 6, 8], target: [0, 0, 0], castShadow: true },
@@ -701,9 +702,10 @@ function needsDenseVisualGeometry(clip: RenderClip) {
   return clip.effects.some((effect) => effect.enabled && effect.kind === "meshDeform" && !isNeutralClipEffect(effect));
 }
 
-function createVisualPlaneGeometry(width: number, height: number, clip: RenderClip) {
+function createVisualPlaneGeometry(width: number, height: number, clip: RenderClip, offsetX = 0, offsetY = 0) {
   const dense = needsDenseVisualGeometry(clip);
   const geometry = new THREE.PlaneGeometry(width, height, dense ? 48 : 1, dense ? 27 : 1);
+  if (offsetX || offsetY) geometry.translate(offsetX, offsetY, 0);
   geometry.userData.gfxDenseVisualGeometry = dense;
   return geometry;
 }
@@ -715,6 +717,7 @@ function refreshVisualMaterial(surface: VideoSurface | ImageSurface, clip: Rende
     const fitted = fittedPlaneSize(surface.aspect);
     surface.mesh.geometry = createVisualPlaneGeometry(fitted.width, fitted.height, clip);
     previousGeometry.dispose();
+    surface.cropSignature = "";
   }
   const signature = visualEffectSignature(clip);
   if (surface.effectSignature === signature) return;
@@ -752,6 +755,7 @@ function ensureVideoSurface(clip: RenderClip, aspect: number) {
     const fitted = fittedPlaneSize(aspect);
     surface.mesh.geometry = createVisualPlaneGeometry(fitted.width, fitted.height, clip);
     surface.aspect = aspect;
+    surface.cropSignature = "";
   }
   refreshVisualMaterial(surface, clip);
   return surface;
@@ -796,18 +800,22 @@ function applyVisualTransform(mesh: THREE.Object3D, material: THREE.Material, cl
 function applyTextureCrop(surface: VideoSurface | ImageSurface, clip: RenderClip, sourceWidth: number, sourceHeight: number) {
   const width = Math.max(1, sourceWidth);
   const height = Math.max(1, sourceHeight);
-  const left = THREE.MathUtils.clamp(clip.cropLeft, 0, width - 1);
-  const right = THREE.MathUtils.clamp(clip.cropRight, 0, width - left - 1);
-  const top = THREE.MathUtils.clamp(clip.cropTop, 0, height - 1);
-  const bottom = THREE.MathUtils.clamp(clip.cropBottom, 0, height - top - 1);
+  const fitted = fittedPlaneSize(surface.aspect);
+  const crop = croppedPlaneGeometry(width, height, fitted.width, fitted.height, {
+    left: clip.cropLeft,
+    right: clip.cropRight,
+    top: clip.cropTop,
+    bottom: clip.cropBottom,
+  });
+  const { left, right, top, bottom } = crop;
   const signature = `${width}:${height}:${left}:${right}:${top}:${bottom}`;
-  // THREE-OPT: avoid invalidating Texture.matrix on every preview frame when crop is unchanged.
+  // THREE-OPT: avoid replacing geometry or invalidating Texture.matrix when crop is unchanged.
   if (surface.cropSignature === signature) return;
+  const previousGeometry = surface.mesh.geometry;
+  surface.mesh.geometry = createVisualPlaneGeometry(crop.width, crop.height, clip, crop.offsetX, crop.offsetY);
+  previousGeometry.dispose();
   surface.texture.offset.set(left / width, bottom / height);
-  surface.texture.repeat.set(
-    Math.max(1 / width, 1 - (left + right) / width),
-    Math.max(1 / height, 1 - (top + bottom) / height),
-  );
+  surface.texture.repeat.set(crop.repeatX, crop.repeatY);
   surface.cropSignature = signature;
 }
 
@@ -1965,7 +1973,6 @@ async function render(time: number, shouldCache: boolean, mode: "realtime" | "pl
   lastTimelineTime = time;
   previewFps = Math.max(1, Math.min(120, fps));
   playbackActive = mode === "playback";
-  graphics?.setPlaybackMode(playbackActive);
   if (playbackActive) {
     transformHandles?.sync();
     cameraHandles?.sync();

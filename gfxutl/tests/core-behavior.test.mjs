@@ -380,3 +380,82 @@ test("S3 addresses normalize prefixes and support path and virtual-host styles",
     "https://storage.example.test/media/folder//image.png",
   );
 });
+
+test("preview crop preserves the opposite edge and shrinks the rendered plane", async () => {
+  const { clampCropInsets, croppedPlaneGeometry, resolveCropDrag } = await importTypeScript("../core/protocol/preview-crop.ts");
+  assert.deepEqual(clampCropInsets(1000, 500, { left: -4, right: 1200, top: 50, bottom: 800 }), {
+    left: 0,
+    right: 999,
+    top: 50,
+    bottom: 449,
+  });
+  assert.deepEqual(croppedPlaneGeometry(1000, 500, 10, 5, { left: 100, right: 200, top: 50, bottom: 100 }), {
+    left: 100,
+    right: 200,
+    top: 50,
+    bottom: 100,
+    width: 7,
+    height: 3.5,
+    offsetX: -0.5,
+    offsetY: 0.25,
+    repeatX: 0.7,
+    repeatY: 0.7,
+  });
+  assert.deepEqual(resolveCropDrag({
+    sourceWidth: 1000,
+    sourceHeight: 500,
+    start: { left: 100, right: 200, top: 50, bottom: 100 },
+    handle: "nw",
+    localDeltaX: 1,
+    localDeltaY: -0.5,
+    pixelsPerWorldX: 100,
+    pixelsPerWorldY: 100,
+  }), { left: 200, right: 200, top: 100, bottom: 100 });
+  assert.deepEqual(resolveCropDrag({
+    sourceWidth: 1000,
+    sourceHeight: 500,
+    start: { left: 100, right: 200, top: 50, bottom: 100 },
+    handle: "se",
+    localDeltaX: -20,
+    localDeltaY: 20,
+    pixelsPerWorldX: 100,
+    pixelsPerWorldY: 100,
+  }), { left: 100, right: 899, top: 50, bottom: 449 });
+});
+
+test("the Three.js geometry catalog exposes every core geometry with usable defaults", async () => {
+  const { defaultThreeGeometry, THREE_GEOMETRY_CATALOG } = await importTypeScript("../core/protocol/three-geometry-catalog.ts");
+  const expected = [
+    "BoxGeometry", "BufferGeometry", "CapsuleGeometry", "CircleGeometry", "ConeGeometry", "CylinderGeometry",
+    "DodecahedronGeometry", "EdgesGeometry", "ExtrudeGeometry", "IcosahedronGeometry", "InstancedBufferGeometry", "LatheGeometry",
+    "OctahedronGeometry", "PlaneGeometry", "PolyhedronGeometry", "RingGeometry", "ShapeGeometry",
+    "SphereGeometry", "TetrahedronGeometry", "TorusGeometry", "TorusKnotGeometry", "TubeGeometry", "WireframeGeometry",
+  ];
+  assert.deepEqual(THREE_GEOMETRY_CATALOG.map(({ className }) => className), expected);
+  assert.deepEqual(
+    THREE_GEOMETRY_CATALOG.map(({ className }) => className).toSorted(),
+    Object.keys(THREE).filter((name) => name.endsWith("Geometry")).toSorted(),
+  );
+  assert.equal(new Set(THREE_GEOMETRY_CATALOG.map(({ kind }) => kind)).size, expected.length);
+  for (const { kind, className } of THREE_GEOMETRY_CATALOG) {
+    assert.equal(typeof THREE[className], "function", `${className} must be exported by three`);
+    const spec = defaultThreeGeometry("geometry", kind);
+    assert.equal(spec.id, "geometry");
+    assert.equal(spec.kind, kind);
+  }
+  assert.ok(defaultThreeGeometry("lathe", "lathe").points2D.length >= 2);
+  assert.ok(defaultThreeGeometry("tube", "tube").points3D.length >= 2);
+  assert.ok(defaultThreeGeometry("polyhedron", "polyhedron").vertices.length >= 9);
+  assert.ok(defaultThreeGeometry("buffer", "buffer").vertices.length >= 9);
+  assert.ok(defaultThreeGeometry("instanced", "instancedBuffer").vertices.length >= 9);
+});
+
+test("preview rendering preserves the native device pixel ratio", async () => {
+  const { nativePreviewPixelRatio } = await importTypeScript("../core/protocol/preview-resolution.ts");
+  assert.equal(nativePreviewPixelRatio(1), 1);
+  assert.equal(nativePreviewPixelRatio(1.5), 1.5);
+  assert.equal(nativePreviewPixelRatio(2), 2);
+  assert.equal(nativePreviewPixelRatio(3.5), 3.5);
+  assert.equal(nativePreviewPixelRatio(Number.NaN), 1);
+  assert.equal(nativePreviewPixelRatio(0), 1);
+});

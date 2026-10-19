@@ -1,4 +1,4 @@
-import { Camera16Regular as Camera, Dismiss16Regular as X, Eye16Regular as Inspector, MicRecord16Regular as MicRecord, Open16Regular as ExternalLink, TextFont16Regular as TextFont } from "@fluentui/react-icons";
+import { Camera16Regular as Camera, Crop16Regular as Crop, Dismiss16Regular as X, Eye16Regular as Inspector, MicRecord16Regular as MicRecord, Open16Regular as ExternalLink, TextFont16Regular as TextFont } from "@fluentui/react-icons";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { shallowEqual, textLetterSpacingDistance, useEditor } from "../core/interface";
 import type { CameraHandleKind, TimelineClip, TransformHandleKind } from "../core/interface";
@@ -8,6 +8,7 @@ import { AudioWaveformEditor } from "./audio-waveform-editor";
 import { useI18n } from "../core/i18n";
 import { OPEN_AUDIO_RECORDING_EVENT } from "../core/interface/recording-events";
 import { OPEN_GFX_TEXT_EVENT, type GfxTextEditorEntry } from "../core/interface/gfxtext-document";
+import { clampCropInsets, croppedPlaneGeometry, resolveCropDrag, type CropHandle } from "../core/protocol/preview-crop";
 
 const AudioRecordingPanel = lazy(() => import("./audio-recording-panel").then((module) => ({ default: module.AudioRecordingPanel })));
 const GfxTextEditor = lazy(() => import("./gfxtext-editor").then((module) => ({ default: module.GfxTextEditor })));
@@ -30,6 +31,7 @@ export function PreviewPanel() {
     playingAudioObjects: value.playingAudioObjects,
     previewClipTabs: value.previewClipTabs,
     previewFramesRendered: value.previewFramesRendered,
+    previewCropClipId: value.previewCropClipId,
     previewSource: value.previewSource,
     selectedClipIds: value.selectedClipIds,
     videoFramesRendered: value.videoFramesRendered,
@@ -40,6 +42,7 @@ export function PreviewPanel() {
   const panelRef = useRef<HTMLElement>(null);
   const popoutRef = useRef<Window | null>(null);
   const popoutObserverRef = useRef<ResizeObserver | null>(null);
+  const popoutDprCleanupRef = useRef<(() => void) | null>(null);
   const pickFrameRef = useRef<number | null>(null);
   const pickSequenceRef = useRef(0);
   const pendingPickRef = useRef<{ x: number; y: number } | null>(null);
@@ -81,10 +84,15 @@ export function PreviewPanel() {
     const stage = stageRef.current;
     if (!canvas || !stage || poppedOut || activeAudioClip || recordingTabActive || activeGfxTextId) return;
     const rect = stage.getBoundingClientRect();
-    controller.connectPreview(canvas, Math.floor(rect.width), Math.floor(rect.height));
-    const observer = new ResizeObserver(([entry]) => controller.resizePreview(Math.floor(entry.contentRect.width), Math.floor(entry.contentRect.height)));
+    controller.connectPreview(canvas, Math.floor(rect.width), Math.floor(rect.height), window.devicePixelRatio);
+    const resize = () => {
+      const next = stage.getBoundingClientRect();
+      controller.resizePreview(Math.floor(next.width), Math.floor(next.height), window.devicePixelRatio);
+    };
+    const observer = new ResizeObserver(resize);
     observer.observe(stage);
-    return () => observer.disconnect();
+    const stopDprObserver = observeDevicePixelRatio(window, resize);
+    return () => { observer.disconnect(); stopDprObserver(); };
   }, [controller, poppedOut, surfaceKey, activeAudioClip?.id, recordingTabActive, activeGfxTextId]);
 
   useEffect(() => {
@@ -114,12 +122,15 @@ export function PreviewPanel() {
     if (pickFrameRef.current !== null) cancelAnimationFrame(pickFrameRef.current);
     window.clearTimeout(cameraWheelTimerRef.current);
     popoutObserverRef.current?.disconnect();
+    popoutDprCleanupRef.current?.();
     if (popoutRef.current && !popoutRef.current.closed) popoutRef.current.close();
   }, []);
 
   const returnFromPopout = () => {
     popoutObserverRef.current?.disconnect();
     popoutObserverRef.current = null;
+    popoutDprCleanupRef.current?.();
+    popoutDprCleanupRef.current = null;
     popoutRef.current = null;
     setPoppedOut(false);
     setSurfaceKey((value) => value + 1);
@@ -144,11 +155,16 @@ export function PreviewPanel() {
     setPoppedOut(true);
     const attach = () => {
       const rect = popupCanvas.getBoundingClientRect();
-      controller.connectPreview(popupCanvas, Math.max(2, Math.floor(rect.width)), Math.max(2, Math.floor(rect.height)));
+      controller.connectPreview(popupCanvas, Math.max(2, Math.floor(rect.width)), Math.max(2, Math.floor(rect.height)), popup.devicePixelRatio);
     };
     attach();
-    popoutObserverRef.current = new ResizeObserver(([entry]) => controller.resizePreview(Math.floor(entry.contentRect.width), Math.floor(entry.contentRect.height)));
+    const resizePopup = () => {
+      const rect = popupCanvas.getBoundingClientRect();
+      controller.resizePreview(Math.floor(rect.width), Math.floor(rect.height), popup.devicePixelRatio);
+    };
+    popoutObserverRef.current = new ResizeObserver(resizePopup);
     popoutObserverRef.current.observe(popupCanvas);
+    popoutDprCleanupRef.current = observeDevicePixelRatio(popup, resizePopup);
     returnButton.addEventListener("click", () => popup.close());
     popup.addEventListener("beforeunload", returnFromPopout, { once: true });
   };
@@ -197,10 +213,39 @@ export function PreviewPanel() {
     .sort((a, b) => (b.clip.positionZ ?? 0) - (a.clip.positionZ ?? 0) || a.clip.y - b.clip.y), [inspectorView, previewWorldHeight, previewWorldWidth, state.clips, state.assets, state.currentTime, state.activePreviewClipId, state.fps]);
   const hoveredObject = previewObjects.find((object) => object.clip.id === hoveredClipId);
   const selectedFilterObject = previewObjects.find((object) => object.clip.kind === "filter" && state.selectedClipIds.includes(object.clip.id));
+  const cropEditingObject = previewObjects.find((object) => object.clip.id === state.previewCropClipId);
+  const cropEditingAsset = cropEditingObject?.clip.assetId ? state.assets.find((asset) => asset.id === cropEditingObject.clip.assetId) : undefined;
+  const cropEditingInsets = cropEditingObject && cropEditingAsset?.width && cropEditingAsset.height ? clampCropInsets(cropEditingAsset.width, cropEditingAsset.height, {
+    left: cropEditingObject.clip.cropLeft ?? 0,
+    right: cropEditingObject.clip.cropRight ?? 0,
+    top: cropEditingObject.clip.cropTop ?? 0,
+    bottom: cropEditingObject.clip.cropBottom ?? 0,
+  }) : null;
 
   useEffect(() => {
-    controller.setPreviewTransformHandles(!inspectorView && !state.playing && !poppedOut ? hoveredObject?.clip.id : undefined);
-  }, [controller, hoveredObject?.clip.id, inspectorView, poppedOut, state.playing]);
+    controller.setPreviewTransformHandles(!inspectorView && !state.playing && !poppedOut && !state.previewCropClipId ? hoveredObject?.clip.id : undefined);
+  }, [controller, hoveredObject?.clip.id, inspectorView, poppedOut, state.playing, state.previewCropClipId]);
+
+  useEffect(() => {
+    if (!state.previewCropClipId) return;
+    const valid = cropEditingObject?.clip.kind === "video"
+      && state.selectedClipIds.includes(state.previewCropClipId)
+      && Boolean(cropEditingAsset?.width && cropEditingAsset.height)
+      && (cropEditingAsset?.kind === "video" || cropEditingAsset?.kind === "image");
+    if (!valid) controller.finishPreviewCrop();
+  }, [controller, cropEditingAsset?.height, cropEditingAsset?.kind, cropEditingAsset?.width, cropEditingObject?.clip.kind, state.previewCropClipId, state.selectedClipIds]);
+
+  useEffect(() => {
+    if (!state.previewCropClipId) return;
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" || event.key === "Enter") {
+        event.preventDefault();
+        controller.finishPreviewCrop();
+      }
+    };
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  }, [controller, state.previewCropClipId]);
 
   useEffect(() => {
     controller.setCameraHandles(inspectorView && (hoveredCamera || Boolean(draggingCameraHandle)) && !state.playing && !poppedOut);
@@ -226,7 +271,7 @@ export function PreviewPanel() {
   };
 
   const hoverObject = (event: ReactMouseEvent<HTMLDivElement>) => {
-    if (state.playing || draggingClipId || draggingCameraHandleRef.current) return;
+    if (state.playing || state.previewCropClipId || draggingClipId || draggingCameraHandleRef.current) return;
     pendingPickRef.current = { x: event.clientX, y: event.clientY };
     if (pickFrameRef.current !== null) return;
     const element = event.currentTarget;
@@ -248,6 +293,7 @@ export function PreviewPanel() {
   };
 
   const selectObjectAtPointer = async (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (state.previewCropClipId) return;
     if (inspectorNavigationClickRef.current) {
       inspectorNavigationClickRef.current = false;
       return;
@@ -316,6 +362,57 @@ export function PreviewPanel() {
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", end, { once: true });
     window.addEventListener("pointercancel", end, { once: true });
+  };
+
+  const beginCrop = (event: ReactPointerEvent<HTMLElement>, object: PreviewObjectBounds, asset: MediaAsset, handle: CropHandle) => {
+    if (event.button !== 0 || state.playing || !asset.width || !asset.height) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const stage = stageRef.current;
+    if (!stage || object.fullWidth <= 0 || object.fullHeight <= 0) return;
+    const pointerId = event.pointerId;
+    const startPoint = previewWorldPoint(stage, event.clientX, event.clientY, previewWorldWidth, previewWorldHeight);
+    const startCrop = {
+      left: object.clip.cropLeft ?? 0,
+      right: object.clip.cropRight ?? 0,
+      top: object.clip.cropTop ?? 0,
+      bottom: object.clip.cropBottom ?? 0,
+    };
+    const radians = THREE_DEGREES * object.rotation;
+    const cosine = Math.cos(radians);
+    const sine = Math.sin(radians);
+    const move = (pointer: PointerEvent) => {
+      if (pointer.pointerId !== pointerId) return;
+      const point = previewWorldPoint(stage, pointer.clientX, pointer.clientY, previewWorldWidth, previewWorldHeight);
+      const deltaX = point.x - startPoint.x;
+      const deltaY = point.y - startPoint.y;
+      const crop = resolveCropDrag({
+        sourceWidth: asset.width!,
+        sourceHeight: asset.height!,
+        start: startCrop,
+        handle,
+        localDeltaX: cosine * deltaX - sine * deltaY,
+        localDeltaY: sine * deltaX + cosine * deltaY,
+        pixelsPerWorldX: asset.width! / object.fullWidth,
+        pixelsPerWorldY: asset.height! / object.fullHeight,
+      });
+      controller.updateClip(object.clip.id, {
+        cropLeft: crop.left,
+        cropRight: crop.right,
+        cropTop: crop.top,
+        cropBottom: crop.bottom,
+      });
+    };
+    const end = (pointer: PointerEvent) => {
+      if (pointer.pointerId !== pointerId) return;
+      controller.finishPreviewInteraction();
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
   };
 
   const beginMove = (event: PreviewPointerStart, object: PreviewObjectBounds) => {
@@ -495,7 +592,7 @@ export function PreviewPanel() {
       else beginInspectorNavigation(event);
       return;
     }
-    if (state.playing || event.button !== 0) return;
+    if (state.playing || event.button !== 0 || state.previewCropClipId) return;
     event.preventDefault();
     const element = event.currentTarget;
     const pointer: PreviewPointerStart = {
@@ -535,16 +632,32 @@ export function PreviewPanel() {
         {recordingTabOpen && <AudioRecordingPanel active={recordingTabActive} onRecordingChange={setAudioRecording} />}
         {gfxTextTabs.map((entry) => <GfxTextEditor key={entry.id} entry={entry} active={activeGfxTextId === entry.id} />)}
       </Suspense>
-      <div className={`preview-stage ${inspectorView ? "inspector-view" : ""} ${inspectorNavigation ? `inspector-${inspectorNavigation}` : ""} ${hoveredCameraHandle ? "camera-handle-hover" : ""} ${draggingCameraHandle ? "camera-handle-dragging" : ""} ${activeAudioClip || recordingTabActive || activeGfxTextId ? "preview-content-hidden" : ""} ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""} ${previewCursorClass(hoveredHandle, hoveredObject)}`} ref={stageRef} style={previewStyle} title={inspectorView ? t("ギズモ: 軸操作 / ドラッグ: 周回 / Ctrl+ドラッグ: 上下左右 / Shift+ドラッグ: 前後左右 / ホイール: カメラズーム") : undefined} onPointerDown={beginStageInteraction} onWheel={zoomInspectorCamera} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; setHoveredCamera(false); hoveredCameraHandleRef.current = null; setHoveredCameraHandle(null); if (!draggingClipId) { setHoveredClipId(null); setHoveredHandle(null); } }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
+      <div className={`preview-stage ${inspectorView ? "inspector-view" : ""} ${inspectorNavigation ? `inspector-${inspectorNavigation}` : ""} ${hoveredCameraHandle ? "camera-handle-hover" : ""} ${draggingCameraHandle ? "camera-handle-dragging" : ""} ${activeAudioClip || recordingTabActive || activeGfxTextId ? "preview-content-hidden" : ""} ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""} ${state.previewCropClipId ? "preview-cropping" : ""} ${previewCursorClass(hoveredHandle, hoveredObject)}`} ref={stageRef} style={previewStyle} title={inspectorView ? t("ギズモ: 軸操作 / ドラッグ: 周回 / Ctrl+ドラッグ: 上下左右 / Shift+ドラッグ: 前後左右 / ホイール: カメラズーム") : undefined} onPointerDown={beginStageInteraction} onWheel={zoomInspectorCamera} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; setHoveredCamera(false); hoveredCameraHandleRef.current = null; setHoveredCameraHandle(null); if (!draggingClipId) { setHoveredClipId(null); setHoveredHandle(null); } }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
         event.preventDefault();
-        const rect = event.currentTarget.getBoundingClientRect();
-        controller.openContextMenu({
-          x: event.clientX, y: event.clientY, scope: "preview", time: controller.getSnapshot().currentTime, timelineY: 32,
-          positionX: ((event.clientX - rect.left) / rect.width - 0.5) * previewWorldWidth * 100,
-          positionY: ((event.clientY - rect.top) / rect.height - 0.5) * previewWorldHeight * 100,
+        const element = event.currentTarget;
+        const rect = element.getBoundingClientRect();
+        const x = event.clientX;
+        const y = event.clientY;
+        void pickPoint(element, x, y).then((clipId) => {
+          if (clipId) controller.selectClip(clipId);
+          controller.openContextMenu({
+            x, y, clipId, scope: "preview", time: controller.getSnapshot().currentTime, timelineY: 32,
+            positionX: ((x - rect.left) / rect.width - 0.5) * previewWorldWidth * 100,
+            positionY: ((y - rect.top) / rect.height - 0.5) * previewWorldHeight * 100,
+          });
         });
       }}>
         {!poppedOut ? <canvas key={surfaceKey} ref={canvasRef} data-preview-tab={state.activePreviewClipId ?? state.activePreviewView} data-camera-projection={state.cameraProjection} data-video-frames={state.videoFramesRendered} data-geometry-objects={state.geometryObjectsReady} data-active-scene-objects={state.activeSceneObjects} data-active-image-objects={state.activeImageObjects} data-playing-audio-objects={state.playingAudioObjects} data-preview-source={state.previewSource} data-cache-frames={state.cachedFramesDisplayed} data-preview-frames={state.previewFramesRendered} /> : <div className="preview-popout-placeholder"><ExternalLink /><span>{t("プレビューは別ウィンドウで表示中です")}</span><button type="button" onClick={(event) => { event.stopPropagation(); popoutRef.current?.close(); }}>{t("この画面に戻す")}</button></div>}
+        {cropEditingObject && cropEditingAsset?.width && cropEditingAsset.height && cropEditingInsets && !state.playing && !poppedOut && <>
+          <div className="preview-crop-toolbar" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+            <Crop /><span>{t("サイズをトリミング")}</span><small>{Math.max(1, Math.round(cropEditingAsset.width - cropEditingInsets.left - cropEditingInsets.right))} × {Math.max(1, Math.round(cropEditingAsset.height - cropEditingInsets.top - cropEditingInsets.bottom))}</small>
+            <button type="button" onClick={() => controller.resetPreviewCrop(cropEditingObject.clip.id)}>{t("リセット")}</button>
+            <button type="button" onClick={controller.finishPreviewCrop}>{t("完了")}</button>
+          </div>
+          <div className="preview-crop-overlay" role="group" aria-label={t("トリミング範囲")} title={t("ドラッグして表示範囲を調整")} style={filterOverlayStyle(cropEditingObject, previewWorldWidth, previewWorldHeight)} onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={(event) => event.stopPropagation()} onDoubleClick={controller.finishPreviewCrop}>
+            {(["nw", "n", "ne", "e", "se", "s", "sw", "w"] as CropHandle[]).map((handle) => <i className={`preview-crop-handle preview-crop-${handle}`} data-crop-handle={handle} key={handle} onPointerDown={(event) => beginCrop(event, cropEditingObject, cropEditingAsset, handle)} />)}
+          </div>
+        </>}
         {selectedFilterObject && !state.playing && !poppedOut && <div
           className="filter-transform-overlay"
           style={filterOverlayStyle(selectedFilterObject, previewWorldWidth, previewWorldHeight)}
@@ -583,6 +696,8 @@ interface PreviewObjectBounds {
   y: number;
   width: number;
   height: number;
+  fullWidth: number;
+  fullHeight: number;
   rotation: number;
 }
 
@@ -629,34 +744,54 @@ function previewBezierAt(easing: import("../core/interface").ClipKeyframe["easin
 
 function previewBounds(clip: TimelineClip, asset?: MediaAsset, filterSize = { width: 16, height: 9 }): PreviewObjectBounds {
   const scale = Math.max(0.001, (clip.scale ?? 100) / 100);
-  let width = 2.5;
-  let height = 2.5;
+  let baseWidth = 2.5;
+  let baseHeight = 2.5;
   if (clip.kind === "filter") {
-    width = filterSize.width;
-    height = filterSize.height;
+    baseWidth = filterSize.width;
+    baseHeight = filterSize.height;
   } else if (clip.kind === "title") {
     const size = clip.fontSize ?? 1.2;
     const lines = (clip.text ?? clip.name).split("\n");
-    width = Math.max(0.35, ...lines.map((line) => {
+    baseWidth = Math.max(0.35, ...lines.map((line) => {
       const characterCount = [...line].length;
       return characterCount * size * 0.62 + Math.max(0, characterCount - 1) * textLetterSpacingDistance(size, clip.letterSpacing);
     }));
-    height = Math.max(size, lines.length * size * 1.25);
+    baseHeight = Math.max(size, lines.length * size * 1.25);
   } else if (clip.kind === "object") {
     const args = clip.geometry?.args ?? [];
-    if (clip.particleSystem) width = height = clip.particleSystem.spread * 2;
-    else if (clip.geometry?.kind === "box" || clip.geometry?.kind === "plane") [width = 2, height = 2] = args;
-    else if (clip.geometry?.kind === "sphere") width = height = (args[0] ?? 1) * 2;
-    else if (clip.geometry?.kind === "torus" || clip.geometry?.kind === "torusKnot") width = height = ((args[0] ?? 1) + (args[1] ?? 0.3)) * 2;
+    if (clip.particleSystem) baseWidth = baseHeight = clip.particleSystem.spread * 2;
+    else if (clip.geometry?.kind === "box" || clip.geometry?.kind === "plane") [baseWidth = 2, baseHeight = 2] = args;
+    else if (clip.geometry?.kind === "sphere") baseWidth = baseHeight = (args[0] ?? 1) * 2;
+    else if (clip.geometry?.kind === "torus" || clip.geometry?.kind === "torusKnot") baseWidth = baseHeight = ((args[0] ?? 1) + (args[1] ?? 0.3)) * 2;
   } else if (asset?.width && asset.height) {
     const aspect = asset.width / asset.height;
-    if (aspect >= 15.4 / 8.6) { width = 15.4; height = 15.4 / aspect; }
-    else { width = 8.6 * aspect; height = 8.6; }
+    if (aspect >= 15.4 / 8.6) { baseWidth = 15.4; baseHeight = 15.4 / aspect; }
+    else { baseWidth = 8.6 * aspect; baseHeight = 8.6; }
   }
+  const scaleX = scale * ((clip.scaleX ?? 100) / 100);
+  const scaleY = scale * ((clip.scaleY ?? 100) / 100);
+  const crop = clip.kind === "video" && asset?.width && asset.height
+    ? croppedPlaneGeometry(asset.width, asset.height, baseWidth, baseHeight, {
+      left: clip.cropLeft ?? 0,
+      right: clip.cropRight ?? 0,
+      top: clip.cropTop ?? 0,
+      bottom: clip.cropBottom ?? 0,
+    })
+    : { width: baseWidth, height: baseHeight, offsetX: 0, offsetY: 0 };
+  const radians = THREE_DEGREES * (clip.rotation ?? 0);
+  const cosine = Math.cos(radians);
+  const sine = Math.sin(radians);
+  const localOffsetX = crop.offsetX * scaleX;
+  const localOffsetY = crop.offsetY * scaleY;
   return {
-    clip, x: (clip.positionX ?? 0) / 100, y: -(clip.positionY ?? 0) / 100,
-    width: width * scale * ((clip.scaleX ?? 100) / 100),
-    height: height * scale * ((clip.scaleY ?? 100) / 100), rotation: clip.rotation ?? 0,
+    clip,
+    x: (clip.positionX ?? 0) / 100 + cosine * localOffsetX + sine * localOffsetY,
+    y: -(clip.positionY ?? 0) / 100 - sine * localOffsetX + cosine * localOffsetY,
+    width: crop.width * scaleX,
+    height: crop.height * scaleY,
+    fullWidth: baseWidth * scaleX,
+    fullHeight: baseHeight * scaleY,
+    rotation: clip.rotation ?? 0,
   };
 }
 
@@ -688,4 +823,19 @@ function previewCursorClass(handle: TransformHandleKind | null, object?: Preview
   const direction = { n: 0, ne: 1, e: 2, se: 3, s: 4, sw: 5, w: 6, nw: 7 }[handle];
   const rotatedDirection = ((direction + Math.round((object?.rotation ?? 0) / 45)) % 8 + 8) % 8;
   return ["preview-cursor-ns", "preview-cursor-nesw", "preview-cursor-ew", "preview-cursor-nwse"][rotatedDirection % 4];
+}
+
+function observeDevicePixelRatio(target: Window, onChange: () => void) {
+  let query: MediaQueryList | null = null;
+  const changed = () => {
+    query?.removeEventListener("change", changed);
+    onChange();
+    listen();
+  };
+  const listen = () => {
+    query = target.matchMedia(`(resolution: ${target.devicePixelRatio}dppx)`);
+    query.addEventListener("change", changed);
+  };
+  listen();
+  return () => query?.removeEventListener("change", changed);
 }

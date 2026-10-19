@@ -46,8 +46,11 @@ File System Access API、Local Font Access API、WebGPU、WebCodecs、OffscreenC
 - RenderPipelineによるBloom、GTAO、被写界深度、Motion Blur、FXAAをプレビュー・静止画・動画書き出しへ共通適用
 - Box、Capsule、Circle、Cone、Cylinder、各Polyhedron、Plane、Ring、Sphere、Torus、TorusKnot、Lathe、Shape、Extrude、Tube、Edges、Wireframe、任意BufferGeometryに対応
 - glTF、HDR、EXR、ローカルフォント、Canvasベースの2D Text、押し出し形状の3D Text、PBRマテリアル、ライト、カメラ、環境設定に対応
+- Three.jsコアが標準提供する全23種のジオメトリをコンテキストメニューから追加可能
 - glTFアニメーションの多層ブレンド、再生速度・オフセット・ループ・加算合成、およびボーン単位のローカル姿勢編集とキーフレームに対応
 - プレビュー上でオブジェクトを直接選択・移動・リサイズ・回転
+- プレビューCanvasを端末のdevicePixelRatioと同期し、高密度ディスプレイでも3Dオブジェクトをネイティブ解像度で描画
+- 動画・静止画オブジェクトのコンテキストメニューからサイズトリミングへ切り替え、プレビュー上の四辺・四隅をドラッグして表示範囲を編集
 - 左上固定の総合プレビューと、選択したタイムラインオブジェクトだけを描画する個別タブ
 - プレビューCanvasを別ウィンドウへ移動し、同じRenderer Workerへ再接続可能
 - 白背景の空プロジェクトから開始し、背景自体も編集可能な常設オブジェクトとして扱う

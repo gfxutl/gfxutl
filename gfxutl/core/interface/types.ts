@@ -123,6 +123,8 @@ export interface ContextMenuState {
   timelineY: number;
   positionX: number;
   positionY: number;
+  /** Preview object hit when opening the menu. */
+  clipId?: string;
   /** Marker explicitly hit when opening a timeline context menu. */
   markerId?: string;
 }
@@ -204,6 +206,8 @@ export interface EditorState {
   selectedCameraKeyframeIds: string[];
   previewClipTabs: string[];
   activePreviewClipId: string | null;
+  /** Media clip whose visible bounds are being cropped in the preview. */
+  previewCropClipId: string | null;
   activePreviewView: "camera" | "inspector";
   selectedAssetId: string | null;
   backgroundSelected: boolean;

@@ -6,11 +6,10 @@ import { dof } from "three/addons/tsl/display/DepthOfFieldNode.js";
 import { fxaa } from "three/addons/tsl/display/FXAANode.js";
 import { motionBlur } from "three/addons/tsl/display/MotionBlur.js";
 import type { LightSpec, PreviewView, SceneSettings, ToneMappingKind } from "../protocol/engine-protocol";
+import { nativePreviewPixelRatio } from "../protocol/preview-resolution";
 import { INSPECTOR_HELPERS_LAYER, TRANSFORM_HANDLES_LAYER } from "./editor-layers";
 
 const INSPECTOR_LAYER = INSPECTOR_HELPERS_LAYER;
-const MAX_PREVIEW_PIXEL_RATIO = 1.5;
-const MAX_PLAYBACK_PIXEL_RATIO = 1;
 const MAX_PREVIEW_MSAA_SAMPLES = 4;
 
 type RendererCallbacks = {
@@ -43,7 +42,6 @@ export class ThreeRendererCore {
   private height = 9;
   private dpr = 1;
   private appliedPixelRatio = 0;
-  private playbackMode = false;
   private rendererSettingsSignature = "";
   private sceneSettingsSignature = "";
   private cameraSettingsSignature = "";
@@ -120,27 +118,19 @@ export class ThreeRendererCore {
   resize(width: number, height: number, dpr: number) {
     this.width = Math.max(1, width);
     this.height = Math.max(1, height);
-    this.dpr = Math.max(0.5, dpr);
-    this.applyPreviewResolution(this.previewView, true);
+    this.dpr = nativePreviewPixelRatio(dpr);
+    this.applyPreviewResolution(true);
     this.updateCameraProjection(this.activeCamera, this.width / this.height);
     this.inspectorCamera.aspect = this.width / this.height;
     this.inspectorCamera.updateProjectionMatrix();
   }
 
-  private applyPreviewResolution(view: PreviewView, force = false) {
-    const previewScale = THREE.MathUtils.clamp(this.settings.renderer.previewScale ?? 1, 0.5, 1);
-    const maximum = this.playbackMode ? MAX_PLAYBACK_PIXEL_RATIO : MAX_PREVIEW_PIXEL_RATIO;
-    const pixelRatio = Math.min(Math.max(0.5, this.dpr * previewScale), maximum);
+  private applyPreviewResolution(force = false) {
+    const pixelRatio = this.dpr;
     if (!force && Math.abs(pixelRatio - this.appliedPixelRatio) < 0.001) return;
     this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setSize(this.width, this.height, false);
     this.appliedPixelRatio = pixelRatio;
-  }
-
-  setPlaybackMode(active: boolean) {
-    if (this.playbackMode === active) return;
-    this.playbackMode = active;
-    this.applyPreviewResolution(this.previewView, true);
   }
 
   createCameraForSize(width: number, height: number) {
@@ -152,7 +142,6 @@ export class ThreeRendererCore {
 
   applySettings(settings: SceneSettings) {
     if (settings === this.appliedSettingsSource) return;
-    const previousScale = this.settings.renderer.previewScale;
     const rendererSignature = JSON.stringify(settings.renderer);
     const sceneSignature = JSON.stringify(settings.background);
     const cameraSignature = JSON.stringify(settings.camera);
@@ -180,7 +169,6 @@ export class ThreeRendererCore {
       this.lightsSignature = lightsSignature;
       this.applyLights(settings.lights);
     }
-    if (previousScale !== settings.renderer.previewScale) this.resize(this.width, this.height, this.dpr);
   }
 
   private attachDiagnostics(callbacks: RendererCallbacks) {
@@ -348,7 +336,7 @@ export class ThreeRendererCore {
 
   render(view: PreviewView = this.previewView) {
     this.previewView = view;
-    this.applyPreviewResolution(view);
+    this.applyPreviewResolution();
     if (view === "inspector") {
       this.renderPipeline?.dispose();
       this.renderPipeline = null;

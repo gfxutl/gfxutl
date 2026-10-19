@@ -5,13 +5,13 @@ import {
   ArrowRedo16Regular as Redo2,
   ArrowUndo16Regular as Undo2,
   ArrowUp16Regular as ArrowUp,
-  Circle16Regular as Circle,
   ChevronDoubleDown16Regular as ChevronDoubleDown,
   ChevronDoubleUp16Regular as ChevronDoubleUp,
   ChevronRight16Regular as ChevronRight,
   Clipboard16Regular as Clipboard,
   ClipboardPaste16Regular as ClipboardPaste,
   Copy16Regular as Copy,
+  Crop16Regular as Crop,
   Cube16Regular as Box,
   Cut16Regular as Scissors,
   Delete16Regular as Trash2,
@@ -19,7 +19,6 @@ import {
   Filter16Regular as Filter,
   FolderList16Regular as FolderTree,
   LayerDiagonal16Regular as Layers,
-  Pentagon20Regular as Pentagon,
   Sparkle16Regular as Sparkles,
   Target16Regular as Magnet,
   TextFont16Regular as Type,
@@ -27,9 +26,10 @@ import {
 import { useEffect, type MouseEvent } from "react";
 import { shallowEqual, useEditor } from "../core/interface";
 import { useI18n } from "../core/i18n";
+import { THREE_GEOMETRY_CATALOG } from "../core/protocol/three-geometry-catalog";
 
 export function EditorContextMenu() {
-  const { state, controller } = useEditor((value) => ({ canRedo: value.canRedo, canUndo: value.canUndo, clips: value.clips, contextMenu: value.contextMenu, markers: value.markers, selectedCameraKeyframeIds: value.selectedCameraKeyframeIds, selectedClipId: value.selectedClipId, selectedClipIds: value.selectedClipIds, snapEnabled: value.snapEnabled }), shallowEqual);
+  const { state, controller } = useEditor((value) => ({ assets: value.assets, canRedo: value.canRedo, canUndo: value.canUndo, clips: value.clips, contextMenu: value.contextMenu, markers: value.markers, playing: value.playing, selectedCameraKeyframeIds: value.selectedCameraKeyframeIds, selectedClipId: value.selectedClipId, selectedClipIds: value.selectedClipIds, snapEnabled: value.snapEnabled }), shallowEqual);
   const { t } = useI18n();
   const menu = state.contextMenu;
 
@@ -56,10 +56,24 @@ export function EditorContextMenu() {
 
   if (!menu) return null;
   const targetMarker = menu.markerId ? state.markers.find((marker) => marker.id === menu.markerId) : undefined;
+  const previewTarget = menu.scope === "preview" ? state.clips.find((clip) => clip.id === (menu.clipId ?? state.selectedClipId)) : undefined;
+  const previewTargetAsset = previewTarget?.assetId ? state.assets.find((asset) => asset.id === previewTarget.assetId) : undefined;
+  const canCropPreviewTarget = previewTarget?.kind === "video" && !previewTarget.locked && !state.playing
+    && Boolean(previewTargetAsset?.width && previewTargetAsset.height)
+    && (previewTargetAsset?.kind === "video" || previewTargetAsset?.kind === "image");
   const placement = { time: menu.time, timelineY: menu.timelineY, positionX: menu.positionX, positionY: menu.positionY };
   const hasPreviewSelection = state.clips.some((clip) => state.selectedClipIds.includes(clip.id) && clip.kind !== "audio" && clip.kind !== "filter" && clip.kind !== "group");
   const menuLeft = Math.min(menu.x, window.innerWidth - 224);
-  const submenuOpensLeft = menuLeft + 440 > window.innerWidth;
+  const spaceLeft = menuLeft;
+  const spaceRight = window.innerWidth - menuLeft - 216;
+  const submenuOpensLeft = spaceRight < 432 && spaceLeft > spaceRight;
+  const menuTop = Math.max(4, Math.min(menu.y, window.innerHeight - 424));
+  const positionGeometryMenu = (event: MouseEvent<HTMLDivElement>) => {
+    const row = event.currentTarget.getBoundingClientRect();
+    const panelHeight = Math.min(540, window.innerHeight - 8);
+    const viewportTop = Math.max(4, Math.min(row.top - 96, window.innerHeight - panelHeight - 4));
+    event.currentTarget.style.setProperty("--geometry-menu-top", `${viewportTop - row.top}px`);
+  };
   const run = (event: MouseEvent, action: () => void | Promise<unknown>) => {
     event.stopPropagation();
     void action();
@@ -68,7 +82,7 @@ export function EditorContextMenu() {
     className={`editor-context-menu${submenuOpensLeft ? " submenu-opens-left" : ""}`}
     role="menu"
     aria-label={t("編集メニュー")}
-    style={{ left: menuLeft, top: Math.max(4, Math.min(menu.y, window.innerHeight - 396)) }}
+    style={{ left: menuLeft, top: menuTop }}
     onPointerDown={(event) => event.stopPropagation()}
     onContextMenu={(event) => event.preventDefault()}
   >
@@ -107,12 +121,16 @@ export function EditorContextMenu() {
         <button role="menuitem" onClick={(event) => run(event, () => controller.addFilterObject(placement))}><Filter />{t("フィルター")}</button>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addText2DObject(placement))}><Type />2D Text</button>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addText3DObject(placement))}><Type />3D Text</button>
-        <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("shape", placement))}><Pentagon />{t("シェイプ")}</button>
-        <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("box", placement))}><Box />{t("立方体")}</button>
-        <button role="menuitem" onClick={(event) => run(event, () => controller.addGeometryObject("sphere", placement))}><Circle />{t("球体")}</button>
+        <div className="context-menu-submenu" onMouseEnter={positionGeometryMenu}>
+          <button role="menuitem" aria-haspopup="menu"><Box /><span>{t("3Dオブジェクト")}</span><ChevronRight className="context-menu-chevron" /></button>
+          <div className="context-menu-submenu-panel context-menu-geometry-panel" role="menu" aria-label={t("Three.jsジオメトリ")}>
+            {THREE_GEOMETRY_CATALOG.map(({ kind, className }) => <button role="menuitem" key={kind} onClick={(event) => run(event, () => controller.addGeometryObject(kind, placement))}><Box />{className}</button>)}
+          </div>
+        </div>
         <button role="menuitem" onClick={(event) => run(event, () => controller.addParticleObject(placement))}><Sparkles />{t("GPUパーティクル")}</button>
       </div>
     </div></>}
+    {menu.scope === "preview" && previewTarget && <button role="menuitem" disabled={!canCropPreviewTarget} onClick={(event) => run(event, () => controller.startPreviewCrop(previewTarget.id))}><Crop />{t("サイズをトリミング")}</button>}
     {menu.scope === "preview" && <div className="context-menu-submenu">
       <button role="menuitem" aria-haspopup="menu" disabled={!hasPreviewSelection}><Layers /><span>{t("配置")}</span><ChevronRight className="context-menu-chevron" /></button>
       {hasPreviewSelection && <div className="context-menu-submenu-panel" role="menu" aria-label={t("配置")}>
