@@ -9,6 +9,7 @@ import { useI18n } from "../core/i18n";
 import { OPEN_AUDIO_RECORDING_EVENT } from "../core/interface/recording-events";
 import { OPEN_GFX_TEXT_EVENT, type GfxTextEditorEntry } from "../core/interface/gfxtext-document";
 import { clampCropInsets, croppedPlaneGeometry, resolveCropDrag, type CropHandle } from "../core/protocol/preview-crop";
+import { OBJECT_PREVIEW_WORLD_HEIGHT } from "../core/protocol/object-preview-camera";
 
 const AudioRecordingPanel = lazy(() => import("./audio-recording-panel").then((module) => ({ default: module.AudioRecordingPanel })));
 const GfxTextEditor = lazy(() => import("./gfxtext-editor").then((module) => ({ default: module.GfxTextEditor })));
@@ -72,7 +73,7 @@ export function PreviewPanel() {
   const inspectorView = !recordingTabActive && !activeGfxTextId && state.activePreviewClipId === null && state.activePreviewView === "inspector";
   const cameraName = state.background.scene.camera.name;
   const compositionAspect = state.background.width / state.background.height;
-  const previewWorldHeight = 9;
+  const previewWorldHeight = OBJECT_PREVIEW_WORLD_HEIGHT;
   const previewWorldWidth = previewWorldHeight * compositionAspect;
   const previewStyle = {
     "--preview-aspect": `${state.background.width} / ${state.background.height}`,

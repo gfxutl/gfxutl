@@ -6,6 +6,7 @@ import { dof } from "three/addons/tsl/display/DepthOfFieldNode.js";
 import { fxaa } from "three/addons/tsl/display/FXAANode.js";
 import { motionBlur } from "three/addons/tsl/display/MotionBlur.js";
 import type { LightSpec, PreviewView, SceneSettings, ToneMappingKind } from "../protocol/engine-protocol";
+import { objectPreviewFrustum } from "../protocol/object-preview-camera";
 import { nativePreviewPixelRatio } from "../protocol/preview-resolution";
 import { INSPECTOR_HELPERS_LAYER, TRANSFORM_HANDLES_LAYER } from "./editor-layers";
 
@@ -25,6 +26,7 @@ export class ThreeRendererCore {
   private orthographicCamera = new THREE.OrthographicCamera();
   private perspectiveCamera = new THREE.PerspectiveCamera();
   private activeCamera: THREE.OrthographicCamera | THREE.PerspectiveCamera = this.orthographicCamera;
+  private objectPreviewCamera = new THREE.OrthographicCamera();
   private inspectorCamera = new THREE.PerspectiveCamera(50, 16 / 9, 0.01, 10_000);
   private cameraHelper: THREE.CameraHelper | null = null;
   private readonly inspectorGrid = new THREE.GridHelper(30, 30, 0x59636c, 0x343b41);
@@ -32,6 +34,7 @@ export class ThreeRendererCore {
   private readonly inspectorTarget = new THREE.Vector3();
   private inspectorCameraInitialized = false;
   private previewView: PreviewView = "camera";
+  private objectPreviewActive = false;
   private lights = new Map<string, THREE.Light>();
   private renderPipeline: THREE.RenderPipeline | null = null;
   private renderPipelineSignature = "";
@@ -55,6 +58,11 @@ export class ThreeRendererCore {
     this.callbacks = callbacks;
     this.inspectorCamera.layers.enableAll();
     this.inspectorCamera.layers.disable(TRANSFORM_HANDLES_LAYER);
+    this.objectPreviewCamera.position.set(0, 0, 10);
+    this.objectPreviewCamera.up.set(0, 1, 0);
+    this.objectPreviewCamera.lookAt(0, 0, 0);
+    this.objectPreviewCamera.layers.enableAll();
+    this.objectPreviewCamera.layers.disable(INSPECTOR_LAYER);
     this.inspectorGrid.layers.set(INSPECTOR_LAYER);
     this.inspectorGrid.name = "editor:inspector-grid";
     this.inspectorAxes.layers.set(INSPECTOR_LAYER);
@@ -96,7 +104,7 @@ export class ThreeRendererCore {
   }
 
   get camera() { return this.activeCamera; }
-  get previewCamera() { return this.previewView === "inspector" ? this.inspectorCamera : this.activeCamera; }
+  get previewCamera() { return this.previewView === "inspector" ? this.inspectorCamera : this.objectPreviewActive ? this.objectPreviewCamera : this.activeCamera; }
 
   get backend(): "webgpu" | "webgl2" {
     const backend = this.renderer.backend as THREE.WebGPURenderer["backend"] & { isWebGPUBackend?: boolean };
@@ -121,6 +129,7 @@ export class ThreeRendererCore {
     this.dpr = nativePreviewPixelRatio(dpr);
     this.applyPreviewResolution(true);
     this.updateCameraProjection(this.activeCamera, this.width / this.height);
+    this.updateObjectPreviewProjection(this.width / this.height);
     this.inspectorCamera.aspect = this.width / this.height;
     this.inspectorCamera.updateProjectionMatrix();
   }
@@ -138,6 +147,10 @@ export class ThreeRendererCore {
     camera.layers.disable(TRANSFORM_HANDLES_LAYER);
     this.updateCameraProjection(camera, Math.max(1, width) / Math.max(1, height));
     return camera;
+  }
+
+  setObjectPreviewActive(active: boolean) {
+    this.objectPreviewActive = active;
   }
 
   applySettings(settings: SceneSettings) {
@@ -313,6 +326,19 @@ export class ThreeRendererCore {
     camera.updateProjectionMatrix();
   }
 
+  private updateObjectPreviewProjection(aspect: number) {
+    const bounds = objectPreviewFrustum(aspect);
+    this.objectPreviewCamera.left = bounds.left;
+    this.objectPreviewCamera.right = bounds.right;
+    this.objectPreviewCamera.top = bounds.top;
+    this.objectPreviewCamera.bottom = bounds.bottom;
+    this.objectPreviewCamera.near = 0.01;
+    this.objectPreviewCamera.far = 10_000;
+    this.objectPreviewCamera.zoom = 1;
+    this.objectPreviewCamera.updateProjectionMatrix();
+    this.objectPreviewCamera.updateMatrixWorld(true);
+  }
+
   private applyLights(specs: LightSpec[]) {
     const nextIds = new Set(specs.map((spec) => spec.id));
     for (const [id, light] of this.lights) {
@@ -345,17 +371,18 @@ export class ThreeRendererCore {
       this.renderer.render(this.scene, this.inspectorCamera);
       return;
     }
+    const camera = this.objectPreviewActive ? this.objectPreviewCamera : this.activeCamera;
     if (!this.settings.renderer.postProcessing) {
       this.renderPipeline?.dispose();
       this.renderPipeline = null;
       this.renderPipelineSignature = "";
-      this.renderer.render(this.scene, this.activeCamera);
+      this.renderer.render(this.scene, camera);
       return;
     }
-    const signature = renderPipelineSettingsSignature(this.settings, this.activeCamera.uuid);
+    const signature = renderPipelineSettingsSignature(this.settings, camera.uuid);
     if (!this.renderPipeline || signature !== this.renderPipelineSignature) {
       this.renderPipeline?.dispose();
-      this.renderPipeline = createRenderPipeline(this.renderer, this.scene, this.activeCamera, this.settings);
+      this.renderPipeline = createRenderPipeline(this.renderer, this.scene, camera, this.settings);
       this.renderPipelineSignature = signature;
     }
     this.renderPipeline.render();

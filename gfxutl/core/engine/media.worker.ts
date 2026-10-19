@@ -1973,6 +1973,7 @@ async function render(time: number, shouldCache: boolean, mode: "realtime" | "pl
   lastTimelineTime = time;
   previewFps = Math.max(1, Math.min(120, fps));
   playbackActive = mode === "playback";
+  graphics?.setObjectPreviewActive(Boolean(focusClipId));
   if (playbackActive) {
     transformHandles?.sync();
     cameraHandles?.sync();

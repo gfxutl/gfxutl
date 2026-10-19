@@ -459,3 +459,10 @@ test("preview rendering preserves the native device pixel ratio", async () => {
   assert.equal(nativePreviewPixelRatio(Number.NaN), 1);
   assert.equal(nativePreviewPixelRatio(0), 1);
 });
+
+test("isolated object previews use a fixed camera-independent orthographic frame", async () => {
+  const { OBJECT_PREVIEW_WORLD_HEIGHT, objectPreviewFrustum } = await importTypeScript("../core/protocol/object-preview-camera.ts");
+  assert.equal(OBJECT_PREVIEW_WORLD_HEIGHT, 9);
+  assert.deepEqual(objectPreviewFrustum(16 / 9), { left: -8, right: 8, top: 4.5, bottom: -4.5 });
+  assert.deepEqual(objectPreviewFrustum(Number.NaN), { left: -4.5, right: 4.5, top: 4.5, bottom: -4.5 });
+});
