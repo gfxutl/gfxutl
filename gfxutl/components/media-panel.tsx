@@ -252,8 +252,6 @@ export function MediaPanel() {
   const importingPaths = useRef(new Set<string>());
   const assetsByPath = useMemo(() => new Map(state.assets.filter((asset) => asset.sourcePath).map((asset) => [asset.sourcePath!, asset])), [state.assets]);
   const standaloneAssets = useMemo(() => state.assets.filter((asset) => !asset.sourcePath && asset.name.toLowerCase().includes(query.toLowerCase())), [state.assets, query]);
-  const selectedAsset = state.assets.find((asset) => asset.id === state.selectedAssetId);
-
   useEffect(() => {
     let cancelled = false;
     void loadMediaDirectory().then(async (handle) => {
@@ -663,7 +661,6 @@ export function MediaPanel() {
         {!root && standaloneAssets.map((asset) => <GridAssetCard key={asset.id} asset={asset} selected={state.selectedAssetId === asset.id} playing={state.playing} onSelect={controller.selectAsset} onRestore={controller.restoreMediaAccess} />)}
         {directoryError && <div className="explorer-error">{directoryError}</div>}
       </div>}
-      {selectedAsset && <div className="media-selection-preview"><MediaThumbnail asset={selectedAsset} playing={state.playing} /><div className="media-selection-meta"><input key={selectedAsset.id} aria-label={t("素材名")} defaultValue={selectedAsset.name} onBlur={(event) => controller.renameAsset(selectedAsset.id, event.target.value)} /><span>{selectedAsset.sourcePath ?? t("単体ファイル")}</span><small>{selectedAsset.width ? `${selectedAsset.width} × ${selectedAsset.height}` : formatBytes(selectedAsset.size)}</small></div>{selectedAsset.fileStatus !== "ready" && <Button size="icon" variant="ghost" aria-label={t("素材を再接続")} title={t("素材を再接続")} onClick={() => void controller.relinkAsset(selectedAsset.id)}><RefreshCw /></Button>}<Button size="icon" variant="ghost" aria-label={t("素材を削除")} title={t("素材と使用中のクリップを削除")} onClick={() => controller.removeAsset(selectedAsset.id)}><X /></Button></div>}
     </div>}
     {s3DialogOpen && createPortal(<S3ConnectionDialog onCancel={() => setS3DialogOpen(false)} onConnect={openS3Directory} />, document.body)}
   </section>;
@@ -1048,4 +1045,3 @@ function isBrowserPreviewImage(name: string) { return ["png", "jpg", "jpeg", "we
 function isBrowserPreviewVideo(name: string) { return ["mp4", "mov", "webm", "mkv"].includes(extensionLabel(name).toLowerCase()); }
 function extensionLabel(name: string) { return name.includes(".") ? name.split(".").pop()!.toUpperCase() : "FILE"; }
 function formatDuration(value: number) { return `${Math.floor(value / 60)}:${Math.floor(value % 60).toString().padStart(2, "0")}`; }
-function formatBytes(value: number) { return value >= 1024 * 1024 ? `${(value / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(value / 1024))} KB`; }
