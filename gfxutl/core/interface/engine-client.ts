@@ -20,8 +20,6 @@ export class EngineClient {
   private activeExportSession?: ExportWorkerSession;
   private pendingAudio = new Map<string, { resolve: (value: AudioPreviewChunk[]) => void; reject: (reason: Error) => void }>();
   private pendingThumbnails = new Map<string, { resolve: (value: MediaThumbnail) => void; reject: (reason: Error) => void; timer: number; cleanupAbort?: () => void }>();
-  private pendingThumbnailKeys = new Map<string, string>();
-  private thumbnailPromises = new Map<string, Promise<MediaThumbnail>>();
   private pendingPicks = new Map<string, (result: PreviewPickResult) => void>();
   private pendingCameraHandleDrags = new Map<string, (transform?: CameraHandleTransform) => void>();
   private pendingPlugins = new Map<string, { resolve: (plugin: RendererPluginInfo) => void; reject: (reason: Error) => void }>();
@@ -76,13 +74,15 @@ export class EngineClient {
       this.pendingAudio.delete(message.requestId);
     } else if (message.type === "media-thumbnail") {
       const pending = this.pendingThumbnails.get(message.requestId);
-      if (pending) window.clearTimeout(pending.timer);
-      pending?.cleanupAbort?.();
-      pending?.resolve(message);
+      if (pending) {
+        window.clearTimeout(pending.timer);
+        pending.cleanupAbort?.();
+        pending.resolve(message);
+      } else {
+        message.bitmap?.close();
+        message.frame?.close();
+      }
       this.pendingThumbnails.delete(message.requestId);
-      const key = this.pendingThumbnailKeys.get(message.requestId);
-      if (key) this.thumbnailPromises.delete(key);
-      this.pendingThumbnailKeys.delete(message.requestId);
     } else if (message.type === "pick-result") {
       this.pendingPicks.get(message.requestId)?.({ clipId: message.clipId, handle: message.handle, camera: message.camera, cameraHandle: message.cameraHandle });
       this.pendingPicks.delete(message.requestId);
@@ -116,9 +116,6 @@ export class EngineClient {
       this.pendingExports.delete(message.requestId);
       this.pendingAudio.delete(message.requestId);
       this.pendingThumbnails.delete(message.requestId);
-      const thumbnailKey = this.pendingThumbnailKeys.get(message.requestId);
-      if (thumbnailKey) this.thumbnailPromises.delete(thumbnailKey);
-      this.pendingThumbnailKeys.delete(message.requestId);
       this.pendingPicks.delete(message.requestId);
       this.pendingCameraHandleDrags.delete(message.requestId);
       this.pendingPlugins.delete(message.requestId);
@@ -279,25 +276,18 @@ export class EngineClient {
 
   getMediaThumbnail(assetId: string, time = 0, timeline?: { width: number; height: number }, signal?: AbortSignal) {
     if (signal?.aborted) return Promise.reject(new DOMException("Thumbnail canceled", "AbortError"));
-    const key = `${assetId}:${time.toFixed(6)}:${timeline ? `${timeline.width}x${timeline.height}` : "media"}`;
-    const pending = this.thumbnailPromises.get(key);
-    if (pending) return signal ? abortablePromise(pending, signal) : pending;
     const requestId = crypto.randomUUID();
-    const request = new Promise<MediaThumbnail>((resolve, reject) => {
+    return new Promise<MediaThumbnail>((resolve, reject) => {
       const timer = window.setTimeout(() => {
         const pendingRequest = this.pendingThumbnails.get(requestId);
         if (!pendingRequest || !this.pendingThumbnails.delete(requestId)) return;
         pendingRequest.cleanupAbort?.();
-        this.pendingThumbnailKeys.delete(requestId);
-        this.thumbnailPromises.delete(key);
         this.post({ type: "cancel-request", requestId });
         reject(new Error("サムネイル生成がタイムアウトしました"));
       }, 30_000);
       const onAbort = () => {
         if (!this.pendingThumbnails.delete(requestId)) return;
         window.clearTimeout(timer);
-        this.pendingThumbnailKeys.delete(requestId);
-        this.thumbnailPromises.delete(key);
         this.post({ type: "cancel-request", requestId });
         reject(new DOMException("Thumbnail canceled", "AbortError"));
       };
@@ -306,11 +296,8 @@ export class EngineClient {
         resolve, reject, timer,
         ...(signal ? { cleanupAbort: () => signal.removeEventListener("abort", onAbort) } : {}),
       });
-      this.pendingThumbnailKeys.set(requestId, key);
       this.post({ type: "media-thumbnail", requestId, assetId, time, ...(timeline ? { timeline } : {}) });
     });
-    this.thumbnailPromises.set(key, request);
-    return request;
   }
 
   private mediaRequestTimeout(requestId: string, reject: (reason: Error) => void) {
@@ -523,14 +510,6 @@ export class EngineClient {
     this.exportFontVariations.set(fontId, { sourceFontId, variations: { ...variations } });
     this.post({ type: "font-variation-register", fontId, sourceFontId, variations });
   }
-}
-
-function abortablePromise<T>(promise: Promise<T>, signal: AbortSignal) {
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(new DOMException("Thumbnail canceled", "AbortError"));
-    signal.addEventListener("abort", onAbort, { once: true });
-    void promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
-  });
 }
 
 function mediaFileSource(file: File): MediaFileSource {

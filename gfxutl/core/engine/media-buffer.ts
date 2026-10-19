@@ -8,7 +8,13 @@ interface MediaBufferEntry {
   file: File;
   profile: SourceIoProfile;
   touched: number;
+  generation: number;
+  retainCount: number;
+  evictionPending: boolean;
+  evictionNotified: boolean;
+  deletePending: boolean;
   instances: Map<string, MediaBufferInstance>;
+  pendingInstances: Map<string, Promise<unknown>>;
 }
 
 interface MediaBufferInstance {
@@ -75,6 +81,10 @@ export class MediaBuffer {
       available = Math.max(0, available - node.size);
     }
     const selectedSet = new Set(selected);
+    for (const assetId of selectedSet) {
+      const entry = this.entries.get(assetId);
+      if (entry && !entry.deletePending && !entry.evictionNotified) entry.evictionPending = false;
+    }
 
     // Files outside the current timeline graph remain a best-effort LRU tail.
     const tail = [...this.residentAssetIds]
@@ -101,10 +111,21 @@ export class MediaBuffer {
     this.ensureCapacity(source.size, assetId);
     const existing = this.entries.get(assetId);
     const unchanged = existing?.source.size === source.size && existing.source.lastModified === source.lastModified;
-    if (!unchanged && existing) this.evict(assetId);
+    if (!unchanged && existing) {
+      this.evict(assetId);
+      if (existing.retainCount) this.notifyEviction(assetId, existing);
+    }
     const profile: SourceIoProfile = { backend: "blob-source", bytesRead: 0, readOperations: 0, largestRead: 0 };
-    if (!unchanged) this.entries.set(assetId, { source, file, profile, touched: ++this.clock, instances: new Map() });
-    else { existing.source = source; existing.file = file; existing.touched = ++this.clock; }
+    if (!unchanged) this.entries.set(assetId, { source, file, profile, touched: ++this.clock, generation: 0, retainCount: 0, evictionPending: false, evictionNotified: false, deletePending: false, instances: new Map(), pendingInstances: new Map() });
+    else {
+      existing.source = source;
+      existing.file = file;
+      existing.touched = ++this.clock;
+      if (!existing.evictionNotified) {
+        existing.evictionPending = false;
+        existing.deletePending = false;
+      }
+    }
     this.residentAssetIds.add(assetId);
     this.requestedAssetIds = this.requestedAssetIds.filter((id) => id !== assetId);
     return this.open(assetId);
@@ -139,9 +160,24 @@ export class MediaBuffer {
     if (!entry) throw new Error(`メディアバッファに ${assetId} がありません`);
     const existing = entry.instances.get(key);
     if (existing) return existing.value as T;
-    const value = await create(this.open(assetId));
-    entry.instances.set(key, { value, dispose: dispose as (value: unknown) => void });
-    return value;
+    const pending = entry.pendingInstances.get(key);
+    if (pending) return pending as Promise<T>;
+    const generation = entry.generation;
+    const request = (async () => {
+      const value = await create(this.open(assetId));
+      if (this.entries.get(assetId) !== entry || entry.generation !== generation || entry.deletePending) {
+        dispose(value);
+        throw new DOMException("Media buffer instance was invalidated", "AbortError");
+      }
+      entry.instances.set(key, { value, dispose: dispose as (value: unknown) => void });
+      return value;
+    })();
+    entry.pendingInstances.set(key, request);
+    try {
+      return await request;
+    } finally {
+      if (entry.pendingInstances.get(key) === request) entry.pendingInstances.delete(key);
+    }
   }
 
   instantiateSync<T>(assetId: string, key: string, create: (source: BufferedMediaSource) => T, dispose: (value: T) => void) {
@@ -166,6 +202,34 @@ export class MediaBuffer {
   release(assetId: string) {
     this.evict(assetId);
     this.requestedAssetIds = this.requestedAssetIds.filter((id) => id !== assetId);
+  }
+
+  /** Prevents decoder/input disposal while an asynchronous media operation is using it. */
+  retain(assetId: string) {
+    const entry = this.entries.get(assetId);
+    if (!entry || entry.deletePending) throw new Error(`メディアバッファに ${assetId} がありません`);
+    entry.retainCount++;
+    let released = false;
+    return () => {
+      if (released) return false;
+      released = true;
+      entry.retainCount = Math.max(0, entry.retainCount - 1);
+      if (entry.retainCount) return false;
+      if (this.entries.get(assetId) !== entry) {
+        this.disposeInstances(entry);
+        return false;
+      }
+      if (entry.deletePending) {
+        this.performEvictInstances(assetId, entry);
+        this.entries.delete(assetId);
+        return true;
+      }
+      if (entry.evictionPending) {
+        this.performEvictInstances(assetId, entry);
+        return true;
+      }
+      return false;
+    };
   }
 
   state(): MediaBufferState {
@@ -213,8 +277,31 @@ export class MediaBuffer {
 
   private evictInstances(assetId: string) {
     const entry = this.entries.get(assetId);
-    if (!entry || !this.residentAssetIds.delete(assetId)) return;
+    if (!entry || !this.residentAssetIds.has(assetId)) return;
+    if (entry.retainCount) {
+      entry.evictionPending = true;
+      return;
+    }
+    this.performEvictInstances(assetId, entry);
+  }
+
+  private performEvictInstances(assetId: string, entry: MediaBufferEntry) {
+    if (!this.residentAssetIds.delete(assetId) && !entry.instances.size) return;
+    this.notifyEviction(assetId, entry);
+    entry.evictionPending = false;
+    this.disposeInstances(entry);
+    entry.evictionNotified = false;
+  }
+
+  private notifyEviction(assetId: string, entry: MediaBufferEntry) {
+    if (entry.evictionNotified) return;
+    entry.generation++;
+    entry.evictionNotified = true;
+    entry.pendingInstances.clear();
     this.onEvict?.(assetId);
+  }
+
+  private disposeInstances(entry: MediaBufferEntry) {
     for (const instance of [...entry.instances.values()].reverse()) instance.dispose(instance.value);
     entry.instances.clear();
   }
@@ -222,7 +309,12 @@ export class MediaBuffer {
   private evict(assetId: string) {
     const entry = this.entries.get(assetId);
     if (!entry) return;
-    this.evictInstances(assetId);
+    if (entry.retainCount) {
+      entry.evictionPending = true;
+      entry.deletePending = true;
+      return;
+    }
+    this.performEvictInstances(assetId, entry);
     this.entries.delete(assetId);
   }
 }

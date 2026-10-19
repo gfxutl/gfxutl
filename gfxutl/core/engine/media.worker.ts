@@ -202,8 +202,8 @@ const particleSurfaces = new Map<string, ParticleSurface>();
 const TIMELINE_THUMBNAIL_WEBP_QUALITY = 0.6;
 const TIMELINE_THUMBNAIL_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 const timelineThumbnailCache = new Map<string, { assetId: string; blob: Blob }>();
-const pendingTimelineThumbnails = new Map<string, Promise<Blob>>();
 const timelineThumbnailAssetRevisions = new Map<string, number>();
+const canceledThumbnailRequests = new Set<string>();
 const audioWaveformCache = new Map<string, number[]>();
 let timelineThumbnailCacheBytes = 0;
 /** THREE-OPT: O(1) timeline root lookup replaces recursive Scene.getObjectByName scans. */
@@ -2173,16 +2173,18 @@ async function decodeAudioPreview(message: Extract<EngineRequest, { type: "decod
 }
 
 async function createMediaThumbnail(message: Extract<EngineRequest, { type: "media-thumbnail" }>) {
+  assertThumbnailRequestActive(message.requestId);
   if (message.timeline) {
-    const blob = await getTimelineThumbnailBlob(message.assetId, message.time, message.timeline.width, message.timeline.height, true);
+    const blob = await getTimelineThumbnailBlob(message.assetId, message.time, message.timeline.width, message.timeline.height, true, message.requestId);
+    assertThumbnailRequestActive(message.requestId);
     const bitmap = await createImageBitmap(blob);
-    send({ type: "media-thumbnail", requestId: message.requestId, bitmap }, [bitmap]);
+    sendThumbnailBitmap(message.requestId, bitmap);
     return;
   }
   const image = imageRuntimes.get(message.assetId);
   if (image) {
     const bitmap = await createImageBitmap(image.bitmap);
-    send({ type: "media-thumbnail", requestId: message.requestId, bitmap }, [bitmap]);
+    sendThumbnailBitmap(message.requestId, bitmap);
     return;
   }
   const runtime = mediaRuntimes.get(message.assetId);
@@ -2192,9 +2194,10 @@ async function createMediaThumbnail(message: Extract<EngineRequest, { type: "med
     // previews to 10 fps avoids repeating seek/decode work for near-identical
     // frames when an item leaves and re-enters the viewport.
     const time = Math.round(Math.max(0, Math.min(message.time, Math.max(0, runtime.duration - 0.001))) * 10) / 10;
-    const blob = await getTimelineThumbnailBlob(message.assetId, time, 160, 90);
+    const blob = await getTimelineThumbnailBlob(message.assetId, time, 160, 90, false, message.requestId);
+    assertThumbnailRequestActive(message.requestId);
     const bitmap = await createImageBitmap(blob);
-    send({ type: "media-thumbnail", requestId: message.requestId, bitmap }, [bitmap]);
+    sendThumbnailBitmap(message.requestId, bitmap);
     return;
   }
   if (runtime.audioSink) {
@@ -2210,6 +2213,7 @@ async function createMediaThumbnail(message: Extract<EngineRequest, { type: "med
     let decodedFrames = 0;
     for await (const sample of waveformRuntime.audioSink.samples()) {
       try {
+        assertThumbnailRequestActive(message.requestId);
         if (!sample.numberOfFrames) continue;
         const data = new Float32Array(sample.allocationSize({ planeIndex: 0, format: "f32" }) / Float32Array.BYTES_PER_ELEMENT);
         sample.copyTo(data, { planeIndex: 0, format: "f32" });
@@ -2220,6 +2224,7 @@ async function createMediaThumbnail(message: Extract<EngineRequest, { type: "med
       }
     }
     if (!decodedFrames) throw new Error("音声波形を取得できませんでした");
+    assertThumbnailRequestActive(message.requestId);
     audioWaveformCache.set(message.assetId, peaks);
     send({ type: "media-thumbnail", requestId: message.requestId, peaks });
     return;
@@ -2227,51 +2232,82 @@ async function createMediaThumbnail(message: Extract<EngineRequest, { type: "med
   throw new Error("サムネイルを生成できるトラックがありません");
 }
 
-async function getTimelineThumbnailBlob(assetId: string, requestedTime: number, requestedWidth: number, requestedHeight: number, dedicatedVideoRuntime = false) {
-  const image = imageRuntimes.get(assetId);
-  const runtime = image ? undefined : dedicatedVideoRuntime ? await getThumbnailMediaRuntime(assetId) : mediaRuntimes.get(assetId);
-  if (!image && !runtime?.videoSink) throw new Error("タイムライン用サムネイルを生成できる映像がありません");
-  const time = image ? 0 : Math.max(0, Math.min(requestedTime, Math.max(0, (runtime?.duration ?? 0) - 0.001)));
-  const width = Math.max(1, Math.min(512, Math.round(requestedWidth)));
-  const height = Math.max(1, Math.min(256, Math.round(requestedHeight)));
-  const revision = timelineThumbnailAssetRevisions.get(assetId) ?? 0;
-  const key = `${assetId}:${revision}:${time.toFixed(6)}:${width}x${height}`;
-  const cached = timelineThumbnailCache.get(key);
-  if (cached) {
-    timelineThumbnailCache.delete(key);
-    timelineThumbnailCache.set(key, cached);
-    return cached.blob;
-  }
-  const pending = pendingTimelineThumbnails.get(key);
-  if (pending) return pending;
-  const request = encodeTimelineThumbnail(image?.bitmap, runtime, time, width, height).then((blob) => {
+async function getTimelineThumbnailBlob(assetId: string, requestedTime: number, requestedWidth: number, requestedHeight: number, dedicatedVideoRuntime = false, requestId?: string) {
+  const release = mediaBuffer.retain(assetId);
+  try {
+    let image = imageRuntimes.get(assetId);
+    if (!image && bufferedAssets.get(assetId)?.kind === "image") {
+      await hydrateImage(assetId);
+      image = imageRuntimes.get(assetId);
+    }
+    const runtime = image ? undefined : dedicatedVideoRuntime ? await getThumbnailMediaRuntime(assetId) : mediaRuntimes.get(assetId);
+    if (!image && !runtime?.videoSink) throw new Error("タイムライン用サムネイルを生成できる映像がありません");
+    const time = image ? 0 : Math.max(0, Math.min(requestedTime, Math.max(0, (runtime?.duration ?? 0) - 0.001)));
+    const width = Math.max(1, Math.min(512, Math.round(requestedWidth)));
+    const height = Math.max(1, Math.min(256, Math.round(requestedHeight)));
+    const revision = timelineThumbnailAssetRevisions.get(assetId) ?? 0;
+    const key = `${assetId}:${revision}:${time.toFixed(6)}:${width}x${height}`;
+    const cached = timelineThumbnailCache.get(key);
+    if (cached) {
+      timelineThumbnailCache.delete(key);
+      timelineThumbnailCache.set(key, cached);
+      return cached.blob;
+    }
+    const blob = await encodeTimelineThumbnail(image?.bitmap, runtime, time, width, height, requestId);
     if ((timelineThumbnailAssetRevisions.get(assetId) ?? 0) === revision) {
       timelineThumbnailCache.set(key, { assetId, blob });
       timelineThumbnailCacheBytes += blob.size;
       trimTimelineThumbnailCache();
     }
     return blob;
-  }).finally(() => pendingTimelineThumbnails.delete(key));
-  pendingTimelineThumbnails.set(key, request);
-  return request;
+  } finally {
+    if (release()) sendMediaBufferState();
+  }
 }
 
-async function encodeTimelineThumbnail(image: ImageBitmap | undefined, runtime: MediaRuntime | undefined, time: number, width: number, height: number) {
+function assertThumbnailRequestActive(requestId: string) {
+  if (canceledThumbnailRequests.has(requestId)) throw new DOMException("Thumbnail canceled", "AbortError");
+}
+
+function sendThumbnailBitmap(requestId: string, bitmap: ImageBitmap) {
+  if (canceledThumbnailRequests.has(requestId)) {
+    bitmap.close();
+    throw new DOMException("Thumbnail canceled", "AbortError");
+  }
+  send({ type: "media-thumbnail", requestId, bitmap }, [bitmap]);
+}
+
+async function encodeTimelineThumbnail(image: ImageBitmap | undefined, runtime: MediaRuntime | undefined, time: number, width: number, height: number, requestId?: string) {
   let raster: ImageBitmap | VideoFrame | undefined = image;
   let sample: Awaited<ReturnType<VideoSampleSink["getSample"]>> | null = null;
-  if (!raster && runtime?.videoSink) {
-    sample = await runtime.videoSink.getSample(time);
-    if (!sample) {
-      const samples = runtime.videoSink.samples();
-      const first = await samples.next();
-      sample = first.done ? null : first.value;
-      await samples.return(undefined);
-    }
-    if (!sample) throw new Error("動画フレームを取得できませんでした");
-    raster = sample.toVideoFrame();
-  }
-  if (!raster) throw new Error("タイムライン用サムネイルを生成できませんでした");
   try {
+    if (!raster && runtime?.videoSink) {
+      let requestedSampleError: unknown;
+      try {
+        sample = await runtime.videoSink.getSample(time);
+      } catch (error) {
+        requestedSampleError = error;
+      }
+      if (requestId) assertThumbnailRequestActive(requestId);
+      if (!sample) {
+        try {
+          const samples = runtime.videoSink.samples();
+          const first = await samples.next();
+          sample = first.done ? null : first.value;
+          await samples.return(undefined);
+        } catch (error) {
+          throw requestedSampleError ?? error;
+        }
+        if (requestId) assertThumbnailRequestActive(requestId);
+      }
+      if (!sample) {
+        if (requestedSampleError) throw requestedSampleError;
+        throw new Error("動画フレームを取得できませんでした");
+      }
+      raster = sample.toVideoFrame();
+    }
+    if (!raster) throw new Error("タイムライン用サムネイルを生成できませんでした");
+    if (requestId) assertThumbnailRequestActive(requestId);
     const sourceWidth = raster instanceof VideoFrame ? raster.displayWidth : raster.width;
     const sourceHeight = raster instanceof VideoFrame ? raster.displayHeight : raster.height;
     const canvas = new OffscreenCanvas(width, height);
@@ -2281,7 +2317,9 @@ async function encodeTimelineThumbnail(image: ImageBitmap | undefined, runtime: 
     const targetWidth = sourceWidth * scale;
     const targetHeight = sourceHeight * scale;
     context.drawImage(raster, (width - targetWidth) / 2, (height - targetHeight) / 2, targetWidth, targetHeight);
+    if (requestId) assertThumbnailRequestActive(requestId);
     const blob = await canvas.convertToBlob({ type: "image/webp", quality: TIMELINE_THUMBNAIL_WEBP_QUALITY });
+    if (requestId) assertThumbnailRequestActive(requestId);
     if (blob.type !== "image/webp") throw new Error("WebPエンコーダーを利用できません");
     return blob;
   } finally {
@@ -3059,21 +3097,28 @@ async function handleMessage(message: EngineRequest) {
       cacheStatus(true);
     }
   } catch (error) {
-    send({ type: "error", requestId: "requestId" in message ? message.requestId : undefined, message: error instanceof Error ? error.message : String(error || "Worker処理に失敗しました") });
+    const canceledThumbnail = message.type === "media-thumbnail" && canceledThumbnailRequests.has(message.requestId) && error instanceof DOMException && error.name === "AbortError";
+    if (!canceledThumbnail) send({ type: "error", requestId: "requestId" in message ? message.requestId : undefined, message: error instanceof Error ? error.message : String(error || "Worker処理に失敗しました") });
     if (message.type === "media-buffer-load" || message.type === "media-buffer-plan") sendMediaBufferState();
   } finally {
+    if (message.type === "media-thumbnail") canceledThumbnailRequests.delete(message.requestId);
     if (message.type === "render") send({ type: "render-complete", sequence: message.sequence, ...renderCompletion });
   }
 }
 
 const messageQueue: EngineRequest[] = [];
 let drainingMessages = false;
+let activeQueuedMessage: EngineRequest | undefined;
 const timelineThumbnailLane = new AsyncMessageLane<Extract<EngineRequest, { type: "media-thumbnail" }>>((message) => handleMessage(message));
 const audioWaveformLane = new AsyncMessageLane<Extract<EngineRequest, { type: "media-thumbnail" }>>((message) => handleMessage(message));
 
 async function drainMessages() {
   drainingMessages = true;
-  while (messageQueue.length) await handleMessage(messageQueue.shift()!);
+  while (messageQueue.length) {
+    activeQueuedMessage = messageQueue.shift()!;
+    await handleMessage(activeQueuedMessage);
+    activeQueuedMessage = undefined;
+  }
   drainingMessages = false;
   if (messageQueue.length) worker.setTimeout(() => { if (!drainingMessages) void drainMessages(); }, 0);
 }
@@ -3086,8 +3131,13 @@ function enqueueMessage(message: EngineRequest) {
   if (message.type === "cancel-request") {
     const index = messageQueue.findIndex((queued) => "requestId" in queued && queued.requestId === message.requestId);
     if (index >= 0) messageQueue.splice(index, 1);
-    timelineThumbnailLane.remove((queued) => queued.requestId === message.requestId);
-    audioWaveformLane.remove((queued) => queued.requestId === message.requestId);
+    const removedTimeline = timelineThumbnailLane.remove((queued) => queued.requestId === message.requestId);
+    const removedAudio = audioWaveformLane.remove((queued) => queued.requestId === message.requestId);
+    const active = timelineThumbnailLane.hasActive((queued) => queued.requestId === message.requestId)
+      || audioWaveformLane.hasActive((queued) => queued.requestId === message.requestId)
+      || (activeQueuedMessage && "requestId" in activeQueuedMessage && activeQueuedMessage.requestId === message.requestId);
+    if (active) canceledThumbnailRequests.add(message.requestId);
+    else if (removedTimeline || removedAudio || index >= 0) canceledThumbnailRequests.delete(message.requestId);
     return;
   }
   if (message.type === "media-thumbnail" && message.timeline) {

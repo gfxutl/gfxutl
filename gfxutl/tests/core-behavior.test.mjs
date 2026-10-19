@@ -319,12 +319,17 @@ test("the timeline thumbnail lane remains serial and can cancel pending requests
   assert.equal(lane.remove((message) => message === "b"), 1);
   await Promise.resolve();
   assert.deepEqual(handled, ["start:a"]);
+  assert.equal(lane.hasActive((message) => message === "a"), true);
+  assert.equal(lane.hasActive((message) => message === "c"), false);
   releases.shift()();
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(handled, ["start:a", "end:a", "start:c"]);
+  assert.equal(lane.hasActive((message) => message === "a"), false);
+  assert.equal(lane.hasActive((message) => message === "c"), true);
   releases.shift()();
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(handled, ["start:a", "end:a", "start:c", "end:c"]);
+  assert.equal(lane.hasActive(() => true), false);
 });
 
 test("video export collects clip, material, background, and environment assets", async () => {

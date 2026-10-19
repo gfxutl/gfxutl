@@ -32,8 +32,23 @@ const TIMELINE_THUMBNAIL_WIDTH = 72;
 const TIMELINE_THUMBNAIL_RASTER_WIDTH = 144;
 const TIMELINE_THUMBNAIL_CACHE_LIMIT = 160;
 const TIMELINE_THUMBNAIL_CONCURRENCY = 2;
-const timelineThumbnailCache = new Map<string, Promise<HTMLCanvasElement>>();
-const timelineThumbnailQueue: Array<() => Promise<void>> = [];
+const timelineThumbnailCache = new Map<string, HTMLCanvasElement>();
+interface PendingTimelineThumbnail {
+  promise: Promise<HTMLCanvasElement>;
+  controller: AbortController;
+  subscribers: number;
+  settled: boolean;
+  key: string;
+}
+interface TimelineThumbnailJob {
+  run: () => Promise<void>;
+  reject: (reason: unknown) => void;
+  signal?: AbortSignal;
+  started: boolean;
+  onAbort?: () => void;
+}
+const pendingTimelineThumbnails = new Map<string, PendingTimelineThumbnail>();
+const timelineThumbnailQueue: TimelineThumbnailJob[] = [];
 let activeTimelineThumbnailRequests = 0;
 type GroupResizeEdge = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 type TimelineEdge = "start" | "end";
@@ -930,6 +945,7 @@ function TimelineMediaStrip({ asset, clip, width, height, pxPerSecond, fps, view
     {tiles.map((tile) => <TimelineThumbnailCanvas
       key={tile.localTime.toFixed(9)}
       assetId={asset.id}
+      assetRevision={`${asset.size}:${asset.lastModified}`}
       sourceTime={tile.sourceTime}
       left={tile.left}
       width={tile.width}
@@ -940,8 +956,9 @@ function TimelineMediaStrip({ asset, clip, width, height, pxPerSecond, fps, view
   </div>;
 }
 
-function TimelineThumbnailCanvas({ assetId, sourceTime, left, width, height, enabled, controller }: {
+function TimelineThumbnailCanvas({ assetId, assetRevision, sourceTime, left, width, height, enabled, controller }: {
   assetId: string;
+  assetRevision: string;
   sourceTime: number;
   left: number;
   width: number;
@@ -954,79 +971,170 @@ function TimelineThumbnailCanvas({ assetId, sourceTime, left, width, height, ena
     if (!enabled) return;
     let cancelled = false;
     const abortController = new AbortController();
-    void getTimelineThumbnailCanvas(controller, assetId, sourceTime, height, abortController.signal).then((source) => {
-      if (cancelled) return;
-      const canvas = canvasRef.current;
-      const context = canvas?.getContext("2d");
-      if (!canvas || !context) return;
-      canvas.width = source.width;
-      canvas.height = source.height;
-      context.drawImage(source, 0, 0);
-      canvas.dataset.thumbnailReady = "true";
-    }).catch(() => { /* The clip color remains visible while its media is unavailable. */ });
+    void (async () => {
+      for (let attempt = 0; attempt < 3 && !cancelled; attempt++) {
+        try {
+          const source = await getTimelineThumbnailCanvas(controller, assetId, assetRevision, sourceTime, height, abortController.signal);
+          if (cancelled) return;
+          const canvas = canvasRef.current;
+          const context = canvas?.getContext("2d");
+          if (!canvas || !context) return;
+          canvas.width = source.width;
+          canvas.height = source.height;
+          context.drawImage(source, 0, 0);
+          canvas.dataset.thumbnailReady = "true";
+          delete canvas.dataset.thumbnailError;
+          return;
+        } catch (error) {
+          if (cancelled || abortController.signal.aborted || isAbortError(error)) return;
+          const canvas = canvasRef.current;
+          if (canvas) canvas.dataset.thumbnailError = error instanceof Error ? error.message : String(error);
+          if (attempt === 2) return;
+          await thumbnailRetryDelay(120 * 2 ** attempt, abortController.signal).catch(() => undefined);
+        }
+      }
+    })();
     return () => { cancelled = true; abortController.abort(); };
-  }, [assetId, controller, enabled, height, sourceTime]);
+  }, [assetId, assetRevision, controller, enabled, height, sourceTime]);
 
   return <canvas ref={canvasRef} style={{ left, width }} data-source-time={sourceTime.toFixed(6)} aria-hidden="true" />;
 }
 
-function getTimelineThumbnailCanvas(controller: typeof import("../core/interface").editorController, assetId: string, time: number, cssHeight: number, signal?: AbortSignal) {
+function getTimelineThumbnailCanvas(controller: typeof import("../core/interface").editorController, assetId: string, assetRevision: string, time: number, cssHeight: number, signal?: AbortSignal) {
+  if (signal?.aborted) return Promise.reject<HTMLCanvasElement>(new DOMException("Thumbnail canceled", "AbortError"));
   const scale = Math.min(2, window.devicePixelRatio || 1, 256 / Math.max(1, cssHeight));
   const width = Math.max(1, Math.round(TIMELINE_THUMBNAIL_RASTER_WIDTH * scale));
   const height = Math.max(1, Math.round(cssHeight * scale));
-  const key = `${assetId}:${time.toFixed(6)}:${width}x${height}`;
+  const key = `${assetId}:${assetRevision}:${time.toFixed(6)}:${width}x${height}`;
   const cached = timelineThumbnailCache.get(key);
   if (cached) {
     timelineThumbnailCache.delete(key);
     timelineThumbnailCache.set(key, cached);
-    return cached;
+    return Promise.resolve(cached);
   }
 
-  const request = scheduleTimelineThumbnail(() => controller.getMediaThumbnail(assetId, time, { width, height }, signal), signal).then((thumbnail) => {
-    const raster = thumbnail.frame ?? thumbnail.bitmap;
-    if (!raster) throw new Error("Timeline thumbnail has no raster image");
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext("2d");
-    if (!context) {
-      raster.close();
-      throw new Error("Timeline thumbnail canvas is unavailable");
-    }
-    try {
-      context.drawImage(raster, 0, 0, width, height);
-    } finally {
-      raster.close();
-    }
-    return canvas;
-  }).catch((error) => {
-    if (timelineThumbnailCache.get(key) === request) timelineThumbnailCache.delete(key);
-    throw error;
-  });
-  timelineThumbnailCache.set(key, request);
-  while (timelineThumbnailCache.size > TIMELINE_THUMBNAIL_CACHE_LIMIT) timelineThumbnailCache.delete(timelineThumbnailCache.keys().next().value!);
-  return request;
+  let pending = pendingTimelineThumbnails.get(key);
+  if (!pending) {
+    const requestController = new AbortController();
+    pending = {
+      key,
+      controller: requestController,
+      subscribers: 0,
+      settled: false,
+      promise: undefined as unknown as Promise<HTMLCanvasElement>,
+    };
+    const entry = pending;
+    entry.promise = scheduleTimelineThumbnail(
+      () => controller.getMediaThumbnail(assetId, time, { width, height }, requestController.signal),
+      requestController.signal,
+    ).then((thumbnail) => {
+      const raster = thumbnail.frame ?? thumbnail.bitmap;
+      if (!raster) throw new Error("Timeline thumbnail has no raster image");
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        raster.close();
+        throw new Error("Timeline thumbnail canvas is unavailable");
+      }
+      try {
+        context.drawImage(raster, 0, 0, width, height);
+      } finally {
+        raster.close();
+      }
+      if (requestController.signal.aborted) throw new DOMException("Thumbnail canceled", "AbortError");
+      timelineThumbnailCache.set(key, canvas);
+      while (timelineThumbnailCache.size > TIMELINE_THUMBNAIL_CACHE_LIMIT) timelineThumbnailCache.delete(timelineThumbnailCache.keys().next().value!);
+      return canvas;
+    }).finally(() => {
+      entry.settled = true;
+      if (pendingTimelineThumbnails.get(key) === entry) pendingTimelineThumbnails.delete(key);
+    });
+    pendingTimelineThumbnails.set(key, entry);
+  }
+  return subscribeTimelineThumbnail(pending, signal);
 }
 
 function scheduleTimelineThumbnail<T>(request: () => Promise<T>, signal?: AbortSignal) {
   return new Promise<T>((resolve, reject) => {
-    timelineThumbnailQueue.push(async () => {
-      if (signal?.aborted) { reject(new DOMException("Thumbnail canceled", "AbortError")); return; }
-      try { resolve(await request()); } catch (error) { reject(error); }
-    });
+    if (signal?.aborted) { reject(new DOMException("Thumbnail canceled", "AbortError")); return; }
+    const job: TimelineThumbnailJob = {
+      started: false,
+      signal,
+      reject,
+      run: async () => {
+        if (signal?.aborted) { reject(new DOMException("Thumbnail canceled", "AbortError")); return; }
+        try { resolve(await request()); } catch (error) { reject(error); }
+      },
+    };
+    job.onAbort = () => {
+      if (job.started) return;
+      const index = timelineThumbnailQueue.indexOf(job);
+      if (index >= 0) timelineThumbnailQueue.splice(index, 1);
+      reject(new DOMException("Thumbnail canceled", "AbortError"));
+    };
+    signal?.addEventListener("abort", job.onAbort, { once: true });
+    timelineThumbnailQueue.push(job);
     drainTimelineThumbnailQueue();
   });
 }
 
 function drainTimelineThumbnailQueue() {
   while (activeTimelineThumbnailRequests < TIMELINE_THUMBNAIL_CONCURRENCY && timelineThumbnailQueue.length) {
-    const request = timelineThumbnailQueue.shift()!;
+    const job = timelineThumbnailQueue.shift()!;
+    job.started = true;
+    if (job.onAbort) job.signal?.removeEventListener("abort", job.onAbort);
     activeTimelineThumbnailRequests++;
-    void request().finally(() => {
+    void job.run().finally(() => {
       activeTimelineThumbnailRequests--;
       drainTimelineThumbnailQueue();
     });
   }
+}
+
+function subscribeTimelineThumbnail(entry: PendingTimelineThumbnail, signal?: AbortSignal) {
+  if (signal?.aborted) return Promise.reject<HTMLCanvasElement>(new DOMException("Thumbnail canceled", "AbortError"));
+  entry.subscribers++;
+  return new Promise<HTMLCanvasElement>((resolve, reject) => {
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      signal?.removeEventListener("abort", onAbort);
+      entry.subscribers = Math.max(0, entry.subscribers - 1);
+      if (!entry.settled && entry.subscribers === 0) {
+        if (pendingTimelineThumbnails.get(entry.key) === entry) pendingTimelineThumbnails.delete(entry.key);
+        entry.controller.abort();
+      }
+    };
+    const onAbort = () => {
+      release();
+      reject(new DOMException("Thumbnail canceled", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    void entry.promise.then((canvas) => {
+      if (signal?.aborted) return;
+      release();
+      resolve(canvas);
+    }, (error) => {
+      release();
+      reject(error);
+    });
+  });
+}
+
+function thumbnailRetryDelay(milliseconds: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) { reject(new DOMException("Thumbnail canceled", "AbortError")); return; }
+    const timer = window.setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(); }, milliseconds);
+    const onAbort = () => { window.clearTimeout(timer); reject(new DOMException("Thumbnail canceled", "AbortError")); };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
 }
 
 function timelineThumbnailSampleStep(pxPerSecond: number, fps: number) {
