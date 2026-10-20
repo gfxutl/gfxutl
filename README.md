@@ -42,7 +42,8 @@ File System Access API、Local Font Access API、WebGPU、WebCodecs、OffscreenC
 ### プレビューとレンダリング
 
 - Three.js `WebGPURenderer` を使用し、WebGPU非対応環境ではWebGL 2へフォールバック
-- 動画と静止画をNode Materialで描画し、クロップ、マスク、色調、透明度などをGPU上で合成
+- 動画と静止画をNode Materialで描画し、クロップ、拡張マスク、色調、キーイング、ぼかし、発光、輪郭、変形などをGPU上で合成
+- TSLのオフスクリーンRenderTargetを作用間の境界に用い、近傍サンプリング作用を正しいスタック順で合成
 - RenderPipelineによるBloom、GTAO、被写界深度、Motion Blur、FXAAをプレビュー・静止画・動画書き出しへ共通適用
 - Box、Capsule、Circle、Cone、Cylinder、各Polyhedron、Plane、Ring、Sphere、Torus、TorusKnot、Lathe、Shape、Extrude、Tube、Edges、Wireframe、任意BufferGeometryに対応
 - glTF、HDR、EXR、ローカルフォント、Canvasベースの2D Text、押し出し形状の3D Text、PBRマテリアル、ライト、カメラ、環境設定に対応
@@ -73,7 +74,7 @@ File System Access API、Local Font Access API、WebGPU、WebCodecs、OffscreenC
 - オーディオ
 - 速度
 
-「効果」作用の内部では、変形、明るさ、コントラスト、彩度、ガンマ、色相、色調、透明度、クロマキー、ビネット、ピクセル化を積み重ねられます。
+「効果」作用の内部では、変形、基本色調、単色化、反転、カラー／ルミナンスキー、特定色域変換、色ずれ、グラデーション、ノイズ、エッジ抽出、シャープ、5種のぼかし、発光、グロー、縁取り、シャドー、ワイプ、ディスプレイスメントなどを順番に積み重ねられます。マスクは矩形、楕円、角丸矩形、菱形、星形に対応し、回転、ぼかし、反転、加算・減算・交差を組み合わせられます。
 
 右ペインにはこのほか、再生ヘッド位置のリアルタイムなレイヤー情報を表示する「インスペクター」と、実ファイル・タイムライン情報を表示する「メタデータ」があります。
 

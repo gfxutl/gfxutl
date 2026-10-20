@@ -820,6 +820,7 @@ svg { width: 16px; height: 16px; }
 .mask-card-header button { display: grid; place-items: center; width: 20px; height: 20px; border: 0; background: transparent; color: #777c81; cursor: pointer; }
 .mask-card-header button svg { width: 11px; height: 11px; }
 .mask-card-header input { min-width: 0; height: 21px; border: 0; border-bottom: 1px solid #2d3034; outline: 0; background: transparent; color: #bbbfc2; font-size: 8px; }
+.effect-param-caption { color: #777c81; font-size: 7px; text-transform: uppercase; letter-spacing: .04em; }
 .effect-header { display: flex; min-height: 25px; align-items: center; gap: 6px; }
 .effect-header strong { flex: 1; font-size: 9px; font-weight: 500; }
 .effect-header small { color: #74787d; font: 8px "IBM Plex Mono", monospace; }

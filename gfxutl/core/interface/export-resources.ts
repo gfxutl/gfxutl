@@ -15,11 +15,13 @@ export function collectExportAssetIds(clips: readonly RenderClip[], sceneSetting
   const add = (assetId: string | undefined) => { if (assetId) assetIds.add(assetId); };
   const addMaterial = (object: SceneObjectSpec | undefined) => {
     for (const key of MATERIAL_ASSET_KEYS) add(object?.material?.[key]);
+    for (const mask of object?.material?.masks ?? []) add(mask.sourceAssetId);
   };
   add(sceneSettings.background.backgroundAssetId);
   add(sceneSettings.background.environmentAssetId);
   for (const clip of clips) {
     add(clip.assetId);
+    for (const mask of clip.masks ?? []) add(mask.sourceAssetId);
     addMaterial(clip.sceneObject);
   }
   for (const object of objects) addMaterial(object);

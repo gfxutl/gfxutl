@@ -11,6 +11,7 @@ import { observeWindowControlsOverlay } from "./core/interface/window-controls-o
 import { useI18n } from "./core/i18n";
 import { Button } from "./components/ui/button";
 import { resolvePreviewTabShortcut } from "./core/interface/preview-tab-shortcut";
+import { shouldHandleEditorHistoryShortcut } from "./core/interface/editor-history-shortcut";
 
 export function App() {
   const { state, controller } = useEditor((value) => ({
@@ -64,14 +65,20 @@ export function App() {
       const editingText = Boolean(target?.closest(
         "input, textarea, select, [role='textbox'], [role='combobox'], [role='listbox'], [contenteditable]:not([contenteditable='false'])",
       ));
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "z" && !editingText) {
+      const historyShortcut = shouldHandleEditorHistoryShortcut(target ? {
+        tagName: target.tagName,
+        inputType: target instanceof HTMLInputElement ? target.type : undefined,
+        contentEditable: target.isContentEditable,
+        insideInspector: Boolean(target.closest(".inspector-panel")),
+      } : null);
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "z" && historyShortcut) {
         event.preventDefault();
         event.stopPropagation();
         if (event.shiftKey) controller.redo();
         else controller.undo();
         return;
       }
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "y" && !editingText) {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "y" && historyShortcut) {
         event.preventDefault();
         event.stopPropagation();
         controller.redo();

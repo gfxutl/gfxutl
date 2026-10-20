@@ -98,6 +98,7 @@ export interface SceneMaterialSpec {
   alphaMapAssetId?: string;
   aoMapAssetId?: string;
   effects?: ClipEffect[];
+  masks?: ClipMask[];
   pointSize?: number;
   sizeAttenuation?: boolean;
   outlineColor?: number;
@@ -119,7 +120,12 @@ export interface SceneObjectSpec {
   primitive?: "mesh" | "points" | "line" | "sprite";
 }
 
-export type ClipEffectKind = "transform" | "meshDeform" | "brightness" | "tint" | "opacity" | "contrast" | "saturation" | "gamma" | "hue" | "chromaKey" | "vignette" | "pixelate";
+export type ClipEffectKind =
+  | "transform" | "meshDeform"
+  | "brightness" | "tint" | "opacity" | "contrast" | "saturation" | "gamma" | "hue" | "chromaKey" | "vignette" | "pixelate"
+  | "monochrome" | "invert" | "colorKey" | "luminanceKey" | "colorRange" | "colorShift" | "gradient" | "noise" | "edge" | "sharpen"
+  | "blur" | "boundaryBlur" | "radialBlur" | "directionalBlur" | "lensBlur"
+  | "emission" | "glow" | "outline" | "shadow" | "wipe" | "displacement";
 
 export interface FilterRegion {
   centerX: number;
@@ -192,7 +198,7 @@ export interface ClipMask {
   id: string;
   name: string;
   enabled: boolean;
-  shape: "rectangle" | "ellipse";
+  shape: "rectangle" | "ellipse" | "roundedRectangle" | "diamond" | "star";
   mode: "add" | "subtract" | "intersect";
   inverted: boolean;
   x: number;
@@ -201,6 +207,10 @@ export interface ClipMask {
   height: number;
   feather: number;
   opacity: number;
+  rotation?: number;
+  roundness?: number;
+  sourceAssetId?: string;
+  sourceChannel?: "alpha" | "luminance";
 }
 
 export type KeyframeProperty =
@@ -216,7 +226,7 @@ export type KeyframeProperty =
   | `animation.${string}.${"weight" | "timeScale" | "offset"}`
   | `bone.${string}.${"position" | "rotation" | "scale"}.${0 | 1 | 2}`
   | `colorGrading.${Exclude<keyof ColorGradingSpec, "enabled">}`
-  | `mask.${string}.${"x" | "y" | "width" | "height" | "feather" | "opacity"}`
+  | `mask.${string}.${"x" | "y" | "width" | "height" | "feather" | "opacity" | "rotation" | "roundness"}`
   | `effect.${string}.${string}`;
 export interface ClipKeyframe {
   id: string;

@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 
 import * as THREE from "three/webgpu";
-import { abs, cos, distance, float, Fn, hue, instanceIndex, length, luminance, max, min, mix, positionLocal, pow, saturation, sin, smoothstep, storage, texture as textureNode, uniform, uv, vec2, vec3, vec4, vertexIndex } from "three/tsl";
+import { abs, cos, distance, float, Fn, hue, instanceIndex, length, luminance, max, min, mix, positionLocal, pow, saturation, sin, smoothstep, storage, texture as textureNode, textureSize, uniform, uv, vec2, vec3, vec4, vertexIndex } from "three/tsl";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
@@ -23,6 +23,9 @@ import { cameraForTime, clipTransitionGain } from "../interface/sequencer-state"
 import { AsyncMessageLane } from "./async-message-lane";
 import { accumulateAudioWaveformPeaks, audioWaveformPeakCount } from "../interface/audio-waveform";
 import { croppedPlaneGeometry } from "../protocol/preview-crop";
+import { applyClipEffectNodes, clipEffectChangesAlpha } from "./clip-effect-nodes";
+import { applyClipMaskNodes } from "./clip-mask-nodes";
+import { resolveVisualOpacity, updateVisualOpacityControl } from "./visual-opacity";
 
 const worker = self as unknown as DedicatedWorkerGlobalScope;
 const canceledExports = new Set<string>();
@@ -600,6 +603,9 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
   const hasFragmentEffects = activeEffects.some((effect) => effect.kind !== "transform" && effect.kind !== "meshDeform" && (effect.kind !== "opacity" || Boolean(effect.filterRegion)));
   if (isNeutralColorGrading(clip.colorGrading) && !activeMasks.length && !hasFragmentEffects) {
     const material = new THREE.MeshBasicNodeMaterial({ map: texture, transparent: clip.opacity < 100, depthTest: true, depthWrite: clip.opacity >= 100, toneMapped: false });
+    const opacityNode = uniform(resolveVisualOpacity(clip.opacity, clip.effects));
+    material.opacityNode = opacityNode;
+    material.userData.gfxOpacityNode = opacityNode;
     material.userData.gfxAlphaMasked = false;
     material.positionNode = meshDeformedPosition(activeEffects, filterMasks);
     return material;
@@ -611,63 +617,27 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
     node.setUpdateMatrix(true);
     return node;
   };
-  let sampled: any = sampleTexture(uv());
-  for (const effect of activeEffects) {
-    if (effect.kind !== "pixelate") continue;
-    const cells = Math.max(1, effect.params.size ?? 8);
-    const texUv = uv().mul(cells).floor().add(0.5).div(cells);
-    const pixelated = sampleTexture(texUv);
-    sampled = effect.filterRegion ? mix(sampled, pixelated, filterMasks.fragment(effect.filterRegion)) : pixelated;
-  }
-  const alphaMasked = activeMasks.length > 0 || activeEffects.some((effect) => effect.kind === "chromaKey" || (effect.kind === "opacity" && Boolean(effect.filterRegion)));
+  const sampled: any = sampleTexture(uv());
+  const alphaMasked = activeMasks.length > 0 || activeEffects.some(clipEffectChangesAlpha);
   let outputColor: any = vec4(sampled.rgb, sampled.a);
   const applyEffects = () => {
-    let rgb: any = outputColor.rgb;
-    let alpha: any = outputColor.a;
-    for (const effect of activeEffects) {
-      if (effect.kind === "pixelate" || effect.kind === "meshDeform" || effect.kind === "transform") continue;
-      const previousRgb = rgb;
-      const previousAlpha = alpha;
-      let nextRgb = rgb;
-      let nextAlpha = alpha;
-      if (effect.kind === "brightness") nextRgb = rgb.mul(Math.max(0, 1 + (effect.params.amount ?? 0) / 100));
-      else if (effect.kind === "tint") nextRgb = rgb.mul(vec3((effect.params.red ?? 100) / 100, (effect.params.green ?? 100) / 100, (effect.params.blue ?? 100) / 100));
-      else if (effect.kind === "opacity" && effect.filterRegion) nextAlpha = alpha.mul(THREE.MathUtils.clamp((effect.params.amount ?? 100) / 100, 0, 1));
-      else if (effect.kind === "contrast") nextRgb = rgb.sub(0.5).mul(Math.max(0, 1 + (effect.params.amount ?? 0) / 100)).add(0.5);
-      else if (effect.kind === "saturation") nextRgb = saturation(rgb, Math.max(0, (effect.params.amount ?? 100) / 100));
-      else if (effect.kind === "gamma") nextRgb = pow(max(rgb, vec3(0)), vec3(1 / Math.max(0.01, (effect.params.amount ?? 100) / 100)));
-      else if (effect.kind === "hue") nextRgb = hue(rgb, THREE.MathUtils.degToRad(effect.params.angle ?? 0));
-      else if (effect.kind === "chromaKey") {
-        const key = vec3((effect.params.red ?? 0) / 100, (effect.params.green ?? 100) / 100, (effect.params.blue ?? 0) / 100);
-        nextAlpha = alpha.mul(smoothstep(Math.max(0, (effect.params.threshold ?? 20) / 100), Math.max(0.001, (effect.params.threshold ?? 20) / 100 + (effect.params.softness ?? 10) / 100), distance(rgb, key)));
-      } else if (effect.kind === "vignette") {
-        const amount = Math.max(0, (effect.params.amount ?? 35) / 100);
-        const size = THREE.MathUtils.clamp((effect.params.size ?? 65) / 100, 0.01, 1);
-        nextRgb = rgb.mul(float(1).sub(smoothstep(size * 0.5, Math.max(size * 0.5 + 0.001, 0.72), length(uv().sub(vec2(0.5)))).mul(amount)));
-      }
-      if (effect.filterRegion) {
-        const regionMask = filterMasks.fragment(effect.filterRegion);
-        rgb = mix(previousRgb, nextRgb, regionMask);
-        alpha = mix(previousAlpha, nextAlpha, regionMask);
-      } else { rgb = nextRgb; alpha = nextAlpha; }
-    }
-    outputColor = vec4(rgb, alpha);
+    const sourceSize: any = textureSize(textureNode(texture));
+    outputColor = applyClipEffectNodes({
+      sample: sampleTexture,
+      effects: activeEffects,
+      filterMasks,
+      texel: vec2(float(1).div(sourceSize.x), float(1).div(sourceSize.y)),
+      input: outputColor,
+    });
   };
   const applyMasks = () => {
-    let combinedMask: any = null;
-    for (const mask of activeMasks) {
-      const point = uv().sub(vec2(mask.x / 100, 1 - mask.y / 100));
-      const halfWidth = Math.max(0.0001, mask.width / 200);
-      const halfHeight = Math.max(0.0001, mask.height / 200);
-      const edge = mask.shape === "ellipse" ? length(point.div(vec2(halfWidth, halfHeight))) : max(abs(point.x).div(halfWidth), abs(point.y).div(halfHeight));
-      let value: any = float(1).sub(smoothstep(Math.max(0, 1 - Math.max(0.0001, mask.feather / 100)), 1, edge)).mul(THREE.MathUtils.clamp(mask.opacity / 100, 0, 1));
-      if (mask.inverted) value = float(1).sub(value);
-      if (combinedMask === null) combinedMask = mask.mode === "subtract" ? float(1).sub(value) : value;
-      else if (mask.mode === "add") combinedMask = max(combinedMask, value);
-      else if (mask.mode === "subtract") combinedMask = combinedMask.mul(float(1).sub(value));
-      else combinedMask = combinedMask.mul(value);
-    }
-    if (combinedMask !== null) outputColor = vec4(outputColor.rgb, outputColor.a.mul(combinedMask));
+    outputColor = applyClipMaskNodes(outputColor, activeMasks, uv(), (assetId, coordinates) => {
+      const maskTexture = resolveImageTexture(assetId, "data");
+      if (!maskTexture) return undefined;
+      const node: any = textureNode(maskTexture, coordinates);
+      node.setUpdateMatrix(true);
+      return node;
+    });
   };
   const order = clip.propertyActionOrder ?? ["colorGrading", "effects", "masks"];
   for (const action of order) {
@@ -676,6 +646,9 @@ function createVisualMaterial(texture: THREE.Texture, clip: RenderClip) {
     else if (action === "masks") applyMasks();
   }
   const material = new THREE.MeshBasicNodeMaterial({ transparent: alphaMasked || clip.opacity < 100, depthTest: true, depthWrite: !alphaMasked && clip.opacity >= 100, toneMapped: false });
+  const opacityNode = uniform(resolveVisualOpacity(clip.opacity, clip.effects));
+  material.opacityNode = opacityNode;
+  material.userData.gfxOpacityNode = opacityNode;
   material.userData.gfxAlphaMasked = alphaMasked;
   material.colorNode = outputColor;
   material.positionNode = meshDeformedPosition(activeEffects, filterMasks);
@@ -767,7 +740,6 @@ function applyVisualTransform(mesh: THREE.Object3D, material: THREE.Material, cl
   let scaleX = clip.scale / 100 * clip.scaleX / 100;
   let scaleY = clip.scale / 100 * clip.scaleY / 100;
   let rotation = -THREE.MathUtils.degToRad(clip.rotation);
-  let opacity = clip.opacity / 100;
   for (const effect of clip.effects) {
     if (!effect.enabled || isNeutralClipEffect(effect)) continue;
     if (effect.kind === "transform") {
@@ -782,9 +754,6 @@ function applyVisualTransform(mesh: THREE.Object3D, material: THREE.Material, cl
       scaleX *= effectScale;
       scaleY *= effectScale;
       rotation -= THREE.MathUtils.degToRad(effect.params.rotation ?? 0);
-    } else if (effect.kind === "opacity") {
-      if (effect.filterRegion) continue;
-      opacity *= (effect.params.amount ?? 100) / 100;
     }
   }
   mesh.position.set(positionX, positionY, clip.positionZ / 100);
@@ -792,7 +761,7 @@ function applyVisualTransform(mesh: THREE.Object3D, material: THREE.Material, cl
   mesh.scale.set(Math.max(0.001, scaleX), Math.max(0.001, scaleY), 1);
   mesh.renderOrder = clip.renderOrder;
   mesh.frustumCulled = !clip.effects.some((effect) => effect.enabled && !isNeutralClipEffect(effect) && effect.kind === "meshDeform");
-  material.opacity = THREE.MathUtils.clamp(opacity, 0, 1);
+  const opacity = updateVisualOpacityControl(material, resolveVisualOpacity(clip.opacity, clip.effects));
   material.transparent = Boolean(material.userData.gfxAlphaMasked) || material.opacity < 1;
   material.depthWrite = !material.userData.gfxAlphaMasked && material.opacity >= 1;
 }

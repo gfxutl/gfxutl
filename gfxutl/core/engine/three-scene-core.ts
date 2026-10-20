@@ -1,10 +1,13 @@
 import * as THREE from "three/webgpu";
-import { distance, float, hue, length, max, mix, normalLocal, positionLocal, pow, saturation, sin, smoothstep, texture as textureNode, uv, vec2, vec3, vec4 } from "three/tsl";
+import { float, normalLocal, positionLocal, sin, texture as textureNode, textureSize, uniform, uv, vec2, vec3, vec4 } from "three/tsl";
 import type { ClipEffect, SceneMaterialSpec, SceneObjectSpec } from "../protocol/engine-protocol";
 import { createGeometry } from "./three-geometry-factory";
 import { loadBuiltInObjectClass } from "./built-in-objects/object-loader";
 import { createFilterRegionNodeCache } from "./filter-region-nodes";
 import { isNeutralClipEffect } from "./effect-optimization";
+import { applyClipEffectNodes, clipEffectChangesAlpha } from "./clip-effect-nodes";
+import { applyClipMaskNodes } from "./clip-mask-nodes";
+import { updateVisualOpacityControl } from "./visual-opacity";
 
 interface SceneRecord {
   root: THREE.Object3D;
@@ -46,8 +49,8 @@ export class ThreeSceneCore {
       const ObjectClass = await loadBuiltInObjectClass(spec.geometry.kind);
       const geometry = await this.acquireGeometry(geometryKey, spec);
       const material = isLine ? createLineMaterial(spec.material)
-        : primitive === "points" ? createPointsMaterial(spec.material)
-          : primitive === "sprite" ? createSpriteMaterial(spec.material)
+        : primitive === "points" ? createPointsMaterial(spec.material, this.resolveTexture)
+          : primitive === "sprite" ? createSpriteMaterial(spec.material, this.resolveTexture)
             : createMeshMaterial(spec.material, this.resolveTexture);
       const fill = isLine ? new THREE.LineSegments(geometry, material as THREE.LineBasicMaterial)
         : primitive === "points" ? new THREE.Points(geometry, material as THREE.PointsMaterial)
@@ -255,7 +258,7 @@ function optimizedMaterialSignature(spec: SceneMaterialSpec = {}) {
 }
 
 function hasEffectAlpha(spec: SceneMaterialSpec) {
-  return (spec.effects ?? []).some((effect) => effect.enabled && !isNeutralClipEffect(effect) && (effect.kind === "chromaKey" || (effect.kind === "opacity" && Boolean(effect.filterRegion))));
+  return Boolean(spec.masks?.some((mask) => mask.enabled)) || (spec.effects ?? []).some((effect) => effect.enabled && !isNeutralClipEffect(effect) && clipEffectChangesAlpha(effect));
 }
 
 function commonMaterialOptions(spec: SceneMaterialSpec = {}) {
@@ -273,6 +276,13 @@ function commonMaterialOptions(spec: SceneMaterialSpec = {}) {
     alphaTest: spec.alphaTest ?? 0,
     flatShading: spec.flatShading ?? false,
   };
+}
+
+function attachMaterialOpacityControl(material: THREE.Material, opacity: number) {
+  if (!("opacityNode" in material)) return;
+  const opacityNode = uniform(THREE.MathUtils.clamp(opacity, 0, 1));
+  (material as THREE.Material & { opacityNode: unknown }).opacityNode = opacityNode;
+  material.userData.gfxOpacityNode = opacityNode;
 }
 
 function createMeshMaterial(spec: SceneMaterialSpec = {}, resolveTexture?: (assetId: string, usage: "color" | "data" | "normal") => THREE.Texture | undefined): THREE.Material {
@@ -297,24 +307,29 @@ function createMeshMaterial(spec: SceneMaterialSpec = {}, resolveTexture?: (asse
     sheen: spec.sheen ?? 0,
   });
   else material = new THREE.MeshBasicNodeMaterial(options);
+  attachMaterialOpacityControl(material, spec.opacity ?? 1);
   applyMaterialTextures(material, spec, resolveTexture);
-  applyMaterialEffects(material, spec);
+  applyMaterialEffects(material, spec, resolveTexture);
   return material;
 }
 
 function createLineMaterial(spec: SceneMaterialSpec = {}) {
-  return new THREE.LineBasicNodeMaterial({ color: spec.color ?? 0xffffff, transparent: spec.transparent ?? (spec.opacity ?? 1) < 1, opacity: spec.opacity ?? 1, depthTest: spec.depthTest ?? true, depthWrite: spec.depthWrite ?? true, blending: materialBlending(spec.blending) });
-}
-
-function createPointsMaterial(spec: SceneMaterialSpec = {}) {
-  const material = new THREE.PointsNodeMaterial({ color: spec.color ?? 0xffffff, size: spec.pointSize ?? 0.08, sizeAttenuation: spec.sizeAttenuation ?? true, transparent: spec.transparent ?? (spec.opacity ?? 1) < 1, opacity: spec.opacity ?? 1, depthTest: spec.depthTest ?? true, depthWrite: spec.depthWrite ?? true, blending: materialBlending(spec.blending) });
-  applyMaterialEffects(material, spec);
+  const material = new THREE.LineBasicNodeMaterial({ color: spec.color ?? 0xffffff, transparent: spec.transparent ?? (spec.opacity ?? 1) < 1, opacity: spec.opacity ?? 1, depthTest: spec.depthTest ?? true, depthWrite: spec.depthWrite ?? true, blending: materialBlending(spec.blending) });
+  attachMaterialOpacityControl(material, spec.opacity ?? 1);
   return material;
 }
 
-function createSpriteMaterial(spec: SceneMaterialSpec = {}) {
+function createPointsMaterial(spec: SceneMaterialSpec = {}, resolveTexture?: (assetId: string, usage: "color" | "data" | "normal") => THREE.Texture | undefined) {
+  const material = new THREE.PointsNodeMaterial({ color: spec.color ?? 0xffffff, size: spec.pointSize ?? 0.08, sizeAttenuation: spec.sizeAttenuation ?? true, transparent: spec.transparent ?? (spec.opacity ?? 1) < 1, opacity: spec.opacity ?? 1, depthTest: spec.depthTest ?? true, depthWrite: spec.depthWrite ?? true, blending: materialBlending(spec.blending) });
+  attachMaterialOpacityControl(material, spec.opacity ?? 1);
+  applyMaterialEffects(material, spec, resolveTexture);
+  return material;
+}
+
+function createSpriteMaterial(spec: SceneMaterialSpec = {}, resolveTexture?: (assetId: string, usage: "color" | "data" | "normal") => THREE.Texture | undefined) {
   const material = new THREE.SpriteNodeMaterial({ color: spec.color ?? 0xffffff, transparent: spec.transparent ?? (spec.opacity ?? 1) < 1, opacity: spec.opacity ?? 1, depthTest: spec.depthTest ?? true, depthWrite: spec.depthWrite ?? true, blending: materialBlending(spec.blending) });
-  applyMaterialEffects(material, spec);
+  attachMaterialOpacityControl(material, spec.opacity ?? 1);
+  applyMaterialEffects(material, spec, resolveTexture);
   return material;
 }
 
@@ -338,7 +353,7 @@ function updateMaterial(material: THREE.Material | THREE.Material[], spec: Scene
     if (mutable.sizeAttenuation !== undefined) mutable.sizeAttenuation = spec.sizeAttenuation ?? true;
     if (mutable.flatShading !== undefined && mutable.flatShading !== (spec.flatShading ?? false)) { mutable.flatShading = spec.flatShading ?? false; mutable.needsUpdate = true; }
     const opacity = spec.opacity ?? 1;
-    mutable.opacity = opacity;
+    updateVisualOpacityControl(mutable, opacity);
     const effectAlpha = hasEffectAlpha(spec);
     mutable.transparent = (spec.transparent ?? opacity < 1) || effectAlpha;
     mutable.depthTest = spec.depthTest ?? true;
@@ -347,7 +362,7 @@ function updateMaterial(material: THREE.Material | THREE.Material[], spec: Scene
     mutable.blending = materialBlending(spec.blending);
     mutable.alphaTest = spec.alphaTest ?? 0;
     applyMaterialTextures(mutable, spec, resolveTexture);
-    applyMaterialEffects(mutable, spec);
+    applyMaterialEffects(mutable, spec, resolveTexture);
   }
 }
 
@@ -368,61 +383,37 @@ function applyMaterialTextures(material: THREE.Material, spec: SceneMaterialSpec
   if (changed) material.needsUpdate = true;
 }
 
-function applyMaterialEffects(material: THREE.Material, spec: SceneMaterialSpec) {
+function applyMaterialEffects(material: THREE.Material, spec: SceneMaterialSpec, resolveTexture?: (assetId: string, usage: "color" | "data" | "normal") => THREE.Texture | undefined) {
   const nodeMaterial = material as THREE.Material & { colorNode?: unknown; positionNode?: unknown; map?: THREE.Texture | null };
   if (!("colorNode" in nodeMaterial)) return;
   const enabledEffects = (spec.effects ?? []).filter((effect) => effect.enabled && !isNeutralClipEffect(effect));
+  const activeMasks = (spec.masks ?? []).filter((mask) => mask.enabled);
   const filterMasks = createFilterRegionNodeCache();
   nodeMaterial.positionNode = meshDeformedPosition(enabledEffects, filterMasks);
   const effects = enabledEffects.filter((effect) => effect.kind !== "transform" && effect.kind !== "meshDeform");
-  if (!effects.length) {
+  if (!effects.length && !activeMasks.length) {
     if (nodeMaterial.colorNode !== null) { nodeMaterial.colorNode = null; material.needsUpdate = true; }
     else material.needsUpdate = true;
     return;
   }
   const color = new THREE.Color(spec.color ?? 0xffffff);
-  let rgba: any = nodeMaterial.map ? textureNode(nodeMaterial.map, uv()).mul(vec4(color.r, color.g, color.b, 1)) : vec4(color.r, color.g, color.b, 1);
-  if (nodeMaterial.map) for (const effect of effects) {
-    if (effect.kind !== "pixelate") continue;
-    const cells = Math.max(1, effect.params.size ?? 8);
-    const pixelated = textureNode(nodeMaterial.map, uv().mul(cells).floor().add(0.5).div(cells)).mul(vec4(color.r, color.g, color.b, 1));
-    rgba = effect.filterRegion ? mix(rgba, pixelated, filterMasks.fragment(effect.filterRegion)) : pixelated;
-  }
-  let rgb: any = rgba.rgb;
-  let alpha: any = rgba.a;
-  for (const effect of effects) {
-    if (effect.kind === "pixelate") continue;
-    const previousRgb = rgb;
-    const previousAlpha = alpha;
-    let nextRgb = rgb;
-    let nextAlpha = alpha;
-    if (effect.kind === "brightness") nextRgb = rgb.mul(Math.max(0, 1 + (effect.params.amount ?? 0) / 100));
-    else if (effect.kind === "tint") nextRgb = rgb.mul(vec3((effect.params.red ?? 100) / 100, (effect.params.green ?? 100) / 100, (effect.params.blue ?? 100) / 100));
-    else if (effect.kind === "opacity" && effect.filterRegion) nextAlpha = alpha.mul(THREE.MathUtils.clamp((effect.params.amount ?? 100) / 100, 0, 1));
-    else if (effect.kind === "contrast") nextRgb = rgb.sub(0.5).mul(Math.max(0, 1 + (effect.params.amount ?? 0) / 100)).add(0.5);
-    else if (effect.kind === "saturation") nextRgb = saturation(rgb, Math.max(0, (effect.params.amount ?? 100) / 100));
-    else if (effect.kind === "gamma") nextRgb = pow(max(rgb, vec3(0)), vec3(1 / Math.max(0.01, (effect.params.amount ?? 100) / 100)));
-    else if (effect.kind === "hue") nextRgb = hue(rgb, THREE.MathUtils.degToRad(effect.params.angle ?? 0));
-    else if (effect.kind === "chromaKey") {
-      const key = vec3((effect.params.red ?? 0) / 100, (effect.params.green ?? 100) / 100, (effect.params.blue ?? 0) / 100);
-      const threshold = (effect.params.threshold ?? 20) / 100;
-      nextAlpha = alpha.mul(smoothstep(float(threshold), float(threshold + Math.max(0.001, (effect.params.softness ?? 10) / 100)), distance(rgb, key)));
-    } else if (effect.kind === "vignette") {
-      const radius = Math.max(0.01, (effect.params.size ?? 65) / 100);
-      const amount = Math.max(0, (effect.params.amount ?? 35) / 100);
-      const edge = smoothstep(float(radius), float(Math.max(radius + 0.001, 1)), length(uv().sub(vec2(0.5)).mul(1.4142)));
-      nextRgb = rgb.mul(float(1).sub(edge.mul(amount)));
-    }
-    if (effect.filterRegion) {
-      const regionMask = filterMasks.fragment(effect.filterRegion);
-      rgb = mix(previousRgb, nextRgb, regionMask);
-      alpha = mix(previousAlpha, nextAlpha, regionMask);
-    } else {
-      rgb = nextRgb;
-      alpha = nextAlpha;
-    }
-  }
-  nodeMaterial.colorNode = vec4(rgb, alpha);
+  const sample = (coordinates: any) => {
+    if (!nodeMaterial.map) return vec4(color.r, color.g, color.b, 1);
+    const node: any = textureNode(nodeMaterial.map, coordinates);
+    node.setUpdateMatrix(true);
+    return node.mul(vec4(color.r, color.g, color.b, 1));
+  };
+  const sourceSize: any = nodeMaterial.map ? textureSize(textureNode(nodeMaterial.map)) : null;
+  const texel = sourceSize ? vec2(float(1).div(sourceSize.x), float(1).div(sourceSize.y)) : vec2(1 / 1024);
+  let rgba: any = applyClipEffectNodes({ sample, effects, filterMasks, texel });
+  rgba = applyClipMaskNodes(rgba, activeMasks, uv(), (assetId, coordinates) => {
+    const maskTexture = resolveTexture?.(assetId, "data");
+    if (!maskTexture) return undefined;
+    const node: any = textureNode(maskTexture, coordinates);
+    node.setUpdateMatrix(true);
+    return node;
+  });
+  nodeMaterial.colorNode = rgba;
   material.needsUpdate = true;
 }
 

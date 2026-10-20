@@ -19,7 +19,7 @@ import {
   VideoClip16Regular,
 } from "@fluentui/react-icons";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { AUDIO_WAVEFORM_VERSION, clampTimelineVerticalZoom, clampTimelineZoom, clipWaveformPeaks, MIN_GROUP_HEIGHT, shallowEqual, timelineClipHeight, timelineGroupDescendants, useEditor } from "../core/interface";
+import { AUDIO_WAVEFORM_VERSION, clampTimelineVerticalZoom, clampTimelineZoom, clipWaveformPeaks, findTimelinePlayheadAlignment, MIN_GROUP_HEIGHT, shallowEqual, timelineClipHeight, timelineGroupDescendants, useEditor } from "../core/interface";
 import type { MediaAsset, SceneKeyframe, TimelineClip } from "../core/interface";
 import { useI18n } from "../core/i18n";
 import { constrainTimelineDrag, resolveTimelineDragAxis, type TimelineDragAxis } from "../core/interface/timeline-drag";
@@ -52,6 +52,7 @@ const timelineThumbnailQueue: TimelineThumbnailJob[] = [];
 let activeTimelineThumbnailRequests = 0;
 type GroupResizeEdge = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 type TimelineEdge = "start" | "end";
+type TimelineHorizontalTargetEdge = TimelineEdge | "playhead";
 type TimelineVerticalEdge = "top" | "center" | "bottom";
 interface HorizontalAlignmentSuggestion {
   axis: "x";
@@ -60,7 +61,7 @@ interface HorizontalAlignmentSuggestion {
   height: number;
   targetId: string;
   movingEdge: TimelineEdge;
-  targetEdge: TimelineEdge;
+  targetEdge: TimelineHorizontalTargetEdge;
 }
 interface VerticalAlignmentSuggestion {
   axis: "y";
@@ -391,7 +392,7 @@ export function TimelinePanel() {
               style={suggestion.axis === "x"
                 ? { left: suggestion.x, top: suggestion.top * state.timelineVerticalZoom, height: suggestion.height * state.timelineVerticalZoom }
                 : { left: suggestion.left, top: suggestion.y * state.timelineVerticalZoom, width: suggestion.width }}
-            ><span>{t(suggestion.axis === "x" ? "端を揃える" : "高さを揃える")}</span></div>)}
+            ><span>{t(suggestion.axis === "x" ? suggestion.targetEdge === "playhead" ? "再生位置に揃える" : "端を揃える" : "高さを揃える")}</span></div>)}
             {selectionBox && <div className="timeline-selection-box" style={selectionBox} />}
             {visibleOrderedClips.map((clip) => {
               const asset = clip.assetId ? assetsById.get(clip.assetId) : undefined;
@@ -741,7 +742,7 @@ const Clip = memo(function Clip({ clip, asset, waveformPeaks, pxPerSecond, verti
         const rawStart = originalStart + delta;
         const candidateStart = Math.max(0, Math.min(originalEnd - minimumDuration, rawStart));
         const snapshot = controller.getSnapshot();
-        const alignment = findTimelineAlignment({ start: candidateStart, duration: originalEnd - candidateStart, y: clip.y, height: timelineClipHeight(clip) }, snapshot.clips, new Set([clip.id]), pxPerSecond, verticalZoom, ["start"], []);
+        const alignment = findTimelineAlignment({ start: candidateStart, duration: originalEnd - candidateStart, y: clip.y, height: timelineClipHeight(clip) }, snapshot.clips, new Set([clip.id]), pxPerSecond, verticalZoom, ["start"], [], snapshot.currentTime);
         onAlignmentSuggestions(alignment?.suggestions ?? []);
         const snappedStart = !snapEnabled || pointer.shiftKey ? rawStart : alignment?.start ?? Math.round(rawStart * fps) / fps;
         const start = Math.max(0, Math.min(originalEnd - minimumDuration, snappedStart));
@@ -750,7 +751,7 @@ const Clip = memo(function Clip({ clip, asset, waveformPeaks, pxPerSecond, verti
         const rawDuration = originalDuration + delta;
         const candidateDuration = Math.max(minimumDuration, rawDuration);
         const snapshot = controller.getSnapshot();
-        const alignment = findTimelineAlignment({ start: originalStart, duration: candidateDuration, y: clip.y, height: timelineClipHeight(clip) }, snapshot.clips, new Set([clip.id]), pxPerSecond, verticalZoom, ["end"], []);
+        const alignment = findTimelineAlignment({ start: originalStart, duration: candidateDuration, y: clip.y, height: timelineClipHeight(clip) }, snapshot.clips, new Set([clip.id]), pxPerSecond, verticalZoom, ["end"], [], snapshot.currentTime);
         onAlignmentSuggestions(alignment?.suggestions ?? []);
         const duration = Math.max(minimumDuration, !snapEnabled || pointer.shiftKey ? rawDuration : alignment?.time !== undefined ? alignment.time - originalStart : Math.round(rawDuration * fps) / fps);
         controller.resizeStaticClip(clip.id, originalStart, duration);
@@ -804,6 +805,7 @@ const Clip = memo(function Clip({ clip, asset, waveformPeaks, pxPerSecond, verti
         verticalZoom,
         horizontalEdges,
         verticalEdges,
+        horizontalEdges.length ? snapshot.currentTime : undefined,
       );
       onAlignmentSuggestions(alignment?.suggestions ?? []);
       if (alignment && snapEnabled && !pointer.shiftKey) {
@@ -1178,6 +1180,7 @@ function findTimelineAlignment(
   verticalZoom: number,
   movingEdges: readonly TimelineEdge[] = ["start", "end"],
   movingVerticalEdges: readonly TimelineVerticalEdge[] = ["top", "center", "bottom"],
+  playheadTime?: number,
 ) {
   const movingWidth = Math.max(MIN_CLIP_WIDTH, candidate.duration * pxPerSecond);
   const movingEnd = candidate.start + candidate.duration;
@@ -1240,6 +1243,25 @@ function findTimelineAlignment(
           suggestion: { axis: "y", y: targetY, left, width: Math.max(1, right - left), targetId: target.id, movingEdge, targetEdge },
         };
       }
+    }
+  }
+  if (playheadTime !== undefined) {
+    const playheadAlignment = findTimelinePlayheadAlignment(candidate, playheadTime, pxPerSecond, movingEdges, threshold);
+    if (playheadAlignment && (!bestHorizontal || playheadAlignment.distance < bestHorizontal.distance)) {
+      bestHorizontal = {
+        distance: playheadAlignment.distance,
+        start: playheadAlignment.start,
+        time: playheadAlignment.time,
+        suggestion: {
+          axis: "x",
+          x: playheadAlignment.time * pxPerSecond,
+          top: candidate.y,
+          height: Math.max(1, candidate.height),
+          targetId: "playhead",
+          movingEdge: playheadAlignment.movingEdge,
+          targetEdge: "playhead",
+        },
+      };
     }
   }
   if (!bestHorizontal && !bestVertical) return null;

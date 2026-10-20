@@ -1102,6 +1102,7 @@ export class EditorController {
         color: clip.kind === "title" ? isText2D ? 0xffffff : clip.textColor ?? 0x202020 : clip.material?.color ?? clip.textColor ?? 0x3d73a0,
         ...clip.material,
         effects: clip.effects ?? [],
+        masks: clip.masks ?? [],
         opacity: visual.opacity,
         side: clip.kind === "title" ? "double" : clip.material?.side ?? "front",
         depthTest: true, depthWrite: isText2D ? false : (clip.opacity ?? 100) >= 100, transparent: true,
@@ -2172,7 +2173,7 @@ export class EditorController {
       y: Math.max(0, placement?.timelineY ?? 92), duration: 5, offset: 0,
       positionX: (placement?.positionX ?? 0) + stagger.x, positionY: (placement?.positionY ?? 0) + stagger.y,
       positionZ: 0,
-      scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: kind === "shape" ? 0 : 18, rotationY: kind === "shape" ? 0 : -24, opacity: 100, textColor: 0x3d73a0,
+      scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: 0, rotationY: 0, opacity: 100, textColor: 0x3d73a0,
       material: { kind: kind === "shape" ? "basic" : "standard", color: 0x3d73a0, roughness: 0.55, metalness: 0.08, side: "double" }, castShadow: kind !== "shape", receiveShadow: kind !== "shape",
       geometry,
     };
@@ -2469,8 +2470,8 @@ export class EditorController {
 
   addMask = (clipId: string, shape: ClipMask["shape"] = "rectangle") => {
     const clip = this.state.clips.find((item) => item.id === clipId);
-    if (!clip || clip.kind !== "video") return;
-    const mask: ClipMask = { id: crypto.randomUUID(), name: t("マスク {number}", { number: (clip.masks?.length ?? 0) + 1 }), enabled: true, shape, mode: "add", inverted: false, x: 50, y: 50, width: 70, height: 70, feather: 0, opacity: 100 };
+    if (!clip || !applicableClipActionKinds(clip).includes("masks")) return;
+    const mask: ClipMask = { id: crypto.randomUUID(), name: t("マスク {number}", { number: (clip.masks?.length ?? 0) + 1 }), enabled: true, shape, mode: "add", inverted: false, x: 50, y: 50, width: 70, height: 70, feather: 0, opacity: 100, rotation: 0, roundness: 25 };
     this.updateClip(clipId, { masks: [...(clip.masks ?? []), mask] });
   };
 
@@ -3106,6 +3107,27 @@ function createEffect(kind: ClipEffectKind): ClipEffect {
     chromaKey: { name: t("クロマキー"), enabled: true, params: { red: 0, green: 100, blue: 0, threshold: 20, softness: 10 } },
     vignette: { name: t("ビネット"), enabled: true, params: { amount: 35, size: 65 } },
     pixelate: { name: t("ピクセル化"), enabled: true, params: { size: 8 } },
+    monochrome: { name: t("単色化"), enabled: true, params: { amount: 100, red: 100, green: 100, blue: 100 } },
+    invert: { name: t("反転"), enabled: true, params: { amount: 100, alpha: 0 } },
+    colorKey: { name: t("カラーキー"), enabled: true, params: { red: 0, green: 100, blue: 0, threshold: 20, softness: 10 } },
+    luminanceKey: { name: t("ルミナンスキー"), enabled: true, params: { threshold: 50, softness: 10, invert: 0 } },
+    colorRange: { name: t("特定色域変換"), enabled: true, params: { sourcered: 100, sourcegreen: 0, sourceblue: 0, targetred: 0, targetgreen: 0, targetblue: 100, tolerance: 20, softness: 10 } },
+    colorShift: { name: t("色ずれ"), enabled: true, params: { amount: 4, angle: 0 } },
+    gradient: { name: t("グラデーション"), enabled: true, params: { startred: 0, startgreen: 0, startblue: 0, endred: 100, endgreen: 100, endblue: 100, amount: 100, angle: 0, offset: 0 } },
+    noise: { name: t("ノイズ"), enabled: true, params: { amount: 15, scale: 120, seed: 0, monochrome: 1 } },
+    edge: { name: t("エッジ抽出"), enabled: true, params: { amount: 100, radius: 1, monochrome: 1 } },
+    sharpen: { name: t("シャープ"), enabled: true, params: { amount: 50, radius: 1 } },
+    blur: { name: t("ぼかし"), enabled: true, params: { radius: 4, amount: 100 } },
+    boundaryBlur: { name: t("境界ぼかし"), enabled: true, params: { radius: 4, amount: 100 } },
+    radialBlur: { name: t("放射ブラー"), enabled: true, params: { amount: 12, centerX: 50, centerY: 50 } },
+    directionalBlur: { name: t("方向ブラー"), enabled: true, params: { radius: 8, angle: 0 } },
+    lensBlur: { name: t("レンズブラー"), enabled: true, params: { radius: 6 } },
+    emission: { name: t("発光"), enabled: true, params: { amount: 100, radius: 3, threshold: 55, red: 100, green: 100, blue: 100 } },
+    glow: { name: t("グロー"), enabled: true, params: { amount: 100, radius: 8, threshold: 55, red: 100, green: 100, blue: 100 } },
+    outline: { name: t("縁取り"), enabled: true, params: { width: 2, opacity: 100, red: 0, green: 0, blue: 0 } },
+    shadow: { name: t("シャドー"), enabled: true, params: { distance: 8, angle: 45, blur: 3, opacity: 60, red: 0, green: 0, blue: 0 } },
+    wipe: { name: t("ワイプ"), enabled: true, params: { progress: 50, angle: 0, softness: 2 } },
+    displacement: { name: t("ディスプレイスメントマップ"), enabled: true, params: { amount: 10, mapOffsetX: 0, mapOffsetY: 0 } },
   };
   return { id: crypto.randomUUID(), kind, ...definitions[kind], params: { ...definitions[kind].params } };
 }

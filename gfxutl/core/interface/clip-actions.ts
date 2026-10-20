@@ -54,7 +54,7 @@ export function applicableClipActionKinds(clip: TimelineClip): ClipPropertyActio
     if (kind === "colorGrading") return clip.kind === "video";
     if (kind === "crop" || kind === "audio" || kind === "speed") return clip.kind !== "title" && clip.kind !== "object";
     if (kind === "effects") return clip.kind !== "audio" && !clip.particleSystem;
-    return kind === "masks" && clip.kind === "video";
+    return kind === "masks" && (clip.kind === "video" || clip.kind === "title" || (clip.kind === "object" && Boolean(clip.geometry)));
   });
 }
 

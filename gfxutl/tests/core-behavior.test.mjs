@@ -117,11 +117,15 @@ test("variable font coordinates are normalized, clamped, and keyed deterministic
 });
 
 test("text letter spacing uses a clamped percentage of font size", async () => {
-  const { clampTextLetterSpacing, textLetterSpacingDistance } = await importTypeScript("../core/interface/text-spacing.ts");
+  const { clampTextLetterSpacing, textKeyframePropertyOptions, textLetterSpacingDistance } = await importTypeScript("../core/interface/text-spacing.ts");
   assert.equal(clampTextLetterSpacing(-150), -100);
   assert.equal(clampTextLetterSpacing(450), 300);
   assert.equal(textLetterSpacingDistance(2, 25), 0.5);
   assert.equal(textLetterSpacingDistance(1.2, -50), -0.6);
+  assert.ok(textKeyframePropertyOptions("2d").some(([property]) => property === "letterSpacing"));
+  assert.ok(textKeyframePropertyOptions("3d").some(([property]) => property === "letterSpacing"));
+  assert.ok(!textKeyframePropertyOptions("2d").some(([property]) => property === "textDepth"));
+  assert.ok(textKeyframePropertyOptions("3d").some(([property]) => property === "textDepth"));
 });
 
 test("audio waveform peaks follow trim, duration, speed, and include the clip end", async () => {
@@ -303,6 +307,19 @@ test("timeline Shift-drag locks movement to its dominant axis", async () => {
   assert.equal(resolveTimelineDragAxis(30, 1, vertical, false), null);
 });
 
+test("timeline resize alignment offers the playhead for either clip edge", async () => {
+  const { findTimelinePlayheadAlignment } = await importTypeScript("../core/interface/timeline-playhead-alignment.ts");
+  assert.deepEqual(
+    findTimelinePlayheadAlignment({ start: 4.5, duration: 2 }, 5, 10, ["start"]),
+    { distance: 5, start: 5, time: 5, movingEdge: "start" },
+  );
+  assert.deepEqual(
+    findTimelinePlayheadAlignment({ start: 2, duration: 2.5 }, 5, 10, ["end"]),
+    { distance: 5, start: 2.5, time: 5, movingEdge: "end" },
+  );
+  assert.equal(findTimelinePlayheadAlignment({ start: 4, duration: 2 }, 5, 10, ["start"]), null);
+});
+
 test("the timeline thumbnail lane remains serial and can cancel pending requests", async () => {
   const { AsyncMessageLane } = await importTypeScript("../core/engine/async-message-lane.ts");
   const handled = [];
@@ -338,11 +355,11 @@ test("video export collects clip, material, background, and environment assets",
     background: { backgroundAssetId: "background", environmentAssetId: "environment" },
   };
   const clips = [
-    { assetId: "video", sceneObject: { material: { mapAssetId: "albedo", normalMapAssetId: "normal" } } },
+    { assetId: "video", masks: [{ sourceAssetId: "clip-mask" }], sceneObject: { material: { mapAssetId: "albedo", normalMapAssetId: "normal", masks: [{ sourceAssetId: "material-mask" }] } } },
     { assetId: "video", sceneObject: { material: { emissiveMapAssetId: "emissive" } } },
   ];
   const objects = [{ material: { roughnessMapAssetId: "roughness" } }];
-  assert.deepEqual(collectExportAssetIds(clips, sceneSettings, objects), ["background", "environment", "video", "albedo", "normal", "emissive", "roughness"]);
+  assert.deepEqual(collectExportAssetIds(clips, sceneSettings, objects), ["background", "environment", "video", "clip-mask", "albedo", "normal", "material-mask", "emissive", "roughness"]);
 });
 
 test("Ctrl+Meta+number resolves preview tabs in their visible order", async () => {
@@ -470,4 +487,50 @@ test("isolated object previews use a fixed camera-independent orthographic frame
   assert.equal(OBJECT_PREVIEW_WORLD_HEIGHT, 9);
   assert.deepEqual(objectPreviewFrustum(16 / 9), { left: -8, right: 8, top: 4.5, bottom: -4.5 });
   assert.deepEqual(objectPreviewFrustum(Number.NaN), { left: -4.5, right: 4.5, top: 4.5, bottom: -4.5 });
+});
+
+test("the AviUtl-compatible effect set is wired through definitions, UI, and the shared shader stack", async () => {
+  const kinds = [
+    "monochrome", "invert", "colorKey", "luminanceKey", "colorRange", "colorShift", "gradient", "noise", "edge", "sharpen",
+    "blur", "boundaryBlur", "radialBlur", "directionalBlur", "lensBlur", "emission", "glow", "outline", "shadow", "wipe", "displacement",
+  ];
+  const [protocol, controller, inspector, nodes] = await Promise.all([
+    readFile(new URL("../core/protocol/engine-protocol.ts", import.meta.url), "utf8"),
+    readFile(new URL("../core/interface/editor-controller.ts", import.meta.url), "utf8"),
+    readFile(new URL("../components/inspector-panel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../core/engine/clip-effect-nodes.ts", import.meta.url), "utf8"),
+  ]);
+  for (const kind of kinds) {
+    assert.match(protocol, new RegExp(`\\| "${kind}"`), `${kind} protocol kind`);
+    assert.match(controller, new RegExp(`\\n    ${kind}: \\{`), `${kind} defaults`);
+    assert.match(inspector, new RegExp(`value="${kind}"`), `${kind} add menu`);
+    assert.match(inspector, new RegExp(`effect\\.kind === "${kind}"|effect\\.kind === "[^\"]+" \\|\\| effect\\.kind === "${kind}"`), `${kind} parameters`);
+    assert.match(nodes, new RegExp(`effect\\.kind === "${kind}"|effect\\.kind === "[^\"]+" \\|\\| effect\\.kind === "${kind}"`), `${kind} shader implementation`);
+  }
+});
+
+test("inspector property controls route Ctrl+Z and Ctrl+Y to editor history", async () => {
+  const { shouldHandleEditorHistoryShortcut } = await importTypeScript("../core/interface/editor-history-shortcut.ts");
+  assert.equal(shouldHandleEditorHistoryShortcut(null), true);
+  assert.equal(shouldHandleEditorHistoryShortcut({ tagName: "input", inputType: "number", insideInspector: true }), true);
+  assert.equal(shouldHandleEditorHistoryShortcut({ tagName: "input", inputType: "range", insideInspector: true }), true);
+  assert.equal(shouldHandleEditorHistoryShortcut({ tagName: "input", inputType: "checkbox", insideInspector: true }), true);
+  assert.equal(shouldHandleEditorHistoryShortcut({ tagName: "select", insideInspector: true }), true);
+  assert.equal(shouldHandleEditorHistoryShortcut({ tagName: "input", inputType: "text", insideInspector: true }), false);
+  assert.equal(shouldHandleEditorHistoryShortcut({ tagName: "textarea", insideInspector: true }), false);
+  assert.equal(shouldHandleEditorHistoryShortcut({ tagName: "input", inputType: "number", insideInspector: false }), false);
+});
+
+test("visual opacity combines the property and effect stack and updates its live uniform", async () => {
+  const { resolveVisualOpacity, updateVisualOpacityControl } = await importTypeScript("../core/engine/visual-opacity.ts");
+  const opacityEffect = { kind: "opacity", enabled: true, params: { amount: 40 } };
+  assert.equal(resolveVisualOpacity(50, [opacityEffect]), 0.2);
+  assert.equal(resolveVisualOpacity(50, [{ ...opacityEffect, enabled: false }]), 0.5);
+  assert.equal(resolveVisualOpacity(50, [{ ...opacityEffect, filterRegion: {} }]), 0.5);
+  assert.equal(resolveVisualOpacity(250, []), 1);
+  const opacityNode = { value: 1 };
+  const material = { opacity: 1, userData: { gfxOpacityNode: opacityNode } };
+  assert.equal(updateVisualOpacityControl(material, 0.25), 0.25);
+  assert.equal(material.opacity, 0.25);
+  assert.equal(opacityNode.value, 0.25);
 });
