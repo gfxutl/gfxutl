@@ -854,6 +854,10 @@ svg { width: 16px; height: 16px; }
 .timeline-time-ruler > i { position: absolute; bottom: 0; width: 1px; height: 6px; background: #545a5f; pointer-events: none; }
 .timeline-time-ruler > i.major { height: 11px; background: #858b90; }
 .timeline-time-ruler time { position: absolute; top: -10px; left: 4px; color: #8f9498; font: 7px "IBM Plex Mono", monospace; font-style: normal; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.timeline-ruler-hover-seek { position: absolute; z-index: 7; top: 0; bottom: 0; width: 1px; background: #f4f5f5; box-shadow: 0 0 3px #000; pointer-events: none; }
+.timeline-ruler-hover-seek::before { content: ""; position: absolute; top: 0; left: -3px; border-top: 4px solid #f4f5f5; border-right: 3px solid transparent; border-left: 3px solid transparent; filter: drop-shadow(0 1px 1px #000); }
+.timeline-ruler-hover-seek output { position: absolute; top: 2px; left: 5px; padding: 1px 3px; border: 1px solid #4b5054; border-radius: 2px; background: #111417e8; color: #f2f3f3; box-shadow: 0 2px 6px #0008; font: 7px/1.2 "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.timeline-ruler-hover-seek.align-right output { right: 5px; left: auto; }
 .timeline-sequence-end { position: absolute; z-index: 8; top: 0; bottom: 0; width: 16px; margin-left: -8px; padding: 0; border: 0; outline: 0; background: transparent; color: #f2b35f; cursor: col-resize; touch-action: none; }
 .timeline-sequence-end::before { content: ""; position: absolute; top: 0; bottom: 0; left: 7px; width: 2px; background: currentColor; box-shadow: 0 0 5px #000; }
 .timeline-sequence-end::after { content: ""; position: absolute; top: 0; left: 3px; border-top: 6px solid currentColor; border-right: 5px solid transparent; border-left: 5px solid transparent; filter: drop-shadow(0 1px 1px #000); }

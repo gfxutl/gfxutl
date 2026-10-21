@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSPropertie
 import { shallowEqual, textLetterSpacingDistance, useEditor } from "../core/interface";
 import type { CameraHandleKind, TimelineClip, TransformHandleKind } from "../core/interface";
 import type { MediaAsset } from "../core/interface";
+import { isPreviewPointerDrag } from "../core/interface/preview-pointer";
 import { resolvePreviewResize } from "../core/interface/preview-resize";
 import { AudioWaveformEditor } from "./audio-waveform-editor";
 import { useI18n } from "../core/i18n";
@@ -48,6 +49,7 @@ export function PreviewPanel() {
   const pickSequenceRef = useRef(0);
   const pendingPickRef = useRef<{ x: number; y: number } | null>(null);
   const inspectorNavigationClickRef = useRef(false);
+  const previewClickStartRef = useRef<{ x: number; y: number } | null>(null);
   const hoveredCameraHandleRef = useRef<CameraHandleKind | null>(null);
   const draggingCameraHandleRef = useRef<CameraHandleKind | null>(null);
   const cameraWheelTimerRef = useRef(0);
@@ -211,7 +213,7 @@ export function PreviewPanel() {
     .filter((clip) => !state.activePreviewClipId || clip.id === state.activePreviewClipId)
     .filter((clip) => clip.kind !== "audio" && clip.kind !== "group" && (state.activePreviewClipId === clip.id || state.currentTime >= clip.start && state.currentTime < clip.start + clip.duration))
     .map((clip) => previewBounds(animatedClip(clip, state.activePreviewClipId === clip.id ? Math.max(clip.start, Math.min(state.currentTime, clip.start + clip.duration - 1 / state.fps)) : state.currentTime), state.assets.find((asset) => asset.id === clip.assetId), { width: previewWorldWidth, height: previewWorldHeight }))
-    .sort((a, b) => (b.clip.positionZ ?? 0) - (a.clip.positionZ ?? 0) || a.clip.y - b.clip.y), [inspectorView, previewWorldHeight, previewWorldWidth, state.clips, state.assets, state.currentTime, state.activePreviewClipId, state.fps]);
+    .sort((a, b) => (b.clip.positionZ ?? 0) - (a.clip.positionZ ?? 0)), [inspectorView, previewWorldHeight, previewWorldWidth, state.clips, state.assets, state.currentTime, state.activePreviewClipId, state.fps]);
   const hoveredObject = previewObjects.find((object) => object.clip.id === hoveredClipId);
   const selectedFilterObject = previewObjects.find((object) => object.clip.kind === "filter" && state.selectedClipIds.includes(object.clip.id));
   const cropEditingObject = previewObjects.find((object) => object.clip.id === state.previewCropClipId);
@@ -295,6 +297,9 @@ export function PreviewPanel() {
 
   const selectObjectAtPointer = async (event: ReactMouseEvent<HTMLDivElement>) => {
     if (state.previewCropClipId) return;
+    const pointerStart = previewClickStartRef.current;
+    previewClickStartRef.current = null;
+    if (pointerStart && isPreviewPointerDrag(pointerStart.x, pointerStart.y, event.clientX, event.clientY)) return;
     if (inspectorNavigationClickRef.current) {
       inspectorNavigationClickRef.current = false;
       return;
@@ -306,7 +311,6 @@ export function PreviewPanel() {
 
   const beginResize = (event: PreviewPointerStart, object: PreviewObjectBounds, handle: string) => {
     if (event.button !== 0 || state.playing) return;
-    controller.selectClip(object.clip.id);
     const stage = stageRef.current;
     if (!stage) return;
     const pointerId = event.pointerId;
@@ -418,7 +422,6 @@ export function PreviewPanel() {
 
   const beginMove = (event: PreviewPointerStart, object: PreviewObjectBounds) => {
     if (event.button !== 0 || state.playing) return;
-    controller.selectClip(object.clip.id);
     const stage = stageRef.current;
     if (!stage) return;
     const pointerId = event.pointerId;
@@ -459,7 +462,6 @@ export function PreviewPanel() {
 
   const beginRotate = (event: PreviewPointerStart, object: PreviewObjectBounds) => {
     if (event.button !== 0 || state.playing) return;
-    controller.selectClip(object.clip.id);
     const stage = stageRef.current;
     if (!stage) return;
     const rect = stage.getBoundingClientRect();
@@ -536,7 +538,7 @@ export function PreviewPanel() {
     const operation = event.ctrlKey || event.metaKey ? "pan" : event.shiftKey ? "walk" : "orbit";
     event.preventDefault();
     event.stopPropagation();
-    inspectorNavigationClickRef.current = true;
+    inspectorNavigationClickRef.current = false;
     setInspectorNavigation(operation);
     const pointerId = event.pointerId;
     let previousX = event.clientX;
@@ -563,8 +565,7 @@ export function PreviewPanel() {
       if (pointer.pointerId !== pointerId) return;
       if (moveFrame) cancelAnimationFrame(moveFrame);
       flushMove();
-      if (pointer.type === "pointercancel") inspectorNavigationClickRef.current = false;
-      else window.setTimeout(() => { inspectorNavigationClickRef.current = false; }, 0);
+      inspectorNavigationClickRef.current = false;
       setInspectorNavigation(null);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", end);
@@ -607,7 +608,6 @@ export function PreviewPanel() {
       if (!target.clipId) return;
       const objectAtPointer = previewObjects.find((object) => object.clip.id === target.clipId);
       if (!objectAtPointer) return;
-      controller.selectClip(target.clipId);
       setHoveredClipId(target.clipId);
       setHoveredHandle(target.handle ?? null);
       // A fast click may finish before the worker answers. Selection still
@@ -633,7 +633,7 @@ export function PreviewPanel() {
         {recordingTabOpen && <AudioRecordingPanel active={recordingTabActive} onRecordingChange={setAudioRecording} />}
         {gfxTextTabs.map((entry) => <GfxTextEditor key={entry.id} entry={entry} active={activeGfxTextId === entry.id} />)}
       </Suspense>
-      <div className={`preview-stage ${inspectorView ? "inspector-view" : ""} ${inspectorNavigation ? `inspector-${inspectorNavigation}` : ""} ${hoveredCameraHandle ? "camera-handle-hover" : ""} ${draggingCameraHandle ? "camera-handle-dragging" : ""} ${activeAudioClip || recordingTabActive || activeGfxTextId ? "preview-content-hidden" : ""} ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""} ${state.previewCropClipId ? "preview-cropping" : ""} ${previewCursorClass(hoveredHandle, hoveredObject)}`} ref={stageRef} style={previewStyle} title={inspectorView ? t("ギズモ: 軸操作 / ドラッグ: 周回 / Ctrl+ドラッグ: 上下左右 / Shift+ドラッグ: 前後左右 / ホイール: カメラズーム") : undefined} onPointerDown={beginStageInteraction} onWheel={zoomInspectorCamera} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; setHoveredCamera(false); hoveredCameraHandleRef.current = null; setHoveredCameraHandle(null); if (!draggingClipId) { setHoveredClipId(null); setHoveredHandle(null); } }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
+      <div className={`preview-stage ${inspectorView ? "inspector-view" : ""} ${inspectorNavigation ? `inspector-${inspectorNavigation}` : ""} ${hoveredCameraHandle ? "camera-handle-hover" : ""} ${draggingCameraHandle ? "camera-handle-dragging" : ""} ${activeAudioClip || recordingTabActive || activeGfxTextId ? "preview-content-hidden" : ""} ${poppedOut ? "preview-popped-out" : ""} ${draggingClipId ? "object-dragging" : ""} ${state.previewCropClipId ? "preview-cropping" : ""} ${previewCursorClass(hoveredHandle, hoveredObject)}`} ref={stageRef} style={previewStyle} title={inspectorView ? t("ギズモ: 軸操作 / ドラッグ: 周回 / Ctrl+ドラッグ: 上下左右 / Shift+ドラッグ: 前後左右 / ホイール: カメラズーム") : undefined} onPointerDownCapture={(event) => { if (event.button === 0) previewClickStartRef.current = { x: event.clientX, y: event.clientY }; }} onPointerUpCapture={() => { window.setTimeout(() => { previewClickStartRef.current = null; }, 0); }} onPointerCancelCapture={() => { previewClickStartRef.current = null; }} onPointerDown={beginStageInteraction} onWheel={zoomInspectorCamera} onMouseMove={hoverObject} onMouseLeave={() => { pickSequenceRef.current += 1; setHoveredCamera(false); hoveredCameraHandleRef.current = null; setHoveredCameraHandle(null); if (!draggingClipId) { setHoveredClipId(null); setHoveredHandle(null); } }} onClick={selectObjectAtPointer} onContextMenu={(event) => {
         event.preventDefault();
         const element = event.currentTarget;
         const rect = element.getBoundingClientRect();
@@ -714,6 +714,7 @@ function animatedClip(clip: TimelineClip, timelineTime: number): TimelineClip {
   const result = { ...clip };
   const localTime = Math.max(0, Math.min(clip.duration, timelineTime - clip.start));
   for (const property of new Set(clip.keyframes.map((keyframe) => keyframe.property))) {
+    if (!property) continue;
     const keys = clip.keyframes.filter((keyframe) => keyframe.property === property).sort((a, b) => a.time - b.time);
     const left = [...keys].reverse().find((keyframe) => keyframe.time <= localTime) ?? keys[0];
     const right = keys.find((keyframe) => keyframe.time >= localTime) ?? keys.at(-1)!;

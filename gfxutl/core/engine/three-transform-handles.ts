@@ -6,14 +6,26 @@ const HANDLE_POINTS = [
 ] as const;
 const HANDLE_POSITIONS = ["nw", "n", "ne", "e", "se", "s", "sw", "w"] as const;
 const HANDLE_SIZE_PX = 10;
+const HANDLE_HIT_SIZE_PX = 20;
+const BOUNDS_HIT_PADDING_PX = 6;
 const ROTATION_OFFSET_PX = 28;
+const SHADOW_OFFSET_PX = 1.5;
+const SHADOW_SPREAD_PX = 1;
+const SHADOW_RENDER_ORDER = 1_999_999_999;
+const HANDLE_RENDER_ORDER = 2_000_000_000;
 
 /** Three.js-resident transform outline used only by the interactive preview. */
 export class ThreeTransformHandles {
   private readonly group = new THREE.Group();
+  private readonly outlineShadow: THREE.LineSegments;
   private readonly outline: THREE.LineSegments;
+  private readonly stemShadow: THREE.Line;
   private readonly stem: THREE.Line;
+  private readonly handleShadows: THREE.Mesh[];
   private readonly handles: THREE.Mesh[];
+  private readonly handleHitAreas: THREE.Mesh[];
+  private readonly boundsHitArea: THREE.Mesh;
+  private readonly rotationHandleShadow: THREE.Mesh;
   private readonly rotationHandle: THREE.Mesh;
   private readonly rotationHitArea: THREE.Mesh;
   private readonly bounds = new THREE.Box3();
@@ -29,31 +41,72 @@ export class ThreeTransformHandles {
 
   constructor(scene: THREE.Scene) {
     const lineMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false, toneMapped: false });
+    const shadowLineMaterial = new THREE.LineBasicMaterial({ color: 0x000000, depthTest: false, depthWrite: false, toneMapped: false });
     const handleMaterial = new THREE.MeshBasicMaterial({ color: 0xf5f5f3, depthTest: false, depthWrite: false, toneMapped: false, side: THREE.DoubleSide });
-    this.outline = new THREE.LineSegments(new THREE.BufferGeometry(), lineMaterial);
-    this.stem = new THREE.Line(new THREE.BufferGeometry(), lineMaterial);
+    const shadowHandleMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, depthTest: false, depthWrite: false, toneMapped: false, side: THREE.DoubleSide });
+    const hitAreaMaterial = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
+    hitAreaMaterial.colorWrite = false;
+    const outlineGeometry = new THREE.BufferGeometry();
+    const stemGeometry = new THREE.BufferGeometry();
+    const handleGeometry = new THREE.PlaneGeometry(1, 1);
+    const hitAreaGeometry = new THREE.PlaneGeometry(1, 1);
+    const rotationHandleGeometry = new THREE.CircleGeometry(0.5, 20);
+    this.outlineShadow = new THREE.LineSegments(outlineGeometry, shadowLineMaterial);
+    this.outline = new THREE.LineSegments(outlineGeometry, lineMaterial);
+    this.stemShadow = new THREE.Line(stemGeometry, shadowLineMaterial);
+    this.stem = new THREE.Line(stemGeometry, lineMaterial);
+    this.handleShadows = HANDLE_POINTS.map((_, index) => {
+      const shadow = new THREE.Mesh(handleGeometry, shadowHandleMaterial);
+      shadow.name = `editor:transform-handle-shadow:${HANDLE_POSITIONS[index]}`;
+      return shadow;
+    });
     this.handles = HANDLE_POINTS.map((_, index) => {
-      const handle = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), handleMaterial);
+      const handle = new THREE.Mesh(handleGeometry, handleMaterial);
       handle.name = `editor:transform-handle:${HANDLE_POSITIONS[index]}`;
       handle.userData.gfxTransformHandleKind = HANDLE_POSITIONS[index];
       return handle;
     });
-    this.rotationHandle = new THREE.Mesh(new THREE.CircleGeometry(0.5, 20), handleMaterial);
+    this.handleHitAreas = HANDLE_POINTS.map((_, index) => {
+      const hitArea = new THREE.Mesh(hitAreaGeometry, hitAreaMaterial);
+      hitArea.name = `editor:transform-handle-hit-area:${HANDLE_POSITIONS[index]}`;
+      hitArea.userData.gfxTransformHandleKind = HANDLE_POSITIONS[index];
+      return hitArea;
+    });
+    this.boundsHitArea = new THREE.Mesh(hitAreaGeometry, hitAreaMaterial);
+    this.boundsHitArea.name = "editor:transform-bounds-hit-area";
+    this.boundsHitArea.userData.gfxTransformBounds = true;
+    this.rotationHandleShadow = new THREE.Mesh(rotationHandleGeometry, shadowHandleMaterial);
+    this.rotationHandleShadow.name = "editor:transform-handle-shadow:rotation";
+    this.rotationHandle = new THREE.Mesh(rotationHandleGeometry, handleMaterial);
     this.rotationHandle.name = "editor:transform-handle:rotation";
     this.rotationHandle.userData.gfxTransformHandleKind = "rotation";
-    const hitAreaMaterial = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
-    hitAreaMaterial.colorWrite = false;
-    this.rotationHitArea = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), hitAreaMaterial);
+    this.rotationHitArea = new THREE.Mesh(hitAreaGeometry, hitAreaMaterial);
     this.rotationHitArea.name = "editor:transform-handle:rotation-hit-area";
     this.rotationHitArea.userData.gfxTransformHandleKind = "rotation";
     this.group.name = "editor:transform-handles";
     this.group.matrixAutoUpdate = false;
     this.group.visible = false;
-    this.group.renderOrder = 2_000_000_000;
-    this.group.add(this.outline, this.stem, this.rotationHitArea, ...this.handles, this.rotationHandle);
+    this.group.renderOrder = HANDLE_RENDER_ORDER;
+    this.group.add(
+      this.outlineShadow,
+      this.stemShadow,
+      ...this.handleShadows,
+      this.rotationHandleShadow,
+      this.outline,
+      this.stem,
+      this.boundsHitArea,
+      ...this.handleHitAreas,
+      this.rotationHitArea,
+      ...this.handles,
+      this.rotationHandle,
+    );
+    for (const shadow of [this.outlineShadow, this.stemShadow, ...this.handleShadows, this.rotationHandleShadow]) {
+      shadow.userData.gfxTransformShadow = true;
+      shadow.raycast = () => {};
+    }
     this.group.traverse((object) => {
       object.layers.set(TRANSFORM_HANDLES_LAYER);
-      object.renderOrder = 2_000_000_000;
+      object.renderOrder = object.userData.gfxTransformShadow ? SHADOW_RENDER_ORDER : HANDLE_RENDER_ORDER;
       object.frustumCulled = false;
       object.userData.gfxTransformHandle = true;
     });
@@ -91,10 +144,18 @@ export class ThreeTransformHandles {
     const worldUnitsPerPixel = projectedWorldUnitsPerPixel(camera, this.worldCenter, viewportHeight);
     const handleScaleX = HANDLE_SIZE_PX * worldUnitsPerPixel / scaleX;
     const handleScaleY = HANDLE_SIZE_PX * worldUnitsPerPixel / scaleY;
+    const handleHitScaleX = HANDLE_HIT_SIZE_PX * worldUnitsPerPixel / scaleX;
+    const handleHitScaleY = HANDLE_HIT_SIZE_PX * worldUnitsPerPixel / scaleY;
+    const boundsHitPaddingX = BOUNDS_HIT_PADDING_PX * worldUnitsPerPixel / scaleX;
+    const boundsHitPaddingY = BOUNDS_HIT_PADDING_PX * worldUnitsPerPixel / scaleY;
+    const shadowScaleX = (HANDLE_SIZE_PX + SHADOW_SPREAD_PX * 2) * worldUnitsPerPixel / scaleX;
+    const shadowScaleY = (HANDLE_SIZE_PX + SHADOW_SPREAD_PX * 2) * worldUnitsPerPixel / scaleY;
+    const shadowOffsetX = SHADOW_OFFSET_PX * worldUnitsPerPixel / scaleX;
+    const shadowOffsetY = -SHADOW_OFFSET_PX * worldUnitsPerPixel / scaleY;
     const rotationOffset = ROTATION_OFFSET_PX * worldUnitsPerPixel / scaleY;
     const z = max.z + worldUnitsPerPixel * 0.5 / scaleZ;
 
-    const geometrySignature = [min.x, min.y, min.z, max.x, max.y, max.z, handleScaleX, handleScaleY, rotationOffset, z].join(":");
+    const geometrySignature = [min.x, min.y, min.z, max.x, max.y, max.z, handleScaleX, handleScaleY, handleHitScaleX, handleHitScaleY, boundsHitPaddingX, boundsHitPaddingY, shadowScaleX, shadowScaleY, shadowOffsetX, shadowOffsetY, rotationOffset, z].join(":");
     if (geometrySignature !== this.geometrySignature) {
       this.geometrySignature = geometrySignature;
       setLineSegments(this.outline.geometry, [
@@ -104,15 +165,25 @@ export class ThreeTransformHandles {
         min.x, max.y, z, min.x, min.y, z,
       ]);
       setLineSegments(this.stem.geometry, [centerX, max.y, z, centerX, max.y + rotationOffset, z]);
+      this.outlineShadow.position.set(shadowOffsetX, shadowOffsetY, 0);
+      this.stemShadow.position.set(shadowOffsetX, shadowOffsetY, 0);
       for (let index = 0; index < this.handles.length; index++) {
         const [x, y] = HANDLE_POINTS[index];
         this.handles[index].position.set(centerX + x * width / 2, centerY + y * height / 2, z);
         this.handles[index].scale.set(handleScaleX, handleScaleY, 1);
+        this.handleHitAreas[index].position.copy(this.handles[index].position);
+        this.handleHitAreas[index].scale.set(handleHitScaleX, handleHitScaleY, 1);
+        this.handleShadows[index].position.copy(this.handles[index].position);
+        this.handleShadows[index].scale.set(shadowScaleX, shadowScaleY, 1);
       }
+      this.boundsHitArea.position.set(centerX, centerY, z);
+      this.boundsHitArea.scale.set(width + boundsHitPaddingX * 2, height + boundsHitPaddingY * 2, 1);
       this.rotationHitArea.position.set(centerX, max.y + rotationOffset / 2, z);
       this.rotationHitArea.scale.set(handleScaleX * 1.5, Math.max(0.000001, rotationOffset - handleScaleY), 1);
       this.rotationHandle.position.set(centerX, max.y + rotationOffset, z);
       this.rotationHandle.scale.set(handleScaleX, handleScaleY, 1);
+      this.rotationHandleShadow.position.copy(this.rotationHandle.position);
+      this.rotationHandleShadow.scale.set(shadowScaleX, shadowScaleY, 1);
     }
     this.group.visible = true;
   }
@@ -144,9 +215,11 @@ export class ThreeTransformHandles {
     this.stem.geometry.dispose();
     (this.outline.material as THREE.Material).dispose();
     (this.stem.material as THREE.Material).dispose();
+    (this.outlineShadow.material as THREE.Material).dispose();
+    (this.stemShadow.material as THREE.Material).dispose();
     const geometries = new Set<THREE.BufferGeometry>();
     const materials = new Set<THREE.Material>();
-    for (const handle of [...this.handles, this.rotationHandle, this.rotationHitArea]) {
+    for (const handle of [...this.handleShadows, ...this.handles, ...this.handleHitAreas, this.boundsHitArea, this.rotationHandleShadow, this.rotationHandle, this.rotationHitArea]) {
       geometries.add(handle.geometry);
       materials.add(handle.material as THREE.Material);
     }

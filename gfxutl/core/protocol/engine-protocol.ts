@@ -230,7 +230,7 @@ export type KeyframeProperty =
   | `effect.${string}.${string}`;
 export interface ClipKeyframe {
   id: string;
-  property: KeyframeProperty;
+  property: KeyframeProperty | "";
   time: number;
   value: number;
   interpolation: "step" | "linear" | "smooth" | "bezier";
@@ -418,7 +418,7 @@ export interface RenderClip {
   colorGrading: ColorGradingSpec;
   /** User-defined inspector stack order. Pixel operations are evaluated in this order. */
   propertyActionOrder?: Array<"transform" | "sceneGraph" | "keyframes" | "crop" | "colorGrading" | "effects" | "masks" | "audio" | "speed">;
-  /** Timeline filters above this clip, ordered from nearest to topmost. */
+  /** Timeline filters at or in front of this clip, ordered by increasing Z. */
   filterStack: RenderFilter[];
   masks: ClipMask[];
   keyframes: ClipKeyframe[];
@@ -439,6 +439,7 @@ export interface RenderFilter {
   enabled: boolean;
   positionX: number;
   positionY: number;
+  positionZ: number;
   scale: number;
   scaleX: number;
   scaleY: number;
@@ -488,6 +489,20 @@ export interface MediaReadGraphEdge {
   timelineTime: number;
 }
 
+export interface SvgMeshSpec {
+  positions: number[];
+  indices?: number[];
+  color: number;
+  opacity: number;
+  renderOrder: number;
+}
+
+export interface SvgAssetSpec {
+  width: number;
+  height: number;
+  meshes: SvgMeshSpec[];
+}
+
 /** Timeline-derived file-use graph consumed by the renderer's media buffer. */
 export interface MediaReadGraph {
   revision: number;
@@ -504,10 +519,10 @@ export type EngineRequest =
   | { type: "timeline-sync"; snapshot: TimelineSnapshot }
   | { type: "timeline-patch"; patch: TimelinePatch }
   | { type: "inspect-media"; requestId: string; assetId: string; source: MediaFileSource; file: File }
-  | { type: "inspect-image"; requestId: string; assetId: string; source: MediaFileSource; file: File }
+  | { type: "inspect-image"; requestId: string; assetId: string; source: MediaFileSource; file: File; svg?: SvgAssetSpec }
   | { type: "inspect-model"; requestId: string; assetId: string; source: MediaFileSource; file: File }
   | { type: "media-buffer-plan"; graph: MediaReadGraph }
-  | { type: "media-buffer-load"; assetId: string; kind: "video" | "audio" | "image" | "model"; source: MediaFileSource; file: File }
+  | { type: "media-buffer-load"; assetId: string; kind: "video" | "audio" | "image" | "model"; source: MediaFileSource; file: File; svg?: SvgAssetSpec }
   | { type: "release-media"; assetId: string }
   | { type: "decode-audio-preview"; requestId: string; assetId: string; startTime: number; endTime: number }
   | { type: "media-thumbnail"; requestId: string; assetId: string; time: number; timeline?: { width: number; height: number } }

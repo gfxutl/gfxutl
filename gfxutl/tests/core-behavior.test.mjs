@@ -10,6 +10,15 @@ async function importTypeScript(path) {
   return import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 }
 
+async function importThreeTransformHandles() {
+  const source = await readFile(new URL("../core/engine/three-transform-handles.ts", import.meta.url), "utf8");
+  const outputText = stripTypeScriptTypes(source, { mode: "transform" })
+    .replace('import * as THREE from "three/webgpu";', "const THREE = globalThis.__gfxutlThreeTest;")
+    .replace('import { TRANSFORM_HANDLES_LAYER } from "./editor-layers";', "const TRANSFORM_HANDLES_LAYER = 30;");
+  globalThis.__gfxutlThreeTest = THREE;
+  return import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+}
+
 test("sequenceEnd preserves an explicit duration and expands for content", async () => {
   const { alignExportRangeToSequence, sequenceEnd } = await importTypeScript("../core/interface/sequence-duration.ts");
   assert.equal(sequenceEnd([], 30, 12), 12);
@@ -23,6 +32,54 @@ test("sequenceEnd preserves an explicit duration and expands for content", async
     alignExportRangeToSequence({ fps: 30, startTime: 20, endTime: 24 }, 10),
     { fps: 30, startTime: 10 - 1 / 30, endTime: 10 },
   );
+});
+
+test("timeline object double-click times clamp and snap to frame boundaries", async () => {
+  const { createEmptyTimelineKeyframe, resolveTimelineKeyframeTime } = await importTypeScript("../core/interface/timeline-keyframe.ts");
+  assert.equal(resolveTimelineKeyframeTime(1.26, 5, 10, true), 1.3);
+  assert.equal(resolveTimelineKeyframeTime(1.26, 5, 10, false), 1.26);
+  assert.equal(resolveTimelineKeyframeTime(-1, 5, 30, true), 0);
+  assert.equal(resolveTimelineKeyframeTime(7, 5, 30, true), 5);
+  assert.deepEqual(createEmptyTimelineKeyframe("key-1", 1.3), {
+    id: "key-1",
+    property: "",
+    time: 1.3,
+    value: 0,
+    interpolation: "smooth",
+  });
+});
+
+test("SVG files are accepted and converted to native Three.js vector meshes", async () => {
+  const { isBrowserPreviewImageName, isImportImageName, isTextureImageFile, mediaKindForFile, SUPPORTED_MEDIA_EXTENSIONS } = await importTypeScript("../core/interface/media-format.ts");
+  assert.equal(SUPPORTED_MEDIA_EXTENSIONS.has("svg"), true);
+  assert.equal(mediaKindForFile({ name: "vector.SVG", type: "" }), "image");
+  assert.equal(mediaKindForFile({ name: "vector", type: "image/svg+xml" }), "image");
+  assert.equal(isImportImageName("vector.svg"), true);
+  assert.equal(isBrowserPreviewImageName("vector.svg"), true);
+  assert.equal(isTextureImageFile({ name: "vector.svg", type: "image/svg+xml" }), false);
+  const svgPipeline = await readFile(new URL("../core/interface/svg-image.ts", import.meta.url), "utf8");
+  assert.match(svgPipeline, /from "three\/addons\/loaders\/SVGLoader\.js"/);
+  assert.match(svgPipeline, /new SVGLoader\(\)\.parse/);
+  assert.match(svgPipeline, /SVGLoader\.createShapes/);
+  assert.match(svgPipeline, /SVGLoader\.pointsToStroke/);
+  assert.doesNotMatch(svgPipeline, /createImageBitmap|toBlob|convertToBlob/);
+  const workerPipeline = await readFile(new URL("../core/engine/media.worker.ts", import.meta.url), "utf8");
+  assert.match(workerPipeline, /hydrateSvgImage/);
+  assert.match(workerPipeline, /combineSvgMeshParts/);
+});
+
+test("SVG parts retain painter order when combined into one Three.js mesh", async () => {
+  const { combineSvgMeshParts } = await importTypeScript("../core/engine/svg-painter-order.ts");
+  const combined = combineSvgMeshParts([
+    { positions: [0, 0, 0, 1, 0, 0, 0, 1, 0], indices: [0, 1, 2], color: 0xff0000, opacity: 1, renderOrder: 0 },
+    { positions: [2, 2, 0, 3, 2, 0, 2, 3, 0], color: 0x0000ff, opacity: 0.5, renderOrder: 1 },
+  ]);
+  assert.deepEqual(combined.positions, [0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 2, 0, 3, 2, 0, 2, 3, 0]);
+  assert.deepEqual(combined.indices, [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(combined.groups, [
+    { start: 0, count: 3, materialIndex: 0 },
+    { start: 3, count: 3, materialIndex: 1 },
+  ]);
 });
 
 test("Google Fonts catalog entries use jsDelivr repository paths", async () => {
@@ -197,25 +254,25 @@ test("timeline transitions are identical at clip boundaries and overlap in the m
   assert.equal(clipTransitionGain(clip, 10), 0);
 });
 
-test("timeline draw hierarchy traverses visual rows and filters from top to bottom", async () => {
+test("timeline draw hierarchy follows 3D Z positions independently of row placement", async () => {
   const { orderedTimelineFilters, orderedVisualClips } = await importTypeScript("../core/interface/timeline-draw-order.ts");
   const clips = [
-    { id: "bottom", kind: "video", y: 240, positionZ: 0 },
-    { id: "top", kind: "video", y: 20, positionZ: 0 },
-    { id: "middle", kind: "title", y: 120, positionZ: 0 },
-    { id: "filter-bottom", kind: "filter", y: 180 },
-    { id: "filter-top", kind: "filter", y: 40 },
+    { id: "front", kind: "video", y: 240, positionZ: 12 },
+    { id: "back", kind: "video", y: 20, positionZ: -4 },
+    { id: "middle", kind: "title", y: 120, positionZ: 3 },
+    { id: "filter-front", kind: "filter", y: 180, positionZ: 9 },
+    { id: "filter-back", kind: "filter", y: 40, positionZ: -2 },
     { id: "group", kind: "group", y: 0 },
   ];
-  assert.deepEqual(orderedVisualClips(clips).map((clip) => clip.id), ["top", "middle", "bottom"]);
-  assert.deepEqual(orderedTimelineFilters(clips).map((clip) => clip.id), ["filter-top", "filter-bottom"]);
+  assert.deepEqual(orderedVisualClips(clips).map((clip) => clip.id), ["back", "middle", "front"]);
+  assert.deepEqual(orderedTimelineFilters(clips).map((clip) => clip.id), ["filter-back", "filter-front"]);
 });
 
-test("an explicit stack order overrides the timeline row default", async () => {
+test("equal-Z clips retain source order instead of using timeline Y or legacy stack order", async () => {
   const { orderedVisualClips } = await importTypeScript("../core/interface/timeline-draw-order.ts");
   const clips = [
-    { id: "bottom", kind: "video", y: 240, stackOrder: 0 },
-    { id: "top", kind: "video", y: 20, stackOrder: 1 },
+    { id: "bottom", kind: "video", y: 240, positionZ: 0, stackOrder: 99 },
+    { id: "top", kind: "video", y: 20, positionZ: 0, stackOrder: -99 },
   ];
   assert.deepEqual(orderedVisualClips(clips).map((clip) => clip.id), ["bottom", "top"]);
 });
@@ -255,6 +312,51 @@ test("preview picking inherits the visible camera layer mask", async () => {
     picker.intersectObjects([inspectorHelper, timelineObject]).map((hit) => hit.object.name),
     ["timeline-object", "timeline-object"],
   );
+});
+
+test("3D preview transform handles expose rectangular resize and bounds hit areas", async () => {
+  const { ThreeTransformHandles } = await importThreeTransformHandles();
+  const scene = new THREE.Scene();
+  const root = new THREE.Mesh(new THREE.SphereGeometry(1), new THREE.MeshBasicMaterial());
+  scene.add(root);
+
+  const camera = new THREE.OrthographicCamera(-5, 5, 5, -5, 0.1, 100);
+  camera.position.z = 10;
+  camera.lookAt(0, 0, 0);
+  camera.layers.enable(30);
+  camera.updateMatrixWorld(true);
+
+  const transformHandles = new ThreeTransformHandles(scene);
+  transformHandles.sync(root, camera, 1_000, "initial");
+  scene.updateMatrixWorld(true);
+
+  const picker = new THREE.Raycaster();
+  picker.layers.set(30);
+  const hitsAt = (x, y) => {
+    picker.setFromCamera(new THREE.Vector2(x / 5, y / 5), camera);
+    return picker.intersectObject(transformHandles.pickRoot, true);
+  };
+
+  assert.ok(hitsAt(1.08, 1.08).some((hit) => hit.object.userData.gfxTransformHandleKind === "ne"));
+  assert.ok(hitsAt(0.9, 0.9).some((hit) => hit.object.userData.gfxTransformBounds === true));
+  for (const handle of ["nw", "n", "ne", "e", "se", "s", "sw", "w", "rotation"]) {
+    const foreground = transformHandles.pickRoot.getObjectByName(`editor:transform-handle:${handle}`);
+    const shadow = transformHandles.pickRoot.getObjectByName(`editor:transform-handle-shadow:${handle}`);
+    assert.ok(foreground && shadow);
+    assert.deepEqual(shadow.position.toArray(), foreground.position.toArray());
+  }
+
+  transformHandles.dispose();
+  root.geometry.dispose();
+  root.material.dispose();
+  delete globalThis.__gfxutlThreeTest;
+});
+
+test("preview focus distinguishes clicks from pointer drags", async () => {
+  const { isPreviewPointerDrag } = await importTypeScript("../core/interface/preview-pointer.ts");
+  assert.equal(isPreviewPointerDrag(20, 20, 22, 22), false);
+  assert.equal(isPreviewPointerDrag(20, 20, 23, 20), true);
+  assert.equal(isPreviewPointerDrag(20, 20, 35, 42), true);
 });
 
 test("preview resize preserves aspect ratio while Shift is held", async () => {
@@ -318,6 +420,13 @@ test("timeline resize alignment offers the playhead for either clip edge", async
     { distance: 5, start: 2.5, time: 5, movingEdge: "end" },
   );
   assert.equal(findTimelinePlayheadAlignment({ start: 4, duration: 2 }, 5, 10, ["start"]), null);
+});
+
+test("timeline ruler hover seek accounts for scrolling and clamps to the sequence", async () => {
+  const { timelineRulerSeekTime } = await importTypeScript("../core/interface/timeline-ruler-seek.ts");
+  assert.equal(timelineRulerSeekTime(50, 150, 20, 30), 10);
+  assert.equal(timelineRulerSeekTime(-10, 0, 20, 30), 0);
+  assert.equal(timelineRulerSeekTime(900, 0, 20, 30), 30);
 });
 
 test("the timeline thumbnail lane remains serial and can cancel pending requests", async () => {

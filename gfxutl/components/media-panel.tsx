@@ -35,6 +35,7 @@ import { Tooltip } from "./ui/tooltip";
 import { useI18n } from "../core/i18n";
 import { openAudioRecordingTab, SAVE_AUDIO_RECORDING_EVENT, type SaveAudioRecordingDetail } from "../core/interface/recording-events";
 import { S3MediaSource, type S3ConnectionSettings } from "../core/interface/s3-media-source";
+import { isBrowserPreviewImageName, isImportImageName, SUPPORTED_MEDIA_EXTENSIONS } from "../core/interface/media-format";
 
 const ExportPanel = lazy(() => import("./export-panel").then((module) => ({ default: module.ExportPanel })));
 const SettingsPanel = lazy(() => import("./settings-panel").then((module) => ({ default: module.SettingsPanel })));
@@ -54,8 +55,6 @@ type ExplorerNode = {
   loading?: boolean;
   accessRequired?: boolean;
 };
-
-const SUPPORTED_EXTENSIONS = new Set(["mp4", "mov", "webm", "mkv", "wav", "mp3", "aac", "flac", "png", "jpg", "jpeg", "webp", "hdr", "exr", "glb", "gltf"]);
 
 const KindIcon = ({ kind }: { kind: MediaAsset["kind"] }) => kind === "audio" ? <AudioLines /> : kind === "image" ? <Image /> : kind === "model" ? <Box /> : <FileVideo />;
 
@@ -818,7 +817,7 @@ function FileKindIcon({ name, asset }: { name: string; asset?: MediaAsset }) {
   if (asset) return <KindIcon kind={asset.kind} />;
   if (isGfxText(name)) return <TextFont />;
   const extension = extensionLabel(name).toLowerCase();
-  if (["png", "jpg", "jpeg", "webp", "hdr", "exr"].includes(extension)) return <FileImage />;
+  if (isImportImageName(name)) return <FileImage />;
   if (["wav", "mp3", "aac", "flac"].includes(extension)) return <AudioLines />;
   if (extension === "glb") return <Box />;
   return supportedExtension(extension) ? <FileVideo /> : <File />;
@@ -1038,10 +1037,10 @@ async function requestDirectoryPermission(handle: FileSystemDirectoryHandle) {
 
 function setAssetDragData(dataTransfer: DataTransfer, assetId: string) { dataTransfer.clearData(); dataTransfer.effectAllowed = "copy"; dataTransfer.setData("application/x-gfxutl-asset", assetId); dataTransfer.setData("text/plain", assetId); }
 function setExplorerDragData(dataTransfer: DataTransfer, path: string) { dataTransfer.clearData(); dataTransfer.effectAllowed = "copy"; dataTransfer.setData("application/x-gfxutl-path", path); dataTransfer.setData("text/plain", path); }
-function supportedExtension(extension: string) { return SUPPORTED_EXTENSIONS.has(extension); }
+function supportedExtension(extension: string) { return SUPPORTED_MEDIA_EXTENSIONS.has(extension); }
 function isSupported(name: string) { return supportedExtension(extensionLabel(name).toLowerCase()); }
 function isGfxText(name: string) { return name.toLowerCase().endsWith(".gfxtext.json"); }
-function isBrowserPreviewImage(name: string) { return ["png", "jpg", "jpeg", "webp"].includes(extensionLabel(name).toLowerCase()); }
+function isBrowserPreviewImage(name: string) { return isBrowserPreviewImageName(name); }
 function isBrowserPreviewVideo(name: string) { return ["mp4", "mov", "webm", "mkv"].includes(extensionLabel(name).toLowerCase()); }
 function extensionLabel(name: string) { return name.includes(".") ? name.split(".").pop()!.toUpperCase() : "FILE"; }
 function formatDuration(value: number) { return `${Math.floor(value / 60)}:${Math.floor(value % 60).toString().padStart(2, "0")}`; }

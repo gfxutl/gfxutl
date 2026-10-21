@@ -23,6 +23,7 @@ import { AUDIO_WAVEFORM_VERSION, clampTimelineVerticalZoom, clampTimelineZoom, c
 import type { MediaAsset, SceneKeyframe, TimelineClip } from "../core/interface";
 import { useI18n } from "../core/i18n";
 import { constrainTimelineDrag, resolveTimelineDragAxis, type TimelineDragAxis } from "../core/interface/timeline-drag";
+import { timelineRulerSeekTime } from "../core/interface/timeline-ruler-seek";
 
 const MIN_WORKSPACE_HEIGHT = 720;
 const BASE_PX_PER_SECOND = 26;
@@ -431,6 +432,7 @@ function TimelineRuler({ duration, minimumDuration, fps, snapEnabled, pxPerSecon
   onDoubleClick: (event: ReactMouseEvent<HTMLDivElement>) => void;
 }) {
   const { t } = useI18n();
+  const [hoverSeek, setHoverSeek] = useState<{ time: number; alignRight: boolean } | null>(null);
   const majorStep = niceTimelineStep(76 / Math.max(0.001, pxPerSecond));
   const minorStep = majorStep / 5;
   const ticks = useMemo(() => {
@@ -449,11 +451,22 @@ function TimelineRuler({ duration, minimumDuration, fps, snapEnabled, pxPerSecon
     const x = group.time * pxPerSecond;
     return x >= scrollLeft - 20 && x <= scrollLeft + viewportWidth + 20;
   });
+  const updateHoverSeek = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const scroll = event.currentTarget.closest<HTMLElement>(".timeline-scroll");
+    if (!scroll) return;
+    const rect = scroll.getBoundingClientRect();
+    const viewportX = Math.max(0, Math.min(scroll.clientWidth, event.clientX - rect.left));
+    setHoverSeek({
+      time: timelineRulerSeekTime(viewportX, scroll.scrollLeft, pxPerSecond, duration),
+      alignRight: viewportX > scroll.clientWidth - 76,
+    });
+  };
   return (
-    <div className="timeline-time-ruler" aria-label={t("タイムライン時間ルーラー")} title={t("ダブルクリックでカメラキーフレームを追加")} onPointerDown={onPointerDown} onDoubleClick={onDoubleClick}>
+    <div className="timeline-time-ruler" aria-label={t("タイムライン時間ルーラー")} title={t("ダブルクリックでカメラキーフレームを追加")} onPointerMove={updateHoverSeek} onPointerLeave={() => setHoverSeek(null)} onPointerDown={onPointerDown} onDoubleClick={onDoubleClick}>
       {ticks.map((tick) => <i key={tick.index} className={tick.major ? "major" : "minor"} style={{ left: tick.time * pxPerSecond }}>
         {tick.major && <time dateTime={`PT${tick.time}S`}>{formatRulerTime(tick.time, duration, majorStep)}</time>}
       </i>)}
+      {hoverSeek && <span className={`timeline-ruler-hover-seek ${hoverSeek.alignRight ? "align-right" : ""}`} style={{ left: hoverSeek.time * pxPerSecond }} aria-hidden="true"><output>{formatPreciseClock(hoverSeek.time)}</output></span>}
       {visibleCameraKeyframes.map((group) => <CameraKeyframeMarker key={group.keyframes.map((keyframe) => keyframe.id).join(":")} group={group} duration={duration} fps={fps} pxPerSecond={pxPerSecond} selected={group.keyframes.some((keyframe) => selectedCameraKeyframeIds.includes(keyframe.id))} controller={controller} />)}
       <SequenceEndHandle duration={duration} minimumDuration={minimumDuration} fps={fps} snapEnabled={snapEnabled} pxPerSecond={pxPerSecond} controller={controller} />
     </div>
@@ -867,6 +880,18 @@ const Clip = memo(function Clip({ clip, asset, waveformPeaks, pxPerSecond, verti
       onPointerMove={dragClip}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
+      onDoubleClick={(event) => {
+        const target = event.target as Element;
+        if (clip.locked || target.closest(".timeline-keyframe, .clip-trim-handle, .group-resize-handle")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = event.currentTarget.getBoundingClientRect();
+        const requestedTime = Math.min(clip.duration, Math.max(0, (event.clientX - rect.left) / pxPerSecond));
+        const time = controller.addEmptyKeyframe(clip.id, requestedTime);
+        if (time === undefined) return;
+        controller.setTime(clip.start + time);
+        if (!selected) controller.selectClip(clip.id);
+      }}
       onContextMenu={(event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -885,7 +910,7 @@ const Clip = memo(function Clip({ clip, asset, waveformPeaks, pxPerSecond, verti
         {clip.locked && <span title={t("ロック")}>L</span>}
         {visual && <span title={t(clip.visible === false ? "非表示" : "表示")}>{clip.visible === false ? <EyeOff /> : <Eye />}</span>}
       </span>}
-      {(clip.keyframes ?? []).map((keyframe) => <i className="timeline-keyframe" key={keyframe.id} title={`${keyframe.property}: ${keyframe.value} · ${t("ドラッグで時刻変更")}`} style={{ left: `${Math.max(0, Math.min(100, keyframe.time / Math.max(0.001, clip.duration) * 100))}%` }} onPointerDown={(event) => beginKeyframeDrag(keyframe.id, keyframe.time, event)} onClick={(event) => { event.stopPropagation(); controller.setTime(clip.start + keyframe.time); controller.selectClip(clip.id); }} />)}
+      {(clip.keyframes ?? []).map((keyframe) => <i className="timeline-keyframe" key={keyframe.id} title={`${keyframe.property || t("未設定")}${keyframe.property ? `: ${keyframe.value}` : ""} · ${t("ドラッグで時刻変更")}`} style={{ left: `${Math.max(0, Math.min(100, keyframe.time / Math.max(0.001, clip.duration) * 100))}%` }} onPointerDown={(event) => beginKeyframeDrag(keyframe.id, keyframe.time, event)} onClick={(event) => { event.stopPropagation(); controller.setTime(clip.start + keyframe.time); controller.selectClip(clip.id); }} />)}
       {clip.kind === "audio" && <div className="waveform" data-waveform-source={waveformPeaks?.length ? "media" : "pending"}>{displayedWaveformPeaks.map((peak, i) => <i key={i} style={{ height: `${Math.max(4, Math.min(100, peak * 100))}%` }} />)}</div>}
       {verticallyVisible && clip.kind === "video" && asset && (asset.kind === "video" || asset.kind === "image") && <TimelineMediaStrip asset={asset} clip={clip} width={clipWidth} height={clipHeight} pxPerSecond={pxPerSecond} fps={fps} viewport={timelineViewport} controller={controller} />}
       {selected && !clip.locked && durationResizable && clip.kind !== "group" && <><i className="clip-trim-handle trim-start" title={t("左端をドラッグして長さを変更")} onPointerDown={(event) => beginResize("start", event)} /><i className="clip-trim-handle trim-end" title={t("右端をドラッグして長さを変更")} onPointerDown={(event) => beginResize("end", event)} /></>}

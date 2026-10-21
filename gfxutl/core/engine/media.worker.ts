@@ -7,7 +7,7 @@ import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { clone as cloneSkinned } from "three/addons/utils/SkeletonUtils.js";
 import { ALL_FORMATS, AudioSample, AudioSampleSink, AudioSampleSource, BufferTarget, CanvasSource, Input, Mp4OutputFormat, Output, VideoSampleSink, WebMOutputFormat } from "mediabunny";
-import type { AudioProcessingSpec, CameraHandleKind, ClipEffect, ClipKeyframe, EngineRequest, EngineResponse, FilterRegion, MediaFileSource, PreviewPickResult, PreviewView, RenderClip, RenderFilter, SceneKeyframe, SceneObjectSpec, SceneSettings, TimelinePatch, TimelineSnapshot, TransformHandleKind } from "../protocol/engine-protocol";
+import type { AudioProcessingSpec, CameraHandleKind, ClipEffect, ClipKeyframe, EngineRequest, EngineResponse, FilterRegion, MediaFileSource, PreviewPickResult, PreviewView, RenderClip, RenderFilter, SceneKeyframe, SceneObjectSpec, SceneSettings, SvgAssetSpec, TimelinePatch, TimelineSnapshot, TransformHandleKind } from "../protocol/engine-protocol";
 import { RamPreviewCache } from "./ram-preview-cache";
 import { createRenderPipeline, renderPipelineSettingsSignature, shadowTypeFrom, ThreeRendererCore, toneMappingFrom } from "./three-renderer-core";
 import { ThreeSceneCore } from "./three-scene-core";
@@ -16,6 +16,7 @@ import { MediaBuffer } from "./media-buffer";
 import { RendererPluginRuntime } from "./renderer-plugin-runtime";
 import { ThreeCameraHandles } from "./three-camera-handles";
 import { ThreeTransformHandles } from "./three-transform-handles";
+import { combineSvgMeshParts } from "./svg-painter-order";
 import { matchPreviewLayerMask } from "./editor-layers";
 import { classifyFilterRegion, createFilterRegionNodeCache } from "./filter-region-nodes";
 import { isNeutralClipEffect, isNeutralColorGrading } from "./effect-optimization";
@@ -232,7 +233,7 @@ let renderTimelineArray: RenderClip[] = [];
 let renderTimelineArrayDirty = true;
 let timelineRevision = 0;
 const standaloneObjects = new Map<string, SceneObjectSpec>();
-const bufferedAssets = new Map<string, { kind: "media" | "image" | "model"; source: MediaFileSource }>();
+const bufferedAssets = new Map<string, { kind: "media" | "image" | "model"; source: MediaFileSource; svg?: SvgAssetSpec }>();
 const mediaBuffer = new MediaBuffer(128 * 1024 * 1024, (assetId) => detachAssetInstances(assetId));
 let reportedSceneObjectCount = -1;
 let reportedImageObjectCount = -1;
@@ -717,7 +718,7 @@ function ensureVideoSurface(clip: RenderClip, aspect: number) {
       const mesh = new THREE.Mesh(createVisualPlaneGeometry(fitted.width, fitted.height, clip), material);
       mesh.name = `media:${clip.id}`;
       mesh.position.z = 2;
-      mesh.renderOrder = 1_000;
+      mesh.renderOrder = 0;
       graphics?.scene.add(mesh);
       timelineRoots.set(clip.id, mesh);
       return { assetId, mesh, texture, frame: null, timestamp: -Infinity, requestedTime: -Infinity, aspect, effectSignature: visualEffectSignature(clip), cropSignature: "" };
@@ -759,7 +760,7 @@ function applyVisualTransform(mesh: THREE.Object3D, material: THREE.Material, cl
   mesh.position.set(positionX, positionY, clip.positionZ / 100);
   mesh.rotation.z = rotation;
   mesh.scale.set(Math.max(0.001, scaleX), Math.max(0.001, scaleY), 1);
-  mesh.renderOrder = clip.renderOrder;
+  mesh.renderOrder = 0;
   mesh.frustumCulled = !clip.effects.some((effect) => effect.enabled && !isNeutralClipEffect(effect) && effect.kind === "meshDeform");
   const opacity = updateVisualOpacityControl(material, resolveVisualOpacity(clip.opacity, clip.effects));
   material.transparent = Boolean(material.userData.gfxAlphaMasked) || material.opacity < 1;
@@ -1027,12 +1028,12 @@ function applyModelTransform(surface: ModelSurface, clip: RenderClip) {
   surface.root.position.set(positionX, positionY, clip.positionZ / 100);
   surface.root.rotation.set(THREE.MathUtils.degToRad(clip.rotationX), THREE.MathUtils.degToRad(clip.rotationY), rotationZ);
   surface.root.scale.set(Math.max(0.001, scaleX), Math.max(0.001, scaleY), Math.max(0.001, clip.scale / 100));
-  surface.root.renderOrder = clip.renderOrder;
+  surface.root.renderOrder = 0;
   surface.root.layers.set(THREE.MathUtils.clamp(clip.layer, 0, 31));
   if (surface.appearanceClip === clip) return;
   surface.appearanceClip = clip;
   // THREE-OPT: operate on the flat Object3D/material arrays captured at instantiation.
-  for (const object of surface.objects) object.renderOrder = clip.renderOrder;
+  for (const object of surface.objects) object.renderOrder = 0;
   for (const material of surface.materials) {
     const color = material.color && material.userData.gfxBaseColor !== undefined ? modelTintScratch.setHex(material.userData.gfxBaseColor) : undefined;
     let materialOpacity = opacity;
@@ -1059,7 +1060,7 @@ function applyModelTransform(surface: ModelSurface, clip: RenderClip) {
       }
     }
     material.opacity = THREE.MathUtils.clamp((material.userData.gfxBaseOpacity ?? 1) * materialOpacity, 0, 1);
-    material.transparent = material.opacity < 1;
+    material.transparent = material.userData.gfxSvgMaterial === true || material.opacity < 1;
     if (material.color && color) material.color.copy(color);
   }
   applyModelMeshDeformation(surface, clip.effects);
@@ -1409,6 +1410,10 @@ function pickSceneObject(ndcX: number, ndcY: number) {
   if (handleHit && transformHandleClipId) {
     return { clipId: transformHandleClipId, handle: handleHit.object.userData.gfxTransformHandleKind as TransformHandleKind } satisfies PreviewPickResult;
   }
+  const boundsHit = intersections.some((hit) => hit.object.userData.gfxTransformBounds === true);
+  if (boundsHit && transformHandleClipId) {
+    return { clipId: transformHandleClipId } satisfies PreviewPickResult;
+  }
   const cameraHandle = previewView === "inspector" ? intersections
     .map((hit) => cameraHandleKind(hit.object))
     .find((handle): handle is CameraHandleKind => Boolean(handle)) : undefined;
@@ -1438,14 +1443,8 @@ function cameraHandleKind(hitObject: THREE.Object3D) {
   return undefined;
 }
 
-const PICK_COPLANAR_EPSILON = 0.0001;
-
 function comparePickIntersections(a: THREE.Intersection, b: THREE.Intersection) {
-  const distanceDelta = a.distance - b.distance;
-  // Depth testing decides which genuinely separated surface is visible. The
-  // explicit render order is only authoritative for coplanar timeline planes.
-  if (Math.abs(distanceDelta) > PICK_COPLANAR_EPSILON) return distanceDelta;
-  return pickRenderOrder(b.object) - pickRenderOrder(a.object) || distanceDelta;
+  return a.distance - b.distance;
 }
 
 function unregisterTimelineRoot(root: THREE.Object3D) {
@@ -1465,12 +1464,6 @@ function applyTimelineHierarchy(clips: RenderClip[]) {
     if (parent && root.parent !== parent && canParentObject(root, parent)) parent.add(root);
     if (root.visible && (!clip.parentId || !activeHierarchyIds.has(clip.parentId))) activePickRoots.push(root);
   }
-}
-
-function pickRenderOrder(object: THREE.Object3D) {
-  let order = object.renderOrder;
-  for (let current = object.parent; current; current = current.parent) order = Math.max(order, current.renderOrder);
-  return order;
 }
 
 function worldVisible(object: THREE.Object3D) {
@@ -1501,6 +1494,7 @@ function keyframeTracksFor(source: object, keyframes: readonly ClipKeyframe[]) {
   if (tracks) return tracks;
   tracks = new Map<string, ClipKeyframe[]>();
   for (const keyframe of keyframes) {
+    if (!keyframe.property) continue;
     const track = tracks.get(keyframe.property);
     if (track) track.push(keyframe);
     else tracks.set(keyframe.property, [keyframe]);
@@ -1609,10 +1603,12 @@ function applyRenderFilters(source: RenderClip, timelineTime: number) {
     effects: structuredClone(source.effects),
     sceneObject: source.sceneObject ? structuredClone(source.sceneObject) : undefined,
   };
-  for (const filter of source.filterStack) {
-    if (!filter.enabled || timelineTime < filter.start || timelineTime >= filter.start + filter.duration) continue;
-    const { effects, visible } = evaluateFilter(filter, timelineTime);
-    if (!visible) continue;
+  const activeFilters = source.filterStack.flatMap((filter) => {
+    if (!filter.enabled || timelineTime < filter.start || timelineTime >= filter.start + filter.duration) return [];
+    const result = evaluateFilter(filter, timelineTime);
+    return result.visible && result.positionZ >= evaluated.positionZ ? [result] : [];
+  }).sort((a, b) => a.positionZ - b.positionZ);
+  for (const { effects } of activeFilters) {
     evaluated.effects.push(...effects);
     if (evaluated.sceneObject) applyEffectsToFilteredSceneObject(evaluated.sceneObject, effects);
   }
@@ -1624,6 +1620,7 @@ function evaluateFilter(filter: RenderFilter, timelineTime: number) {
   const transform = {
     positionX: filter.positionX,
     positionY: filter.positionY,
+    positionZ: filter.positionZ,
     scale: filter.scale,
     scaleX: filter.scaleX,
     scaleY: filter.scaleY,
@@ -1647,7 +1644,7 @@ function evaluateFilter(filter: RenderFilter, timelineTime: number) {
     aspect: filter.compositionAspect,
   };
   const classification = classifyFilterRegion(region);
-  if (classification === "outside") return { effects: [] as ClipEffect[], region, visible: false };
+  if (classification === "outside") return { effects: [] as ClipEffect[], region, visible: false, positionZ: transform.positionZ };
   const effects = structuredClone(filter.effects);
   for (const [property, keys] of tracks) {
     if (!property.startsWith("effect.")) continue;
@@ -1657,7 +1654,7 @@ function evaluateFilter(filter: RenderFilter, timelineTime: number) {
   }
   const activeRegion = classification === "full" && region.opacity >= 0.999 ? undefined : region;
   for (const effect of effects) effect.filterRegion = activeRegion;
-  return { effects, region: activeRegion, visible: true };
+  return { effects, region: activeRegion, visible: true, positionZ: transform.positionZ };
 }
 
 function interpolateKeyframeTrack(keys: ClipKeyframe[], localTime: number) {
@@ -2000,13 +1997,17 @@ async function hydrateBufferedAsset(assetId: string) {
   const registration = bufferedAssets.get(assetId);
   if (!registration) throw new Error(`メディア ${assetId} の登録情報がありません`);
   if (registration.kind === "media") await hydrateMedia(assetId);
-  else if (registration.kind === "image") await hydrateImage(assetId);
+  else if (registration.kind === "image") {
+    if (registration.svg) await hydrateSvgImage(assetId, registration.svg);
+    else await hydrateImage(assetId);
+  }
   else await hydrateModel(assetId);
 }
 
 async function loadRequestedMediaBufferAsset(message: Extract<EngineRequest, { type: "media-buffer-load" }>) {
   const registration = bufferedAssets.get(message.assetId) ?? { kind: message.kind === "image" ? "image" as const : message.kind === "model" ? "model" as const : "media" as const, source: message.source };
   registration.source = message.source;
+  registration.svg = message.svg;
   bufferedAssets.set(message.assetId, registration);
   await mediaBuffer.load(message.assetId, message.source, message.file);
   await hydrateBufferedAsset(message.assetId);
@@ -2370,6 +2371,9 @@ function linearHdrToByte(value: number) {
 async function hydrateImage(assetId: string) {
   const registration = bufferedAssets.get(assetId);
   if (!registration) throw new Error("画像の登録情報がありません");
+  for (const [clipId, surface] of modelSurfaces) if (surface.assetId === assetId) removeModelSurface(clipId);
+  modelRuntimes.delete(assetId);
+  mediaBuffer.releaseInstance(assetId, "three-svg");
   const extension = registration.source.name.split(".").pop()?.toLowerCase();
   const runtime = await mediaBuffer.instantiate<ImageRuntime>(assetId, "three-image", async (workerSource) => {
     let bitmap: ImageBitmap;
@@ -2407,11 +2411,55 @@ async function hydrateImage(assetId: string) {
 }
 
 async function inspectImage(message: Extract<EngineRequest, { type: "inspect-image" }>) {
-  bufferedAssets.set(message.assetId, { kind: "image", source: message.source });
+  bufferedAssets.set(message.assetId, { kind: "image", source: message.source, svg: message.svg });
   await mediaBuffer.load(message.assetId, message.source, message.file);
-  const info = await hydrateImage(message.assetId);
+  const info = message.svg ? await hydrateSvgImage(message.assetId, message.svg) : await hydrateImage(message.assetId);
   send({ type: "media-info", requestId: message.requestId, ...info });
   reconcileMediaBuffer();
+}
+
+async function hydrateSvgImage(assetId: string, svg: SvgAssetSpec) {
+  for (const [clipId, surface] of imageSurfaces) if (surface.assetId === assetId) removeImageSurface(clipId);
+  imageRuntimes.delete(assetId);
+  mediaBuffer.releaseInstance(assetId, "three-image");
+  const runtime = await mediaBuffer.instantiate<ModelRuntime>(assetId, "three-svg", async () => {
+    const scene = new THREE.Group();
+    scene.name = `svg:${assetId}`;
+    const parts = [...svg.meshes].sort((a, b) => a.renderOrder - b.renderOrder);
+    const combined = combineSvgMeshParts(parts);
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(combined.positions, 3));
+    geometry.setIndex(combined.indices);
+    for (const group of combined.groups) geometry.addGroup(group.start, group.count, group.materialIndex);
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    const materials = parts.map((spec) => {
+      const material = new THREE.MeshBasicMaterial({
+        color: spec.color,
+        opacity: spec.opacity,
+        // A single transparent queue preserves SVG fill/stroke painter order,
+        // including opaque parts adjacent to translucent parts.
+        transparent: true,
+        depthTest: true,
+        depthWrite: true,
+        side: THREE.DoubleSide,
+        toneMapped: false,
+      });
+      material.userData.gfxBaseOpacity = spec.opacity;
+      material.userData.gfxBaseColor = spec.color;
+      material.userData.gfxSvgMaterial = true;
+      material.forceSinglePass = true;
+      return material;
+    });
+    const mesh = new THREE.Mesh(geometry, materials);
+    mesh.name = `svg-parts:${assetId}`;
+    mesh.renderOrder = 0;
+    scene.add(mesh);
+    return { scene, animations: [], boneNames: [], duration: 0 };
+  }, disposeModelRuntime);
+  modelRuntimes.set(assetId, runtime);
+  graphics?.applySettings(sceneSettings);
+  return { duration: 0, width: svg.width, height: svg.height, codec: "SVG", sourceProfile: mediaBuffer.open(assetId).profile };
 }
 
 function disposeModelRuntime(runtime: ModelRuntime) {

@@ -1,11 +1,11 @@
-import type { CameraHandleKind, CameraHandleTransform, EngineRequest, EngineResponse, ExportSettings, MediaFileSource, MediaReadGraph, PreviewPickResult, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, SceneSettingsPatch, TimelinePatch, TimelineSnapshot } from "../protocol/engine-protocol";
+import type { CameraHandleKind, CameraHandleTransform, EngineRequest, EngineResponse, ExportSettings, MediaFileSource, MediaReadGraph, PreviewPickResult, PreviewView, RenderClip, SceneObjectSpec, SceneSettings, SceneSettingsPatch, SvgAssetSpec, TimelinePatch, TimelineSnapshot } from "../protocol/engine-protocol";
 import type { RendererPluginBundle, RendererPluginInfo } from "../plugins/plugin-types";
 import type { FontVariationSettings } from "../fonts/font-variation";
 import { collectExportAssetIds } from "./export-resources";
 
 type MediaInfo = Extract<EngineResponse, { type: "media-info" }>;
 type ExportResult = { buffer: ArrayBuffer; mimeType: string };
-type RegisteredMediaFile = { file: File; kind: "video" | "audio" | "image" | "model" };
+type RegisteredMediaFile = { file: File; kind: "video" | "audio" | "image" | "model"; svg?: SvgAssetSpec };
 type ExportWorkerSession = { requestId: string; worker: Worker; port: MessagePort; cancel: () => void };
 export type AudioPreviewChunk = { timestamp: number; duration: number; sampleRate: number; channels: ArrayBuffer[] };
 export type MediaThumbnail = { bitmap?: ImageBitmap; frame?: VideoFrame; peaks?: number[] };
@@ -221,13 +221,13 @@ export class EngineClient {
     });
   }
 
-  inspectImage(file: File, assetId: string, handle?: FileSystemFileHandle) {
+  inspectImage(file: File, assetId: string, handle?: FileSystemFileHandle, svg?: SvgAssetSpec) {
     const requestId = crypto.randomUUID();
-    this.mediaFiles.set(assetId, { file, kind: "image" });
+    this.mediaFiles.set(assetId, { file, kind: "image", svg });
     return new Promise<MediaInfo>((resolve, reject) => {
       const timer = this.mediaRequestTimeout(requestId, reject);
       this.pending.set(requestId, { resolve, reject, timer });
-      this.post({ type: "inspect-image", requestId, assetId, source: mediaFileSource(file), file });
+      this.post({ type: "inspect-image", requestId, assetId, source: mediaFileSource(file), file, svg });
     });
   }
 
@@ -263,7 +263,7 @@ export class EngineClient {
     const registration = this.mediaFiles.get(assetId);
     if (!registration || this.mediaBufferLoads.has(assetId)) return;
     this.mediaBufferLoads.add(assetId);
-    this.post({ type: "media-buffer-load", assetId, kind: registration.kind, source: mediaFileSource(registration.file), file: registration.file });
+    this.post({ type: "media-buffer-load", assetId, kind: registration.kind, source: mediaFileSource(registration.file), file: registration.file, svg: registration.svg });
   }
 
   decodeAudioPreview(assetId: string, startTime: number, endTime: number) {
@@ -440,7 +440,7 @@ export class EngineClient {
         try {
           for (const { assetId, registration } of mediaRegistrations) {
             const type = registration.kind === "image" ? "inspect-image" : registration.kind === "model" ? "inspect-model" : "inspect-media";
-            port.postMessage({ type, requestId: crypto.randomUUID(), assetId, source: mediaFileSource(registration.file), file: registration.file } satisfies EngineRequest);
+            port.postMessage({ type, requestId: crypto.randomUUID(), assetId, source: mediaFileSource(registration.file), file: registration.file, ...(type === "inspect-image" ? { svg: registration.svg } : {}) } satisfies EngineRequest);
           }
           for (const [fontId, retainedBuffer] of this.exportFontBuffers) {
             const buffer = retainedBuffer.slice(0);

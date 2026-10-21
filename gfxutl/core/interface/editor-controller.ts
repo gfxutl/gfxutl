@@ -22,6 +22,8 @@ import { AUDIO_WAVEFORM_VERSION } from "./audio-waveform";
 import { orderedTimelineFilters, orderedVisualClips } from "./timeline-draw-order";
 import { defaultThreeGeometry, isThreeGeometryKind, threeGeometryClassName } from "../protocol/three-geometry-catalog";
 import { nativePreviewPixelRatio } from "../protocol/preview-resolution";
+import { createEmptyTimelineKeyframe, resolveTimelineKeyframeTime } from "./timeline-keyframe";
+import { isSvgImageFile, isTextureImageFile, mediaKindForFile } from "./media-format";
 import type { FontData } from "three/addons/loaders/FontLoader.js";
 
 type Listener = () => void;
@@ -653,7 +655,7 @@ export class EditorController {
       if (window.showOpenFilePicker) {
         [handle] = await window.showOpenFilePicker({ multiple: false });
         file = await handle.getFile();
-      } else file = await this.openWithInput("video/*,audio/*,image/*,.hdr,.exr,.glb");
+      } else file = await this.openWithInput("video/*,audio/*,image/*,.svg,.hdr,.exr,.glb");
       if (mediaKindForFile(file) !== asset.kind) throw new Error(t("同じ種類の素材を選択してください"));
       const pending: MediaAsset = { ...asset, handle, size: file.size, lastModified: file.lastModified, fileStatus: "loading" };
       this.update({ assets: this.state.assets.map((item) => item.id === assetId ? pending : item) });
@@ -676,8 +678,11 @@ export class EditorController {
   private async registerRuntimeFile(asset: MediaAsset, file: File) {
     this.registerAvailableFile(asset.id, file);
     this.runtimeReadyAssetIds.delete(asset.id);
+    const svg = asset.kind === "image" && isSvgImageFile(file)
+      ? await import("./svg-image").then((module) => module.parseSvgImageFile(file))
+      : undefined;
     const info = asset.kind === "image"
-      ? await this.engine.inspectImage(file, asset.id, asset.handle)
+      ? await this.engine.inspectImage(file, asset.id, asset.handle, svg)
       : asset.kind === "model"
         ? await this.engine.inspectModel(file, asset.id, asset.handle)
         : await this.engine.inspectMedia(file, asset.id, asset.handle);
@@ -688,7 +693,7 @@ export class EditorController {
   private registerAvailableFile(assetId: string, file: File) {
     this.runtimeFiles.set(assetId, file);
     const kind = this.state.assets.find((asset) => asset.id === assetId)?.kind;
-    if (kind) this.engine.registerMediaFile(assetId, file, kind);
+    if (kind && !(kind === "image" && isSvgImageFile(file))) this.engine.registerMediaFile(assetId, file, kind);
   }
 
   private ensureAssetRuntime(assetId: string) {
@@ -997,8 +1002,6 @@ export class EditorController {
     const visualClips = this.state.clips.filter((clip) => clip.kind !== "group" && clip.kind !== "filter");
     const filters = orderedTimelineFilters(this.state.clips)
       .filter((clip) => !clip.muted && (!visualSolo || clip.solo));
-    const depth = new Map(orderedVisualClips(visualClips)
-      .map((clip, index) => [clip.id, 1_000 + index]));
     this.renderClipSource = this.state.clips;
     this.renderClipContextSignature = renderClipContextSignature;
     this.renderClipCache = visualClips.map((clip) => ({
@@ -1034,7 +1037,7 @@ export class EditorController {
       colorGrading: resolveColorGrading(clip.colorGrading),
       propertyActionOrder: resolveClipPropertyActions(clip).map((action) => action.kind),
       filterStack: clip.kind === "audio" ? [] : filters
-        .filter((filter) => filter.y < clip.y && filter.start < clip.start + clip.duration && filter.start + filter.duration > clip.start)
+        .filter((filter) => filter.start < clip.start + clip.duration && filter.start + filter.duration > clip.start)
         .map((filter) => ({
           id: filter.id,
           start: filter.start,
@@ -1042,6 +1045,7 @@ export class EditorController {
           enabled: filter.visible !== false,
           positionX: filter.positionX ?? 0,
           positionY: filter.positionY ?? 0,
+          positionZ: filter.positionZ ?? 0,
           scale: filter.scale ?? 100,
           scaleX: filter.scaleX ?? 100,
           scaleY: filter.scaleY ?? 100,
@@ -1059,13 +1063,13 @@ export class EditorController {
       modelBonePoses: clip.modelBonePoses ? structuredClone(clip.modelBonePoses) : undefined,
       instanceCount: clip.instanceCount ?? 1,
       instanceSpacing: clip.instanceSpacing ?? 2.5,
-      renderOrder: depth.get(clip.id) ?? 1_000,
-      sceneObject: this.sceneObjectForClip(clip, depth.get(clip.id) ?? 1_000),
+      renderOrder: 0,
+      sceneObject: this.sceneObjectForClip(clip),
     }));
     return this.renderClipCache;
   }
 
-  private sceneObjectForClip(clip: TimelineClip, renderOrder: number): SceneObjectSpec | undefined {
+  private sceneObjectForClip(clip: TimelineClip): SceneObjectSpec | undefined {
     if (clip.kind !== "title" && clip.kind !== "object") return undefined;
     if (clip.particleSystem) return undefined;
     const isText2D = clip.kind === "title" && clip.textMode === "2d";
@@ -1118,7 +1122,7 @@ export class EditorController {
           Math.max(0.001, (clip.scale ?? 100) / 100),
         ],
       },
-      renderOrder,
+      renderOrder: 0,
       visible: clip.visible ?? true,
       layer: clip.layer ?? 0,
       parentId: clip.parentId ? `timeline:${clip.parentId}` : undefined,
@@ -1516,7 +1520,7 @@ export class EditorController {
   resetPreviewCrop = (id: string) => {
     const clip = this.state.clips.find((item) => item.id === id);
     if (!clip || clip.locked) return;
-    const cropProperties = new Set<KeyframeProperty>(["cropLeft", "cropRight", "cropTop", "cropBottom"]);
+    const cropProperties = new Set<string>(["cropLeft", "cropRight", "cropTop", "cropBottom"]);
     this.update({
       clips: this.state.clips.map((item) => item.id === id ? {
         ...item,
@@ -1811,7 +1815,7 @@ export class EditorController {
         ? { ...keyframe, value: keyframe.value + deltaX }
         : keyframe.property === "positionY" ? { ...keyframe, value: keyframe.value + deltaY } : keyframe),
     } : item);
-    this.update({ clips, selectedClipId: id, selectedClipIds: [id], selectedCameraKeyframeIds: [], backgroundSelected: false });
+    this.update({ clips });
     if (!transient) {
       this.invalidatePreviewCache();
       this.schedulePersistence();
@@ -1827,30 +1831,32 @@ export class EditorController {
 
   arrangePreviewSelection = (placement: "front" | "forward" | "backward" | "back") => {
     const selected = new Set(this.state.selectedClipIds);
-    const ordered = orderedVisualClips(this.state.clips).filter((clip) => clip.kind !== "audio");
-    if (!ordered.some((clip) => selected.has(clip.id))) return;
-    let arranged = [...ordered];
+    const visualClips = orderedVisualClips(this.state.clips).filter((clip) => clip.kind !== "audio");
+    const selectedClips = visualClips.filter((clip) => selected.has(clip.id));
+    const otherClips = visualClips.filter((clip) => !selected.has(clip.id));
+    if (!selectedClips.length || !otherClips.length) { this.closeContextMenu(); return; }
+    const selectedVisualIds = new Set(selectedClips.map((clip) => clip.id));
+    const selectedDepths = selectedClips.map((clip) => clip.positionZ ?? 0);
+    const otherDepths = otherClips.map((clip) => clip.positionZ ?? 0);
+    const selectedBack = Math.min(...selectedDepths);
+    const selectedFront = Math.max(...selectedDepths);
+    const otherBack = Math.min(...otherDepths);
+    const otherFront = Math.max(...otherDepths);
+    let delta = 0;
     if (placement === "front") {
-      arranged = [...arranged.filter((clip) => !selected.has(clip.id)), ...arranged.filter((clip) => selected.has(clip.id))];
+      if (selectedBack <= otherFront) delta = otherFront - selectedBack + 1;
     } else if (placement === "back") {
-      arranged = [...arranged.filter((clip) => selected.has(clip.id)), ...arranged.filter((clip) => !selected.has(clip.id))];
+      if (selectedFront >= otherBack) delta = otherBack - selectedFront - 1;
     } else if (placement === "forward") {
-      for (let index = arranged.length - 2; index >= 0; index -= 1) {
-        if (selected.has(arranged[index].id) && !selected.has(arranged[index + 1].id)) {
-          [arranged[index], arranged[index + 1]] = [arranged[index + 1], arranged[index]];
-        }
-      }
+      const nextDepth = otherDepths.filter((depth) => depth >= selectedFront).sort((a, b) => a - b)[0];
+      if (nextDepth !== undefined) delta = nextDepth - selectedFront + 1;
     } else {
-      for (let index = 1; index < arranged.length; index += 1) {
-        if (selected.has(arranged[index].id) && !selected.has(arranged[index - 1].id)) {
-          [arranged[index], arranged[index - 1]] = [arranged[index - 1], arranged[index]];
-        }
-      }
+      const previousDepth = otherDepths.filter((depth) => depth <= selectedBack).sort((a, b) => b - a)[0];
+      if (previousDepth !== undefined) delta = previousDepth - selectedBack - 1;
     }
-    if (arranged.every((clip, index) => clip.id === ordered[index].id)) { this.closeContextMenu(); return; }
-    const stackOrder = new Map(arranged.map((clip, index) => [clip.id, index]));
+    if (delta === 0) { this.closeContextMenu(); return; }
     this.update({
-      clips: this.state.clips.map((clip) => stackOrder.has(clip.id) ? { ...clip, stackOrder: stackOrder.get(clip.id) } : clip),
+      clips: this.state.clips.map((clip) => selectedVisualIds.has(clip.id) ? { ...clip, positionZ: (clip.positionZ ?? 0) + delta } : clip),
       contextMenu: null,
     });
     this.invalidatePreviewCache();
@@ -2539,6 +2545,26 @@ export class EditorController {
     this.updateClip(clipId, { keyframes });
   };
 
+  addEmptyKeyframe = (clipId: string, requestedTime: number) => {
+    const clip = this.state.clips.find((item) => item.id === clipId);
+    if (!clip || clip.locked || !applicableClipActionKinds(clip).includes("keyframes")) return undefined;
+    const time = resolveTimelineKeyframeTime(requestedTime, clip.duration, this.state.fps, this.state.snapEnabled);
+    const tolerance = 0.5 / Math.max(1, this.state.fps);
+    let keyframes: ClipKeyframe[] = (clip.keyframes ?? []).map((keyframe) => ({ ...keyframe, easing: keyframe.easing ? { ...keyframe.easing } : undefined }));
+    const existing = keyframes.find((keyframe) => keyframe.property === "" && Math.abs(keyframe.time - time) <= tolerance);
+    if (existing) keyframes = keyframes.map((keyframe) => keyframe.id === existing.id ? { ...keyframe, time } : keyframe);
+    else keyframes.push(createEmptyTimelineKeyframe(crypto.randomUUID(), time));
+    keyframes.sort((a, b) => a.time - b.time || a.property.localeCompare(b.property));
+    const actions = resolveClipPropertyActions(clip);
+    this.updateClip(clipId, {
+      keyframes,
+      ...(clip.propertyActions !== undefined && !actions.some((action) => action.kind === "keyframes")
+        ? { propertyActions: [...actions, { id: crypto.randomUUID(), kind: "keyframes" as const }] }
+        : {}),
+    });
+    return time;
+  };
+
   updateKeyframe = (clipId: string, keyframeId: string, patch: Partial<ClipKeyframe>) => {
     const clip = this.state.clips.find((item) => item.id === clipId);
     if (!clip) return;
@@ -2558,7 +2584,7 @@ export class EditorController {
     const id = crypto.randomUUID();
     const clip = placeTimelineClip(this.state.clips, {
       id, assetId, y: Math.max(0, y), name: asset.name, start: nextStart, duration, offset: 0, color: asset.color,
-      kind: asset.kind === "audio" ? "audio" : asset.kind === "model" ? "object" : "video",
+      kind: asset.kind === "audio" ? "audio" : asset.kind === "model" || asset.codec === "SVG" ? "object" : "video",
       positionX: 0, positionY: 0, positionZ: 0, scale: 100, scaleX: 100, scaleY: 100, rotation: 0, rotationX: 0, rotationY: 0, opacity: 100,
       castShadow: true, receiveShadow: true,
       modelAnimationLayers: asset.kind === "model" && asset.animationNames?.[0]
@@ -2675,11 +2701,11 @@ export class EditorController {
       if (window.showOpenFilePicker) {
         [handle] = await window.showOpenFilePicker({
           multiple: false,
-          types: [{ description: "Media", accept: { "video/*": [".mp4", ".mov", ".webm", ".mkv"], "audio/*": [".wav", ".mp3", ".aac", ".flac"], "image/*": [".png", ".jpg", ".jpeg", ".webp", ".hdr", ".exr"] } }],
+          types: [{ description: "Media", accept: { "video/*": [".mp4", ".mov", ".webm", ".mkv"], "audio/*": [".wav", ".mp3", ".aac", ".flac"], "image/*": [".png", ".jpg", ".jpeg", ".webp", ".svg", ".hdr", ".exr"] } }],
         });
         file = await handle.getFile();
       } else {
-        file = await this.openWithInput("video/*,audio/*,image/*,.hdr,.exr");
+        file = await this.openWithInput("video/*,audio/*,image/*,.svg,.hdr,.exr");
       }
 
       await this.importMediaFile(file, handle);
@@ -2914,17 +2940,6 @@ export class EditorController {
   removeGeometry = (id: string) => this.engine.removeGeometry(id);
 }
 
-const MEDIA_EXTENSIONS = new Set(["mp4", "mov", "webm", "mkv", "wav", "mp3", "aac", "flac", "png", "jpg", "jpeg", "webp", "hdr", "exr", "glb", "gltf"]);
-
-function mediaKindForFile(file: File): MediaAsset["kind"] | null {
-  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-  if (!MEDIA_EXTENSIONS.has(extension) && !file.type.startsWith("video/") && !file.type.startsWith("audio/") && !file.type.startsWith("image/")) return null;
-  if (extension === "glb" || extension === "gltf" || file.type === "model/gltf-binary" || file.type === "model/gltf+json") return "model";
-  if (file.type.startsWith("audio/") || ["wav", "mp3", "aac", "flac"].includes(extension)) return "audio";
-  if (file.type.startsWith("image/") || ["png", "jpg", "jpeg", "webp", "hdr", "exr"].includes(extension)) return "image";
-  return "video";
-}
-
 function mergeFontCatalog(current: FontFaceInfo[], incoming: FontFaceInfo[], source: "local" | "google") {
   const retained = current.filter((font) => source === "local" ? font.source === "google" : font.source !== "google");
   return combineFontCatalog(retained, incoming);
@@ -2939,12 +2954,6 @@ function combineFontCatalog(...catalogs: FontFaceInfo[][]) {
 function timelineFontId(clip: Pick<TimelineClip, "id" | "fontId" | "fontVariations">) {
   if (!clip.fontId) return undefined;
   return fontVariationKey(clip.fontVariations) ? `${clip.fontId}#timeline:${clip.id}` : clip.fontId;
-}
-
-function isTextureImageFile(file: File) {
-  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-  return ["png", "jpg", "jpeg", "webp"].includes(extension)
-    || ["image/png", "image/jpeg", "image/webp"].includes(file.type.toLowerCase());
 }
 
 function mediaColor(kind: MediaAsset["kind"]) {
